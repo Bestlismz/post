@@ -1,0 +1,4 @@
+import assert from "node:assert/strict"; import test from "node:test"; import { decideReplyAction, renderReplyProfile, validateGeneratedReply, validateReplyProfile } from "../src/reply-policy.mjs";
+test("validates and renders known variables",()=>{const p=validateReplyProfile({greeting:"สวัสดี {customer_name}",maxLength:120});assert.match(renderReplyProfile(p,{customer_name:"เมย์"},"ขอบคุณค่ะ"),/เมย์/);assert.throws(()=>validateReplyProfile({greeting:"{secret}"}),/Unknown/)});
+test("deterministic takeover overrides auto reply",()=>{assert.equal(decideReplyAction({event:{text:"hi",timestamp:Date.now()},thread:{status:"human_handoff"},analysis:{score:99},config:{enabled:true}}).action,"ignore")});
+test("blocks unsupported promises",()=>{assert.throws(()=>validateGeneratedReply("ยืนยันว่ามีห้อง",validateReplyProfile({})),/unsupported/)});

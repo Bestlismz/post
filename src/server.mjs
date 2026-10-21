@@ -9,7 +9,13 @@ import next from "next";
 import { createSiteBrowser } from "./browser.mjs";
 import { createDraftGenerator } from "./generator.mjs";
 import { createGroupService } from "./groups.mjs";
+import { createMessengerFixture } from "./messenger-fixture.mjs";
+import { createMessengerGenerator } from "./messenger-generator.mjs";
+import { createMessengerWorker } from "./messenger-worker.mjs";
+import { createMetaClient } from "./meta-client.mjs";
+import { normalizePageEvents, verifyChallenge, verifySignature } from "./meta-webhook.mjs";
 import { createRelevanceAnalyzer } from "./relevance.mjs";
+import { decideReplyAction, renderReplyProfile, validateReplyProfile } from "./reply-policy.mjs";
 import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } from "./state.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -31,12 +37,21 @@ const site = createSiteBrowser({
 const generateText = createDraftGenerator({ apiKey: process.env.OPENAI_API_KEY, model });
 const analyzeRelevance = createRelevanceAnalyzer({ apiKey: process.env.OPENAI_API_KEY, model });
 const groups = createGroupService({ store, site, analyze: analyzeRelevance, withBrowserLease });
+const metaConfig = {
+  pageId: process.env.META_PAGE_ID || (mode === "fixture" ? "fixture-page" : ""),
+  pageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || (mode === "fixture" ? "fixture-token" : ""),
+  appSecret: process.env.META_APP_SECRET || (mode === "fixture" ? "fixture-secret" : ""),
+  verifyToken: process.env.META_VERIFY_TOKEN || (mode === "fixture" ? "fixture-verify" : ""),
+};
+const messengerGenerator = createMessengerGenerator({ apiKey: process.env.OPENAI_API_KEY, model });
 const nextApp = next({ dev: false, dir: root });
 await nextApp.prepare();
 const nextHandler = nextApp.getRequestHandler();
 const app = express();
 const server = http.createServer(app);
 const proxy = httpProxy.createProxyServer({ target: "http://127.0.0.1:6081", ws: true });
+const meta = mode === "fixture" ? createMessengerFixture(store) : createMetaClient({ pageAccessToken: metaConfig.pageAccessToken, graphVersion: process.env.META_GRAPH_VERSION });
+const messengerWorker = createMessengerWorker({ store, generate: messengerGenerator, decide: decideReplyAction, meta });
 
 proxy.on("open", (socket) => {
   desktopSockets.add(socket);
@@ -47,6 +62,20 @@ proxy.on("error", (_error, _req, response) => {
     response.writeHead(502, { "Content-Type": "text/plain" });
     response.end("Remote browser is starting. Reload this panel in a moment.");
   }
+});
+
+app.get("/webhooks/meta", (request, response) => {
+  const challenge = verifyChallenge(request.query, metaConfig.verifyToken);
+  if (challenge === null) return response.status(403).send("Verification failed");
+  response.type("text/plain").send(challenge);
+});
+app.post("/webhooks/meta", express.raw({ type: "application/json", limit: "256kb" }), (request, response) => {
+  if (!verifySignature(request.body, request.get("x-hub-signature-256"), metaConfig.appSecret)) return response.status(401).json({ error: "Invalid webhook signature." });
+  let payload;
+  try { payload = JSON.parse(request.body.toString("utf8")); } catch { return response.status(400).json({ error: "Invalid JSON." }); }
+  const events = normalizePageEvents(payload, metaConfig.pageId);
+  response.status(200).send("EVENT_RECEIVED");
+  void messengerWorker.enqueue(events).then(() => messengerWorker.drain()).catch(() => undefined);
 });
 
 app.use(express.json({ limit: "32kb" }));
@@ -114,6 +143,31 @@ app.post("/api/targets/:targetKey/analyze", asyncRoute(async (request, response)
 
 app.post("/api/analyze-pending", asyncRoute(async (_request, response) => {
   response.json(await groups.analyzePending());
+}));
+
+app.get("/api/messenger/status", (_request, response) => {
+  const state = store.read();
+  response.json({ configured: runtime().messengerConfigured, enabled: state.messengerConfig.enabled, pageName: state.messengerConfig.pageName, lastWebhookAt: state.messengerConfig.lastWebhookAt, lastSendAt: state.messengerConfig.lastSendAt, missing: runtime().messengerConfigured ? [] : ["META_PAGE_ID", "META_PAGE_ACCESS_TOKEN", "META_APP_SECRET", "META_VERIFY_TOKEN"].filter((name) => !process.env[name]) });
+});
+app.post("/api/messenger/enable", asyncRoute(async (_request, response) => {
+  if (!runtime().messengerConfigured) throw httpError(409, "Complete all Meta Page credentials before enabling auto-reply.");
+  response.json(await store.mutate((state) => { state.messengerConfig.pageId = metaConfig.pageId; state.messengerConfig.pageName ??= mode === "fixture" ? "Rental Radar Test Page" : "Facebook Page"; state.messengerConfig.enabled = true; return state.messengerConfig; }));
+}));
+app.post("/api/messenger/disable", asyncRoute(async (_request, response) => response.json(await store.mutate((state) => { state.messengerConfig.enabled = false; return state.messengerConfig; }))));
+app.get("/api/messenger/threads", (_request, response) => {
+  const state = store.read();
+  const threads = Object.values(state.messengerThreads).map((thread) => ({ ...thread, messages: Object.values(state.messengerMessages).filter((message) => message.senderId === thread.id), outbound: Object.values(state.messengerOutbound).filter((message) => message.senderId === thread.id) }));
+  response.json({ threads });
+});
+app.patch("/api/messenger/threads/:senderId", asyncRoute(async (request, response) => response.json(await messengerWorker.setThreadStatus(request.params.senderId, request.body?.status))));
+app.get("/api/reply-profile", (_request, response) => response.json(store.read().replyProfile));
+app.put("/api/reply-profile", asyncRoute(async (request, response) => {
+  const profile = validateReplyProfile(request.body);
+  response.json(await store.mutate((state) => { state.replyProfile = { ...state.replyProfile, ...profile, updatedAt: new Date().toISOString() }; return state.replyProfile; }));
+}));
+app.post("/api/reply-profile/preview", asyncRoute(async (request, response) => {
+  const profile = validateReplyProfile(request.body?.profile ?? store.read().replyProfile);
+  response.json({ text: renderReplyProfile(profile, { customer_name: "คุณเมย์", business_name: store.read().businessProfile.name, location: "อ่อนนุช", budget: "12,000 บาท" }, request.body?.body || "ขอบคุณที่สนใจค่ะ รบกวนแจ้งวันที่ต้องการย้ายเข้าเพิ่มเติมได้ไหมคะ"), sent: false });
 }));
 
 app.post("/api/session/check", asyncRoute(async (_request, response) => {
@@ -351,6 +405,15 @@ app.post("/fixture/api/replies", asyncRoute(async (request, response) => {
   response.json(reply);
 }));
 app.get("/fixture/api/state", (_request, response) => response.json({ replies: store.read().fixtureReplies }));
+app.get("/fixture/api/messenger/sends", (_request, response) => response.json({ sends: store.read().fixtureMessengerSends ?? [] }));
+app.post("/fixture/api/messenger/sample", asyncRoute(async (request, response) => {
+  if (mode !== "fixture") throw httpError(404, "Not found.");
+  const mid = request.body?.mid || `mid.${Date.now()}`;
+  const events = normalizePageEvents({ object: "page", entry: [{ id: metaConfig.pageId, messaging: [{ sender: { id: request.body?.senderId || "customer-1001" }, recipient: { id: metaConfig.pageId }, timestamp: Date.now(), message: { mid, text: request.body?.text || "หาคอนโดใกล้ BTS อ่อนนุช งบ 15,000 บาท" } }] }] }, metaConfig.pageId);
+  const accepted = await messengerWorker.enqueue(events);
+  await messengerWorker.drain();
+  response.json({ ...accepted, mid, sends: store.read().fixtureMessengerSends.length });
+}));
 
 app.use((request, response, nextError) => {
   nextHandler(request, response).catch(nextError);
@@ -370,6 +433,7 @@ server.on("upgrade", (request, socket, head) => {
 
 server.listen(port, "0.0.0.0", () => {
   console.log(`POC dashboard listening on http://0.0.0.0:${port} in ${mode} mode`);
+  void messengerWorker.recover().catch(() => undefined);
 });
 
 function runtime() {
@@ -379,7 +443,7 @@ function runtime() {
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
     model,
     browserBusy,
-    messengerConfigured: Boolean(process.env.META_PAGE_ID && process.env.META_PAGE_ACCESS_TOKEN && process.env.META_APP_SECRET && process.env.META_VERIFY_TOKEN),
+    messengerConfigured: Boolean(metaConfig.pageId && metaConfig.pageAccessToken && metaConfig.appSecret && metaConfig.verifyToken),
   };
 }
 

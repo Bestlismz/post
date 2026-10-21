@@ -1,0 +1,4 @@
+import assert from "node:assert/strict"; import crypto from "node:crypto"; import test from "node:test";
+import { normalizePageEvents, verifyChallenge, verifySignature } from "../src/meta-webhook.mjs";
+test("verifies challenge and signed raw body",()=>{assert.equal(verifyChallenge({"hub.mode":"subscribe","hub.verify_token":"v","hub.challenge":"42"},"v"),"42");const body=Buffer.from("{}");const sig=`sha256=${crypto.createHmac("sha256","s").update(body).digest("hex")}`;assert.equal(verifySignature(body,sig,"s"),true);assert.equal(verifySignature(body,sig,"wrong"),false)});
+test("normalizes only supported non-echo Page messages",()=>{const payload={object:"page",entry:[{id:"p",messaging:[{sender:{id:"u"},recipient:{id:"p"},timestamp:1,message:{mid:"m",text:"hello"}},{sender:{id:"p"},recipient:{id:"u"},message:{mid:"echo",is_echo:true,text:"x"}},{read:{watermark:1}}]}]};assert.deepEqual(normalizePageEvents(payload,"p").map(x=>x.key),["p:m"])});

@@ -49,6 +49,7 @@ const emptyState = (now) => ({
   messengerOutbound: {},
   processedWebhookEvents: {},
   fixtureReplies: [],
+  fixtureMessengerSends: [],
   events: [],
 });
 
@@ -119,6 +120,9 @@ export function publicState(state, runtime) {
     analyses: Object.values(state.analyses),
     drafts: Object.values(state.drafts),
     submissions: Object.values(state.submissions),
+    messengerThreads: Object.values(state.messengerThreads),
+    messengerMessages: Object.values(state.messengerMessages),
+    messengerOutbound: Object.values(state.messengerOutbound),
     events: state.events.slice(-12).reverse(),
   };
 }
@@ -139,6 +143,7 @@ export function migrateState(input = {}, now = new Date().toISOString()) {
       : {};
   }
   next.fixtureReplies = Array.isArray(source.fixtureReplies) ? source.fixtureReplies : [];
+  next.fixtureMessengerSends = Array.isArray(source.fixtureMessengerSends) ? source.fixtureMessengerSends : [];
   next.events = Array.isArray(source.events) ? source.events : [];
 
   if (next.config.groupId && next.config.groupUrl && !next.groups[next.config.groupId]) {
