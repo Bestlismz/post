@@ -1,11 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildConversation, buildConversationOptions, conversationId } from "../src/conversation.mjs";
+import * as conversationModule from "../src/conversation.mjs";
+
+const { buildConversation, buildConversationOptions, conversationId } = conversationModule;
 
 const target = (key, kind = "comment", extra = {}) => ({ key, kind, groupId: "g1", postId: "p1", author: key, text: `Text ${key}`, postText: "Parent context", url: `https://example.com/${key}`, ...extra });
 
 test("conversation identity cannot collide on joined delimiters", () => {
   assert.notEqual(conversationId({ groupId: "a:b", postId: "c" }), conversationId({ groupId: "a", postId: "b:c" }));
+});
+
+test("conversation review opens the first available post when no valid selection exists", () => {
+  const options = [
+    { id: "first", targetKey: "post-1" },
+    { id: "second", targetKey: "post-2" },
+  ];
+  const targets = [{ key: "post-1" }, { key: "comment-1" }, { key: "post-2" }];
+
+  assert.equal(conversationModule.resolveConversationTargetKey?.(options, targets, null), "post-1");
+  assert.equal(conversationModule.resolveConversationTargetKey?.(options, targets, "missing"), "post-1");
+  assert.equal(conversationModule.resolveConversationTargetKey?.(options, targets, "post-2"), "post-2");
+  assert.equal(conversationModule.resolveConversationTargetKey?.(options, targets, "comment-1"), "comment-1");
+  assert.equal(conversationModule.resolveConversationTargetKey?.([], [], null), null);
 });
 
 test("conversation preserves sibling order and exact submission ownership", () => {

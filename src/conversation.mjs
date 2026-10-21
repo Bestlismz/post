@@ -14,6 +14,11 @@ export function buildConversationOptions(workspace) {
   });
 }
 
+export function resolveConversationTargetKey(options, targets, selectedTargetKey) {
+  if (selectedTargetKey && targets.some((target) => target.key === selectedTargetKey)) return selectedTargetKey;
+  return options[0]?.targetKey ?? null;
+}
+
 export function buildConversation(workspace, selectedTargetKey) {
   const selectedTarget = workspace.targets.find((target) => target.key === selectedTargetKey);
   if (!selectedTarget) return null;

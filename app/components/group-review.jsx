@@ -2,13 +2,14 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { buildConversation, buildConversationOptions } from "../../src/conversation.mjs";
+import { buildConversation, buildConversationOptions, resolveConversationTargetKey } from "../../src/conversation.mjs";
 
 export function GroupReview({ workspace, request, busy, setNotice }) {
   const [key, setKey] = useState(null);
   const [reviewing, setReviewing] = useState(false);
   const options = useMemo(() => buildConversationOptions(workspace), [workspace]);
-  const conversation = useMemo(() => buildConversation(workspace, key), [workspace, key]);
+  const activeKey = resolveConversationTargetKey(options, workspace.targets, key);
+  const conversation = useMemo(() => buildConversation(workspace, activeKey), [workspace, activeKey]);
   const index = options.findIndex((option) => option.id === conversation?.id);
   const groupIds = [...new Set(options.map((option) => option.groupId))];
   const locked = !!busy || reviewing;
