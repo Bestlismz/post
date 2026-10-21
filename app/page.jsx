@@ -4,10 +4,11 @@ import {
   CommandCenter,
   GroupsView,
   LeadsView,
-  MessengerPlaceholder,
   SettingsView,
 } from "./components/command-center";
 import { GroupReview } from "./components/group-review";
+import { MessengerInbox } from "./components/messenger-inbox";
+import { ReplySettings } from "./components/reply-settings";
 import { NavItem, StatusDot, SurfaceHead } from "./components/ui";
 const nav = [
   ["overview", "Overview", "⌂"],
@@ -191,18 +192,24 @@ export default function Dashboard() {
           />
         ) : null}
         {view === "messenger" ? (
-          <MessengerPlaceholder
-            workspace={workspace}
-            onSettings={() => setView("settings")}
-          />
-        ) : null}
-        {view === "settings" ? (
-          <SettingsView
+          <MessengerInbox
             workspace={workspace}
             request={request}
             busy={busy}
             setNotice={setNotice}
+            onSettings={() => setView("settings")}
           />
+        ) : null}
+        {view === "settings" ? (
+          <div className="stack">
+            <SettingsView
+              workspace={workspace}
+              request={request}
+              busy={busy}
+              setNotice={setNotice}
+            />
+            <ReplySettings workspace={workspace} request={request} busy={busy} setNotice={setNotice} />
+          </div>
         ) : null}
         {view === "browser" ? (
           <Browser busy={workspace.browserBusy || !!busy} />
