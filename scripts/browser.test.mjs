@@ -98,6 +98,11 @@ test("keeps multiline post content and removes action labels", () => {
   });
 });
 
+test("ignores Facebook relative timestamps while climbing to post content", () => {
+  assert.throws(() => normalizeFacebookArticle("Best Lismzz\na day ago", "post"));
+  assert.throws(() => normalizeFacebookArticle("Best Lismzz\nYesterday at 14:05", "post"));
+});
+
 test("normalizes the current Facebook group card without placeholder and time labels", () => {
   const result = normalizeFacebookArticle([
     "Facebook",
@@ -111,6 +116,7 @@ test("normalizes the current Facebook group card without placeholder and time la
     "[POC TEST 2026-10-20] โพสต์ทดสอบระบบ",
     "Shared post",
     "2",
+    "4 comments",
     "Like",
     "Comment",
     "Share",

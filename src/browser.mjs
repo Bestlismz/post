@@ -352,7 +352,7 @@ async function readFacebookLinkedDiscoveries(page) {
 }
 
 export function normalizeFacebookArticle(rawText, kind) {
-  const metadata = /^(?:Facebook|·|Author|Admin|Like|Comment|Reply|Share|Send|Follow|Shared post|\d+|\d+[smhdw]|\d+\s*(?:min|mins|minute|minutes|hour|hours|day|days)(?:\s+ago)?)$/i;
+  const metadata = /^(?:Facebook|·|Author|Admin|Like|Comment|Reply|Share|Send|Follow|Shared post|\d+|\d+[smhdw]|\d+\s+(?:comments?|replies?|shares?)|\d+\s*(?:min|mins|minute|minutes|hour|hours|day|days)(?:\s+ago)?|(?:a|an)\s+(?:minute|hour|day|week)\s+ago|(?:today|yesterday)(?:\s+at\s+\d{1,2}:\d{2})?)$/i;
   const lines = rawText
     .split("\n")
     .map((line) => ({

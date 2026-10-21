@@ -17,13 +17,14 @@ const nav = [
   ["groups", "Groups", "groups"],
   ["review", "Reply review", "review"],
   ["messenger", "Messenger", "messenger"],
-  ["browser", "Browser", "browser"],
+  ["browser", "Facebook login", "browser"],
   ["activity", "Activity", "activity"],
   ["settings", "Settings", "settings"],
 ];
+const viewIds = new Set(nav.map(([id]) => id));
 export default function Dashboard() {
   const [workspace, setWorkspace] = useState(null),
-    [view, setView] = useState("overview"),
+    [view, setView] = useState("review"),
     [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(null);
   const refresh = useCallback(async () => {
@@ -36,6 +37,17 @@ export default function Dashboard() {
   useEffect(() => {
     refresh().catch((e) => setNotice({ type: "error", text: e.message }));
   }, [refresh]);
+  useEffect(() => {
+    const requested = new URLSearchParams(window.location.search).get("view");
+    if (viewIds.has(requested)) setView(requested);
+  }, []);
+  const navigate = useCallback((nextView) => {
+    setView(nextView);
+    const url = new URL(window.location.href);
+    if (nextView === "review") url.searchParams.delete("view");
+    else url.searchParams.set("view", nextView);
+    window.history.replaceState(null, "", url);
+  }, []);
   useEffect(() => {
     if (!busy && workspace?.browserOperation?.status !== "running") return;
     const timer = window.setInterval(() => refresh().catch(() => undefined), 900);
@@ -128,7 +140,7 @@ export default function Dashboard() {
               label={label}
               icon={icon}
               active={view === id}
-              onClick={() => setView(id)}
+              onClick={() => navigate(id)}
             />
           ))}
         </nav>
@@ -178,13 +190,13 @@ export default function Dashboard() {
         {view === "overview" ? (
           <CommandCenter
             workspace={workspace}
-            onNavigate={setView}
+            onNavigate={navigate}
             onScanAll={actions.scanAll}
             busy={busy}
           />
         ) : null}
         {view === "leads" ? (
-          <LeadsView workspace={workspace} onReview={() => setView("review")} />
+          <LeadsView workspace={workspace} onReview={() => navigate("review")} />
         ) : null}
         {view === "groups" ? (
           <GroupsView workspace={workspace} actions={actions} busy={busy} />
@@ -203,7 +215,7 @@ export default function Dashboard() {
             request={request}
             busy={busy}
             setNotice={setNotice}
-            onSettings={() => setView("settings")}
+            onSettings={() => navigate("settings")}
           />
         ) : null}
         {view === "settings" ? (
@@ -218,23 +230,38 @@ export default function Dashboard() {
           </div>
         ) : null}
         {view === "browser" ? (
-          <Browser workspace={workspace} />
+          <Browser workspace={workspace} request={request} busy={busy} />
         ) : null}
         {view === "activity" ? <Activity events={workspace.events} /> : null}
       </section>
     </main>
   );
 }
-function Browser({ workspace }) {
+function Browser({ workspace, request, busy }) {
   const [k, setK] = useState(0);
+  const [session, setSession] = useState(null);
   const locked = workspace.browserBusy;
+  const checking = busy === "Checking Facebook session";
+  async function checkSession() {
+    try {
+      const result = await request("Checking Facebook session", "/api/session/check", {
+        method: "POST",
+        body: "{}",
+      });
+      setSession(result);
+      setK((value) => value + 1);
+    } catch {
+      setSession({ state: "not_connected", actor: null });
+    }
+  }
+  const connected = session?.state === "connected";
   return (
     <div className="browser-layout enter">
       <section className="surface browser-stage">
         <SurfaceHead
-          title="Live Facebook browser"
-          subtitle="Persistent session shared with the automation worker"
-          action={<button onClick={() => setK(k + 1)} disabled={locked}>Reconnect</button>}
+          title="Sign in to Facebook"
+          subtitle="Use Facebook directly in this secure browser panel"
+          action={<button onClick={() => setK((value) => value + 1)} disabled={locked}>Reload browser</button>}
         />
         {locked ? (
           <div className="browser-lock"><span className="browser-orbit"><i/><i/><i/></span><h2>Automation has control</h2><p>Input is temporarily locked to prevent clicks from colliding with the worker.</p></div>
@@ -247,7 +274,26 @@ function Browser({ workspace }) {
         )}
       </section>
       <aside className="surface browser-status">
-        <SurfaceHead title="Operation inspector" subtitle="What the worker is doing now"/>
+        <SurfaceHead title="Facebook connection" subtitle="One login works across all saved groups"/>
+        <div className={`facebook-session ${connected ? "connected" : session ? "disconnected" : "unchecked"}`}>
+          <div className="facebook-session-title">
+            <span className="facebook-mark" aria-hidden="true">f</span>
+            <span>
+              <b>{connected ? "Connected" : session ? "Sign in required" : "Connection not checked"}</b>
+              <small>{connected ? session.actor : session ? "Log in below, then check again" : "Check the saved browser session"}</small>
+            </span>
+          </div>
+          <button className="primary" onClick={checkSession} disabled={locked || checking}>
+            {checking ? "Checking…" : connected ? "Check again" : "Check Facebook session"}
+          </button>
+        </div>
+        <ol className="login-steps">
+          <li><span>1</span><div><b>Sign in below</b><p>Enter your account details only on the Facebook page.</p></div></li>
+          <li><span>2</span><div><b>Complete Facebook security</b><p>Finish any two-factor or device confirmation Facebook requests.</p></div></li>
+          <li><span>3</span><div><b>Verify the connection</b><p>Click “Check Facebook session” before scanning groups.</p></div></li>
+        </ol>
+        <div className="credential-note"><span aria-hidden="true">&#x1F512;</span><p><b>Your password stays with Facebook</b>The app stores the browser session, never your Facebook password.</p></div>
+        <SurfaceHead title="Automation status" subtitle="What the worker is doing now"/>
         <OperationStatus operation={workspace.browserOperation}/>
         <div className="browser-note"><b>Safe control handoff</b><p>You can browse and sign in while idle. During a scan or reply, control moves to automation and returns automatically.</p></div>
       </aside>
