@@ -74,7 +74,7 @@ Enable one real reply only after inspecting the selected test target:
 POC_MODE=live POC_LIVE_SUBMISSION=true docker compose up -d
 ```
 
-Live submission remains `unknown` after the click because this POC cannot prove account identity and placement as strongly as the fixture. It stores screenshot evidence and locks the target against retries.
+Live submission stores screenshot evidence and locks the target before the remote click. The result becomes `verified` only when the exact reply is visible beneath the selected target. Otherwise, it remains `unknown` for manual review and the target stays locked against retries.
 
 ## Stop and reset
 

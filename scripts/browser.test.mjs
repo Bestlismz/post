@@ -5,9 +5,63 @@ import {
   canonicalFacebookTarget,
   isFacebookTimestampTrigger,
   normalizeFacebookArticle,
+  normalizeFacebookGroupName,
   pickFacebookContentScope,
+  readFacebookFeedCards,
+  clickFacebookTimestamp,
+  matchFacebookFeedCard,
 } from "../src/browser.mjs";
 import { preserveSubmittedTargetKeys } from "../src/state.mjs";
+
+test("removes Facebook notification counts from the captured group name", () => {
+  assert.equal(normalizeFacebookGroupName("(2) autopost | Facebook"), "autopost");
+  assert.equal(normalizeFacebookGroupName("autopost | Facebook"), "autopost");
+});
+
+test("matches a hydrated card by durable href and a refreshed href by unique content", () => {
+  const initial = { timestampHref: "/groups/100#?original", fingerprint: "before-hydration" };
+  const hydrated = { timestampHref: initial.timestampHref, fingerprint: "after-hydration" };
+  assert.equal(matchFacebookFeedCard([hydrated], initial), hydrated);
+  const refreshed = { timestampHref: "/groups/100#?refreshed", fingerprint: initial.fingerprint };
+  assert.equal(matchFacebookFeedCard([refreshed], initial), refreshed);
+  assert.equal(matchFacebookFeedCard([refreshed, { ...refreshed }], initial), null);
+});
+
+test("feed card discovery preserves the actual timestamp href without mutating Facebook nodes", async () => {
+  const href = "/groups/100?__cft__[0]=current#?opaque";
+  const link = Object.freeze({ href: `https://www.facebook.com${href}`, innerText: "", getAttribute: (name) => name === "href" ? href : null });
+  const card = { innerText: "Mali\n2h\nA real post", querySelectorAll: () => [link], parentElement: null };
+  const button = { innerText: "", querySelectorAll: () => [], parentElement: card };
+  const page = { locator: () => ({ evaluateAll: (read, groupId) => read([button], groupId) }) };
+  const [result] = await readFacebookFeedCards(page, "100");
+  assert.equal(result.timestampHref, href);
+  assert.equal(result.timestampToken, undefined);
+  assert.ok(result.fingerprint);
+});
+
+test("timestamp click uses the current href and accepts only the authorized post permalink", async () => {
+  const href = "/groups/100?__cft__[0]=current#?opaque";
+  let clicked = 0;
+  const page = {
+    locator(selector) { assert.equal(selector, `a[href=${JSON.stringify(href)}]`); return { filter: () => ({ count: async () => 1, click: async () => { clicked += 1; } }) }; },
+    waitForURL: async (accept) => {
+      assert.equal(accept(new URL("https://www.facebook.com/groups/101/posts/999/")), false);
+      assert.equal(accept(new URL("https://www.facebook.com/groups/100/")), false);
+      assert.equal(accept(new URL("https://www.facebook.com/groups/100/posts/999/?comment_id=22")), false);
+      assert.equal(accept(new URL("https://www.facebook.com/groups/100/posts/999/")), true);
+      return {};
+    },
+  };
+  assert.equal(await clickFacebookTimestamp(page, href, "100"), true);
+  assert.equal(clicked, 1);
+});
+
+test("missing or ambiguous timestamp links fail closed without clicking", async () => {
+  for (const count of [0, 2]) {
+    const page = { locator: () => ({ filter: () => ({ count: async () => count, click: async () => assert.fail("Must not click an ambiguous timestamp") }) }) };
+    assert.equal(await clickFacebookTimestamp(page, "/groups/100#?x", "100"), false);
+  }
+});
 
 test("normalizes a Facebook comment without changing metadata", () => {
   const result = normalizeFacebookArticle([

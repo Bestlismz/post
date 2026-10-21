@@ -274,7 +274,7 @@ app.post("/api/drafts/:id/review", asyncRoute(async (request, response) => {
       draftId: draft.id,
       draftRevision: draft.revision,
       targetKey: target.key,
-      target: { kind: target.kind, author: target.author, text: target.text, url: target.url },
+      target: { kind: target.kind, author: target.author, text: target.text, url: target.url, groupId: target.groupId, groupName: state.groups[target.groupId]?.name || `Group ${target.groupId}`, postId: target.postId, commentId: target.commentId },
       exactText: draft.text,
       expiresAt: Date.now() + 5 * 60 * 1000,
     };

@@ -184,14 +184,14 @@ async function scanFacebook(page, groupUrl) {
   const trace = [];
   await waitForFacebookFeed(page, groupId);
   const title = await page.title();
-  const groupName = title.replace(/\s*\|\s*Facebook.*$/i, "").trim() || `Facebook group ${groupId}`;
+  const groupName = normalizeFacebookGroupName(title) || `Facebook group ${groupId}`;
   let initialCards = [];
   for (let attempt = 0; attempt < 9; attempt += 1) {
     initialCards = await readFacebookFeedCards(page, groupId);
-    if (initialCards.some((card) => card.timestampToken)) break;
+    if (initialCards.some((card) => card.timestampHref)) break;
     await page.waitForTimeout(750);
   }
-  trace.push(`feed cards=${initialCards.length}, timestamps=${initialCards.filter((card) => card.timestampToken).length}`);
+  trace.push(`feed cards=${initialCards.length}, timestamps=${initialCards.filter((card) => card.timestampHref).length}`);
   const discoveries = [];
 
   for (const initialCard of initialCards.slice(0, 10)) {
@@ -199,13 +199,17 @@ async function scanFacebook(page, groupUrl) {
       await page.goto(groupUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
       await waitForFacebookFeed(page, groupId);
     }
-    const currentCards = await readFacebookFeedCards(page, groupId);
-    const card = currentCards.find((item) => item.fingerprint === initialCard.fingerprint);
-    if (!card?.timestampToken) {
+    let card;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      card = matchFacebookFeedCard(await readFacebookFeedCards(page, groupId), initialCard);
+      if (card?.timestampHref) break;
+      await page.waitForTimeout(400);
+    }
+    if (!card?.timestampHref) {
       trace.push("matching card had no stable timestamp trigger");
       continue;
     }
-    const opened = await clickFacebookTimestamp(page, card.timestampToken);
+    const opened = await clickFacebookTimestamp(page, card.timestampHref, groupId);
     trace.push(`timestamp click opened=${opened}, url=${page.url()}`);
     if (!opened) continue;
 
@@ -227,6 +231,10 @@ async function scanFacebook(page, groupUrl) {
     groupName,
     targets: targets.slice(0, 30),
   };
+}
+
+export function normalizeFacebookGroupName(title) {
+  return title.replace(/^\(\d+\)\s*/, "").replace(/\s*\|\s*Facebook.*$/i, "").trim();
 }
 
 async function waitForFacebookFeed(page, groupId) {
@@ -260,11 +268,10 @@ async function waitForFacebookFeed(page, groupId) {
   }
 }
 
-async function readFacebookFeedCards(page, groupId) {
-  const cards = await page.locator('[aria-label^="Actions for this post"]').evaluateAll((buttons, expectedGroupId) => buttons.map((button, buttonIndex) => {
+export async function readFacebookFeedCards(page, groupId) {
+  const cards = await page.locator('[aria-label^="Actions for this post"]').evaluateAll((buttons, expectedGroupId) => buttons.map((button) => {
     const scopes = [];
     const timestampLinks = [];
-    let timestampToken = null;
     let node = button;
     for (let depth = 0; depth < 12 && node; depth += 1, node = node.parentElement) {
       scopes.push((node.innerText ?? "").trim());
@@ -278,15 +285,12 @@ async function readFacebookFeedCards(page, groupId) {
           && url.searchParams.has("__cft__[0]")
           && url.hash.startsWith("#?");
         if (isTrigger || /^\d+[smhdw]$/i.test(label) || /^\d+\s+(?:minutes?|hours?|days?)\s+ago$/i.test(label)) {
-          if (!timestampLinks.includes(link.href)) timestampLinks.push(link.href);
-          if (!timestampToken) {
-            timestampToken = `post-${buttonIndex}`;
-            link.dataset.pocScanTimestamp = timestampToken;
-          }
+          const href = link.getAttribute("href");
+          if (href && !timestampLinks.includes(href)) timestampLinks.push(href);
         }
       }
     }
-    return { scopes, timestampHref: timestampLinks[0] ?? null, timestampToken };
+    return { scopes, timestampHref: timestampLinks[0] ?? null };
   }), groupId);
 
   return cards.flatMap((card) => {
@@ -299,13 +303,23 @@ async function readFacebookFeedCards(page, groupId) {
   });
 }
 
-async function clickFacebookTimestamp(page, token) {
-  const navigation = page.waitForURL((url) => /\/groups\/\d+\/posts\/\d+\/?$/.test(url.pathname), { timeout: 8000 }).catch(() => null);
-  const link = page.locator(`[data-poc-scan-timestamp="${token}"]`);
+export async function clickFacebookTimestamp(page, href, groupId) {
+  const link = page.locator(`a[href=${JSON.stringify(href)}]`).filter({ visible: true });
   if ((await link.count()) !== 1) return false;
-  await link.click();
+  const isExpectedPost = (url) => {
+    try { return canonicalFacebookTarget(url.href, groupId).kind === "post"; } catch { return false; }
+  };
+  const navigation = page.waitForURL(isExpectedPost, { timeout: 8000 }).catch(() => null);
+  try { await link.click({ timeout: 5000 }); } catch { return false; }
   if (await navigation) return true;
-  return /\/groups\/\d+\/posts\/\d+\/?$/.test(new URL(page.url()).pathname);
+  return isExpectedPost(new URL(page.url()));
+}
+
+export function matchFacebookFeedCard(cards, initialCard) {
+  const sameHref = initialCard.timestampHref ? cards.filter((card) => card.timestampHref === initialCard.timestampHref) : [];
+  if (sameHref.length === 1) return sameHref[0];
+  const sameContent = cards.filter((card) => card.fingerprint === initialCard.fingerprint);
+  return sameContent.length === 1 ? sameContent[0] : null;
 }
 
 async function readFacebookCommentDiscoveries(page) {

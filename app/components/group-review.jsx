@@ -1,90 +1,163 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { SurfaceHead } from "./ui";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { buildConversation, buildConversationOptions } from "../../src/conversation.mjs";
 
 export function GroupReview({ workspace, request, busy, setNotice }) {
   const [key, setKey] = useState(null);
-  const [draft, setDraft] = useState(null);
-  const [text, setText] = useState("");
-  const [review, setReview] = useState(null);
-  const [confirmed, setConfirmed] = useState(false);
-  const selected = useMemo(() => workspace.targets.find((item) => item.key === key), [workspace, key]);
-  const parentPost = useMemo(() => selected ? workspace.targets.find((item) => item.groupId === selected.groupId && item.postId === selected.postId && item.kind === "post") : null, [workspace, selected]);
-  const submission = workspace.submissions.find((item) => item.targetKey === key);
-
-  async function generate() {
-    const nextDraft = await request("Generating draft", "/api/drafts", { method: "POST", body: JSON.stringify({ targetKey: key }) });
-    setDraft(nextDraft);
-    setText(nextDraft.text);
+  const [reviewing, setReviewing] = useState(false);
+  const options = useMemo(() => buildConversationOptions(workspace), [workspace]);
+  const conversation = useMemo(() => buildConversation(workspace, key), [workspace, key]);
+  const index = options.findIndex((option) => option.id === conversation?.id);
+  const groupIds = [...new Set(options.map((option) => option.groupId))];
+  const locked = !!busy || reviewing;
+  const identity = "Rental Radar";
+  function selectTarget(nextKey) {
+    if (!locked) setKey(nextKey);
   }
+  const composer = conversation ? <ReplyWorkflow key={conversation.selectedTarget.key} target={conversation.selectedTarget} identity={identity} request={request} busy={busy} setNotice={setNotice} onReviewing={setReviewing} /> : null;
 
-  async function openReview() {
-    let nextDraft = draft;
-    if (text !== nextDraft.text) {
-      nextDraft = await request("Saving draft", `/api/drafts/${nextDraft.id}`, { method: "PATCH", body: JSON.stringify({ text, revision: nextDraft.revision }) });
-      setDraft(nextDraft);
+  return <div className="group-review enter">
+    <div className="conversation-toolbar">
+      <div className="conversation-choice"><label htmlFor="conversation-select">Choose conversation</label><select id="conversation-select" value={conversation?.id || ""} disabled={locked || !options.length} onChange={(event) => selectTarget(options.find((option) => option.id === event.target.value).targetKey)}>
+        <option value="" disabled>{options.length ? "Select a scanned post" : "Scan a group to collect posts"}</option>
+        {groupIds.map((groupId) => <optgroup key={groupId} label={options.find((option) => option.groupId === groupId).groupLabel}>{options.filter((option) => option.groupId === groupId).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</optgroup>)}
+      </select></div>
+      <div className="conversation-navigation"><button aria-label="Previous conversation" disabled={locked || index <= 0} onClick={() => selectTarget(options[index - 1].targetKey)}>←</button><button aria-label="Next conversation" disabled={locked || index >= options.length - 1} onClick={() => selectTarget(options[index + 1].targetKey)}>→</button></div>
+    </div>
+    <p className="conversation-scope">{conversation ? `Reply targets: ${conversation.post.target ? "post · " : ""}${conversation.comments.length} scanned comments` : "Choose a scanned conversation to read its post and reply targets."}</p>
+    {conversation ? <PostConversation conversation={conversation} identity={identity} composer={composer} onSelectTarget={selectTarget} disabled={locked} /> : <div className="conversation-empty">{options.length ? "Select a conversation above to begin." : "No conversations have been scanned yet."}</div>}
+  </div>;
+}
+
+function PostConversation({ conversation, identity, composer, onSelectTarget, disabled }) {
+  const { post, comments, selectedTarget } = conversation;
+  const postSelected = selectedTarget.key === post.target?.key;
+  return <article className="fb-thread" aria-label={`Scanned conversation in ${conversation.group.label}`}>
+    <header className="fb-post-header"><Avatar name={post.author || "Original post"} large /><div><b>{post.author || "Original post"}</b><span>{conversation.group.label}</span><small>{post.kind === "captured" ? "Scanned conversation" : "Original post context"}</small></div></header>
+    <p className="fb-post-text">{post.text || "Original post text was not captured."}</p>
+    <div className="fb-post-actions">{post.target ? <button aria-label={`Reply to post by ${post.author}`} aria-pressed={postSelected} disabled={disabled} onClick={() => onSelectTarget(post.target.key)}>Reply to post{postSelected ? <span className="replying-chip">Replying here</span> : null}</button> : <span>Post reply target not captured</span>}<a href={conversation.sourceUrl} target="_blank" rel="noreferrer">Open original on Facebook ↗</a></div>
+    <div className="fb-thread-body">
+      {conversation.postSubmission ? <SubmissionResult submission={conversation.postSubmission} identity={identity} /> : postSelected ? composer : null}
+      <h2>Scanned comments <span>({comments.length})</span></h2>
+      {comments.length ? <ol className="fb-comments">{comments.map(({ target, submission }) => <li key={target.key}>
+        <div className={`fb-comment ${target.key === selectedTarget.key ? "is-selected" : ""}`}><Avatar name={target.author} /><div className="fb-comment-content"><div className="fb-comment-bubble"><b>{target.author}</b><p>{target.text}</p></div><div className="fb-comment-actions"><button aria-label={`Reply to comment by ${target.author}: ${target.text.slice(0, 60)}`} aria-pressed={target.key === selectedTarget.key} disabled={disabled} onClick={() => onSelectTarget(target.key)}>Reply</button><a href={target.url} target="_blank" rel="noreferrer">View on Facebook ↗</a>{target.key === selectedTarget.key ? <span className="replying-chip">Replying here</span> : null}</div></div></div>
+        {submission ? <div className="fb-reply-region"><SubmissionResult submission={submission} identity={identity} /></div> : target.key === selectedTarget.key ? <div className="fb-reply-region">{composer}</div> : null}
+      </li>)}</ol> : <p className="fb-no-comments">No comments were captured for this post.</p>}
+    </div>
+  </article>;
+}
+
+function ReplyWorkflow({ target, identity, request, busy, setNotice, onReviewing }) {
+  const [session, setSession] = useState({ phase: "empty", targetKey: target.key });
+  const [pending, setPending] = useState("");
+  const [error, setError] = useState("");
+  const active = useRef(true);
+  const operation = useRef(false);
+  const reviewButton = useRef(null);
+  const inputId = useId();
+  useEffect(() => {
+    active.current = true;
+    return () => { active.current = false; onReviewing(false); };
+  }, [onReviewing]);
+  async function run(label, action) {
+    if (operation.current || !active.current) return;
+    operation.current = true;
+    setPending(label);
+    setError("");
+    try { await action(); } catch (failure) { if (active.current) setError(failure.message || "The request failed."); }
+    finally { operation.current = false; if (active.current) setPending(""); }
+  }
+  function generate() {
+    void run("Generating draft…", async () => {
+      const draft = await request("Generating draft", "/api/drafts", { method: "POST", body: JSON.stringify({ targetKey: target.key }) });
+      if (active.current && draft.targetKey === target.key) setSession({ phase: "draft", targetKey: target.key, draft, text: draft.text });
+    });
+  }
+  function openReview() {
+    if (session.phase !== "draft") return;
+    void run("Preparing review…", async () => {
+      let draft = session.draft;
+      if (session.text !== draft.text) {
+        draft = await request("Saving draft", `/api/drafts/${draft.id}`, { method: "PATCH", body: JSON.stringify({ text: session.text, revision: draft.revision }) });
+        if (!active.current || draft.targetKey !== target.key) return;
+        setSession({ phase: "draft", targetKey: target.key, draft, text: draft.text });
+      }
+      if (!active.current) return;
+      const snapshot = await request("Preparing review", `/api/drafts/${draft.id}/review`, { method: "POST", body: JSON.stringify({ revision: draft.revision }) });
+      if (!active.current || snapshot.targetKey !== target.key) return;
+      setSession({ phase: "review", targetKey: target.key, draft, text: snapshot.exactText, snapshot, confirmed: false });
+      onReviewing(true);
+    });
+  }
+  function closeReview() {
+    if (operation.current) return;
+    setSession({ phase: "draft", targetKey: target.key, draft: session.draft, text: session.text });
+    onReviewing(false);
+    requestAnimationFrame(() => reviewButton.current?.focus());
+  }
+  function submit() {
+    if (session.phase !== "review" || !session.confirmed) return;
+    void run("Sending once…", async () => {
+      const result = await request("Sending once", "/api/submit", { method: "POST", body: JSON.stringify({ token: session.snapshot.token, confirmed: session.confirmed }) });
+      if (!active.current) return;
+      onReviewing(false);
+      setSession({ phase: "empty", targetKey: target.key });
+      setNotice({ type: result.state === "verified" ? "success" : "warning", text: result.detail });
+    });
+  }
+  const disabled = !!busy || !!pending;
+  return <>
+    <div className="fb-composer"><Avatar name={identity} /><div className="fb-composer-content"><span className="fb-reply-identity">{identity}</span>{session.phase === "empty" ? <button className="fb-composer-placeholder" aria-label="Generate reply draft" disabled={disabled} onClick={generate}><span>Generate a draft reply to {target.author}…</span><b>Generate draft</b></button> : <><label htmlFor={inputId}>Replying to {target.author}</label><textarea id={inputId} aria-describedby={`${inputId}-help`} value={session.text} maxLength={2000} disabled={disabled || session.phase === "review"} onChange={(event) => setSession({ phase: "draft", targetKey: target.key, draft: session.draft, text: event.target.value })} /><div className="fb-composer-footer"><small id={`${inputId}-help`}>{session.text.length}/2000 · Enter adds a line break</small><button ref={reviewButton} className="primary" disabled={disabled || !session.text.trim()} onClick={openReview}>Review exact reply</button></div></>}<p className="fb-workflow-status" role="status" aria-live="polite">{error || pending}</p></div></div>
+    {session.phase === "review" ? <ExactReplyReview review={session.snapshot} confirmed={session.confirmed} busy={disabled} onConfirm={(confirmed) => setSession({ ...session, confirmed })} onCancel={closeReview} onSubmit={submit} /> : null}
+  </>;
+}
+
+function ExactReplyReview({ review, confirmed, busy, onConfirm, onCancel, onSubmit }) {
+  const dialog = useRef(null);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
+  const cancelRef = useRef(onCancel);
+  cancelRef.current = onCancel;
+  useEffect(() => {
+    const root = document.querySelector(".app-shell");
+    const wasInert = root?.inert;
+    if (root) root.inert = true;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    dialog.current.focus();
+    function handleKey(event) {
+      if (event.key === "Escape" && !busyRef.current) { event.preventDefault(); cancelRef.current(); }
+      if (event.key !== "Tab") return;
+      const controls = [...dialog.current.querySelectorAll('button:not(:disabled), input:not(:disabled), textarea:not(:disabled), a[href]')];
+      const first = controls[0], last = controls.at(-1);
+      if (!first) { event.preventDefault(); return; }
+      if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && (document.activeElement === last || document.activeElement === dialog.current)) { event.preventDefault(); first.focus(); }
     }
-    const nextReview = await request("Preparing review", `/api/drafts/${nextDraft.id}/review`, { method: "POST", body: JSON.stringify({ revision: nextDraft.revision }) });
-    setConfirmed(false);
-    setReview(nextReview);
-  }
-
-  async function submit() {
-    const result = await request("Sending once", "/api/submit", { method: "POST", body: JSON.stringify({ token: review.token, confirmed }) });
-    setReview(null);
-    setNotice({ type: result.state === "verified" ? "success" : "warning", text: result.detail });
-  }
-
-  return <div className="review enter">
-    <section className="surface">
-      <SurfaceHead title="Group reply review" subtitle="Group replies never send automatically" />
-      <div className="targets">{workspace.targets.map((item) => <button className={item.key === key ? "selected" : ""} key={item.key} onClick={() => { setKey(item.key); setDraft(null); setText(""); }}>
-        <i>{item.author[0]}</i><span><b>{item.author}</b><p>{item.text}</p><small>{item.kind} · Group {item.groupId}</small></span>
-        {workspace.submissions.some((entry) => entry.targetKey === item.key) ? <em>LOCKED</em> : null}
-      </button>)}</div>
-    </section>
-    <section className="surface editor">
-      <SurfaceHead title="Post conversation" subtitle={selected ? `Group ${selected.groupId} · Replying as Rental Radar` : "Choose a target"} />
-      {selected ? <PostConversation target={selected} post={parentPost || selected} submission={submission} draft={draft} text={text} setText={setText} generate={generate} openReview={openReview} busy={busy} /> : <div className="empty">Choose one item from the left.</div>}
-    </section>
-    {review ? <div className="backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="reply-confirm-title">
-      <button className="close" onClick={() => setReview(null)} aria-label="Close review">×</button><small>IMMUTABLE REVIEW</small><h2 id="reply-confirm-title">Confirm exact reply</h2><p>This target can be attempted once.</p>
-      <div className="summary"><b>{review.target.author} · {review.target.kind}</b><p>{review.target.text}</p></div>
-      <label>Exact message<textarea value={review.exactText} readOnly /></label><label className="check"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> I confirm this exact reply and destination</label>
-      <footer><button onClick={() => setReview(null)}>Cancel</button><button className="primary" onClick={submit} disabled={!confirmed || !!busy}>Send once</button></footer>
-    </section></div> : null}
-  </div>;
+    document.addEventListener("keydown", handleKey);
+    return () => { if (root) root.inert = wasInert; document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", handleKey); };
+  }, []);
+  return createPortal(<div className="backdrop group-review-dialog"><section ref={dialog} className="modal" role="dialog" aria-modal="true" aria-labelledby="reply-confirm-title" tabIndex={-1}>
+    <button className="close" disabled={busy} onClick={onCancel} aria-label="Close review">×</button><small>IMMUTABLE REVIEW</small><h2 id="reply-confirm-title">Confirm exact reply</h2><p>This target can be attempted once.</p>
+    <div className="summary"><b>{review.target.groupName}</b><p>Post {review.target.postId} · {review.target.kind}{review.target.commentId ? ` · Comment ${review.target.commentId}` : ""}</p><b>{review.target.author}</b><p>{review.target.text}</p><a href={review.target.url} target="_blank" rel="noreferrer">View exact destination on Facebook ↗</a></div>
+    <label>Exact message<textarea value={review.exactText} readOnly /></label><label className="check"><input type="checkbox" disabled={busy} checked={confirmed} onChange={(event) => onConfirm(event.target.checked)} /> I confirm this exact reply and destination</label>
+    <footer><button disabled={busy} onClick={onCancel}>Cancel</button><button className="primary" disabled={!confirmed || busy} onClick={onSubmit}>Send once</button></footer>
+  </section></div>, document.body);
 }
 
-function PostConversation({ target, post, submission, draft, text, setText, generate, openReview, busy }) {
-  return <div className="post-conversation">
-    <article className="post-preview">
-      <header><span className="facebook-avatar">{post.author[0]}</span><span><b>{post.author}</b><small>Facebook Group {target.groupId} · Public</small></span></header>
-      <p>{post.postText || post.text}</p>
-      <div className="post-actions"><span>Like</span><span>Comment</span><span>Share</span></div>
-    </article>
-    <div className="comment-thread">
-      {target.kind === "comment" ? <div className="comment-row"><span className="facebook-avatar muted">{target.author[0]}</span><div><div className="comment-bubble"><b>{target.author}</b><p>{target.text}</p></div><small>Like · Reply · selected comment</small></div></div> : null}
-      {submission ? <VerifiedComment submission={submission} /> : <div className="comment-composer"><span className="brand-avatar">R</span>{draft ? <div className="composer-body"><label htmlFor="group-reply-text">Replying to {target.author} <small>{text.length}/2000</small></label><textarea id="group-reply-text" value={text} maxLength={2000} onChange={(event) => setText(event.target.value)} /><button className="primary" onClick={openReview} disabled={!!busy || !text}>Review exact reply</button></div> : <button className="composer-placeholder" aria-label="Generate reply draft" onClick={generate} disabled={!!busy}>Write a reply to {target.author}… <b>Generate draft</b></button>}</div>}
-    </div>
-  </div>;
-}
-
-function VerifiedComment({ submission }) {
+function SubmissionResult({ submission, identity }) {
   const verified = submission.state === "verified";
-  const timestamp = submission.finishedAt || submission.createdAt;
-  return <div className={`comment-row own ${verified ? "verified" : "uncertain"}`}>
-    <span className="brand-avatar">R</span><div className="verified-comment"><div className="comment-bubble"><b>Rental Radar <span className="verified-mark"><VerifiedIcon verified={verified} /></span></b><p>{submission.exactText}</p></div>
-      <div className="comment-meta"><span><b>{verified ? "Reply verified" : "Outcome locked"}</b> · {timestamp ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "Time unavailable"}</span>{submission.evidenceId ? <a href={`/api/evidence/${submission.evidenceId}`} target="_blank" rel="noreferrer">Evidence <ExternalIcon /></a> : null}</div>
-    </div>
+  const timestamp = verified ? submission.finishedAt || submission.createdAt : submission.createdAt;
+  const date = timestamp && !Number.isNaN(new Date(timestamp).valueOf()) ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : null;
+  const evidence = submission.evidenceId ? <a href={`/api/evidence/${encodeURIComponent(submission.evidenceId)}`} target="_blank" rel="noreferrer">View app evidence ↗</a> : null;
+  return <div className={`fb-submission ${verified ? "is-verified" : "is-unconfirmed"}`} role="status">
+    {verified ? <div className="fb-comment"><Avatar name={identity} /><div className="fb-comment-content"><div className="fb-comment-bubble"><b>{identity}</b><p>{submission.exactText}</p></div><div className="fb-submission-meta"><b>Verified by this app</b>{date ? <span>Verification completed {date}</span> : null}{evidence}</div></div></div> : <><b>{submission.state === "attempted" ? "Attempt in progress" : "Attempt recorded · publication unconfirmed"}</b><p className="fb-attempt-text">{submission.exactText}</p>{submission.detail ? <p>{submission.detail}</p> : null}{date ? <small>Attempt recorded {date}</small> : null}{evidence}</>}
+    <p className="fb-target-lock">Sending is locked for this target.</p>
   </div>;
 }
 
-function VerifiedIcon({ verified }) {
-  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{verified ? <><path d="m7 12 3.2 3.2L17.5 8" /><circle cx="12" cy="12" r="9" /></> : <><circle cx="12" cy="12" r="9" /><path d="M12 7v6M12 17h.01" /></>}</svg>;
-}
-
-function ExternalIcon() {
-  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 5h5v5M13 11l6-6M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5" /></svg>;
+function Avatar({ name, large = false }) {
+  return <span className={`fb-avatar${large ? " large" : ""}`} aria-hidden="true">{Array.from(name || "?")[0]}</span>;
 }
