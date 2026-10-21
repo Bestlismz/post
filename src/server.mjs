@@ -8,6 +8,8 @@ import httpProxy from "http-proxy";
 import next from "next";
 import { createSiteBrowser } from "./browser.mjs";
 import { createDraftGenerator } from "./generator.mjs";
+import { createGroupService } from "./groups.mjs";
+import { createRelevanceAnalyzer } from "./relevance.mjs";
 import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } from "./state.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -27,6 +29,8 @@ const site = createSiteBrowser({
   evidencePath: (evidenceId) => store.evidencePath(evidenceId),
 });
 const generateText = createDraftGenerator({ apiKey: process.env.OPENAI_API_KEY, model });
+const analyzeRelevance = createRelevanceAnalyzer({ apiKey: process.env.OPENAI_API_KEY, model });
+const groups = createGroupService({ store, site, analyze: analyzeRelevance, withBrowserLease });
 const nextApp = next({ dev: false, dir: root });
 await nextApp.prepare();
 const nextHandler = nextApp.getRequestHandler();
@@ -59,6 +63,58 @@ app.use("/novnc", (request, response) => {
 app.get("/api/state", (_request, response) => {
   response.json(publicState(store.read(), runtime()));
 });
+
+app.get("/api/groups", (_request, response) => {
+  response.json({ groups: Object.values(store.read().groups) });
+});
+
+app.post("/api/groups", asyncRoute(async (request, response) => {
+  const group = await groups.add(requiredText(request.body?.url, "Group URL"));
+  response.json(group);
+}));
+
+app.patch("/api/groups/:groupId", asyncRoute(async (request, response) => {
+  if (typeof request.body?.enabled !== "boolean") throw httpError(400, "Enabled must be true or false.");
+  response.json(await groups.setEnabled(request.params.groupId, request.body.enabled));
+}));
+
+app.post("/api/groups/scan-all", asyncRoute(async (_request, response) => {
+  response.json(await groups.scanAll());
+}));
+
+app.post("/api/groups/:groupId/scan", asyncRoute(async (request, response) => {
+  response.json(await groups.scanOne(request.params.groupId));
+}));
+
+app.get("/api/business-profile", (_request, response) => {
+  response.json(store.read().businessProfile);
+});
+
+app.put("/api/business-profile", asyncRoute(async (request, response) => {
+  const description = requiredText(request.body?.description, "Business description");
+  const relevanceThreshold = Number(request.body?.relevanceThreshold);
+  if (!Number.isInteger(relevanceThreshold) || relevanceThreshold < 0 || relevanceThreshold > 100) {
+    throw httpError(400, "Relevance threshold must be an integer from 0 to 100.");
+  }
+  const profile = await store.mutate((state) => {
+    state.businessProfile.description = description;
+    state.businessProfile.relevanceThreshold = relevanceThreshold;
+    state.businessProfile.updatedAt = new Date().toISOString();
+    return state.businessProfile;
+  });
+  response.json(profile);
+}));
+
+app.post("/api/targets/:targetKey/analyze", asyncRoute(async (request, response) => {
+  const targetKey = request.params.targetKey;
+  if (!store.read().targets[targetKey]) throw httpError(404, "Target not found.");
+  const result = await groups.analyzePending([targetKey]);
+  response.json(result.analyses[0] ?? store.read().analyses[targetKey]);
+}));
+
+app.post("/api/analyze-pending", asyncRoute(async (_request, response) => {
+  response.json(await groups.analyzePending());
+}));
 
 app.post("/api/session/check", asyncRoute(async (_request, response) => {
   const state = store.read();
@@ -322,6 +378,7 @@ function runtime() {
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
     model,
     browserBusy,
+    messengerConfigured: Boolean(process.env.META_PAGE_ID && process.env.META_PAGE_ACCESS_TOKEN && process.env.META_APP_SECRET && process.env.META_VERIFY_TOKEN),
   };
 }
 
