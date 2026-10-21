@@ -2,13 +2,52 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-const emptyState = () => ({
-  version: 1,
+const defaultBusinessProfile = (now) => ({
+  id: "business_default",
+  name: "ธุรกิจหาห้องเช่าและคอนโด",
+  description: "ช่วยผู้เช่าหาห้องหรือคอนโด และช่วยเจ้าของประกาศปล่อยเช่า",
+  relevantIntents: ["tenant_lead", "owner_lead", "listing"],
+  relevanceThreshold: 60,
+  updatedAt: now,
+});
+
+const defaultReplyProfile = (now) => ({
+  id: "reply_default",
+  language: "th",
+  tone: "friendly",
+  greeting: "สวัสดีค่ะ",
+  closing: "",
+  maxLength: 500,
+  requiredPhrases: [],
+  forbiddenPhrases: [],
+  answerUnknownWith: "acknowledge_and_handoff",
+  humanHandoffKeywords: ["คุยกับคน", "เจ้าหน้าที่", "แอดมิน"],
+  updatedAt: now,
+});
+
+const emptyState = (now) => ({
+  version: 3,
   config: { groupUrl: null, groupId: null, groupName: null },
+  businessProfile: defaultBusinessProfile(now),
+  replyProfile: defaultReplyProfile(now),
+  messengerConfig: {
+    pageId: null,
+    pageName: null,
+    enabled: false,
+    minimumAutoReplyConfidence: 75,
+    lastWebhookAt: null,
+    lastSendAt: null,
+  },
+  groups: {},
   targets: {},
+  analyses: {},
   drafts: {},
   reviews: {},
   submissions: {},
+  messengerThreads: {},
+  messengerMessages: {},
+  messengerOutbound: {},
+  processedWebhookEvents: {},
   fixtureReplies: [],
   events: [],
 });
@@ -17,7 +56,7 @@ export function createStore(stateDir) {
   fs.mkdirSync(stateDir, { recursive: true });
   fs.mkdirSync(path.join(stateDir, "evidence"), { recursive: true });
   const file = path.join(stateDir, "poc-state.json");
-  let state = load(file);
+  let state = load(file, new Date().toISOString());
   let queue = Promise.resolve();
 
   let recovered = false;
@@ -69,11 +108,96 @@ export function publicState(state, runtime) {
     model: runtime.model,
     browserBusy: runtime.browserBusy,
     config: state.config,
+    businessProfile: state.businessProfile,
+    replyProfile: state.replyProfile,
+    messenger: {
+      ...state.messengerConfig,
+      configured: Boolean(runtime.messengerConfigured),
+    },
+    groups: Object.values(state.groups),
     targets: Object.values(state.targets),
+    analyses: Object.values(state.analyses),
     drafts: Object.values(state.drafts),
     submissions: Object.values(state.submissions),
     events: state.events.slice(-12).reverse(),
   };
+}
+
+export function migrateState(input = {}, now = new Date().toISOString()) {
+  const source = input && typeof input === "object" ? structuredClone(input) : {};
+  const next = { ...emptyState(now), ...source, version: 3 };
+  next.config = { ...emptyState(now).config, ...(source.config ?? {}) };
+  next.businessProfile = { ...defaultBusinessProfile(now), ...(source.businessProfile ?? {}) };
+  next.replyProfile = { ...defaultReplyProfile(now), ...(source.replyProfile ?? {}) };
+  next.messengerConfig = { ...emptyState(now).messengerConfig, ...(source.messengerConfig ?? {}), enabled: source.messengerConfig?.enabled === true };
+  for (const field of [
+    "groups", "targets", "analyses", "drafts", "reviews", "submissions",
+    "messengerThreads", "messengerMessages", "messengerOutbound", "processedWebhookEvents",
+  ]) {
+    next[field] = source[field] && typeof source[field] === "object" && !Array.isArray(source[field])
+      ? source[field]
+      : {};
+  }
+  next.fixtureReplies = Array.isArray(source.fixtureReplies) ? source.fixtureReplies : [];
+  next.events = Array.isArray(source.events) ? source.events : [];
+
+  if (next.config.groupId && next.config.groupUrl && !next.groups[next.config.groupId]) {
+    next.groups[next.config.groupId] = {
+      id: next.config.groupId,
+      url: next.config.groupUrl.replace(/\/$/, ""),
+      name: next.config.groupName ?? null,
+      enabled: true,
+      lastScanAt: null,
+      lastScanState: "never",
+      lastScanDetail: null,
+      createdAt: now,
+    };
+  }
+  for (const [groupId, group] of Object.entries(next.groups)) {
+    next.groups[groupId] = {
+      id: groupId,
+      url: group.url,
+      name: group.name ?? null,
+      enabled: group.enabled !== false,
+      lastScanAt: group.lastScanAt ?? null,
+      lastScanState: group.lastScanState ?? "never",
+      lastScanDetail: group.lastScanDetail ?? null,
+      createdAt: group.createdAt ?? now,
+    };
+  }
+  return next;
+}
+
+export function normalizeGroupUrl(rawUrl) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl).trim());
+  } catch {
+    throw new Error("Enter a numeric Facebook Group URL.");
+  }
+  const host = parsed.hostname.toLowerCase().replace(/^(www\.|m\.)/, "");
+  const match = parsed.pathname.match(/^\/groups\/(\d+)\/?$/);
+  if (parsed.protocol !== "https:" || host !== "facebook.com" || !match) {
+    throw new Error("Enter a numeric Facebook Group URL.");
+  }
+  return { id: match[1], url: `https://www.facebook.com/groups/${match[1]}` };
+}
+
+export function upsertGroup(state, rawUrl, now = new Date().toISOString()) {
+  const canonical = normalizeGroupUrl(rawUrl);
+  if (!state.groups) state.groups = {};
+  const existing = state.groups[canonical.id];
+  state.groups[canonical.id] = existing ?? {
+    id: canonical.id,
+    url: canonical.url,
+    name: null,
+    enabled: true,
+    lastScanAt: null,
+    lastScanState: "never",
+    lastScanDetail: null,
+    createdAt: now,
+  };
+  return state.groups[canonical.id];
 }
 
 export function preserveSubmittedTargetKeys(scannedTargets, existingTargets, submissions) {
@@ -97,11 +221,11 @@ export function preserveSubmittedTargetKeys(scannedTargets, existingTargets, sub
   });
 }
 
-function load(file) {
-  if (!fs.existsSync(file)) return emptyState();
+function load(file, now) {
+  if (!fs.existsSync(file)) return emptyState(now);
   try {
     const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-    return { ...emptyState(), ...parsed };
+    return migrateState(parsed, now);
   } catch {
     throw new Error(`State file is unreadable: ${file}`);
   }
