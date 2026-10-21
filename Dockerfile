@@ -15,6 +15,7 @@ RUN npm ci --omit=dev
 COPY src ./src
 COPY app ./app
 COPY fixture ./fixture
+COPY public ./public
 COPY scripts ./scripts
 COPY supervisord.conf ./supervisord.conf
 COPY next.config.mjs ./next.config.mjs

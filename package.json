@@ -6,7 +6,9 @@
     "build": "next build",
     "start": "NODE_ENV=production node src/server.mjs",
     "test": "node --test scripts/*.test.mjs",
-    "verify": "node scripts/verify-poc.mjs"
+    "verify": "node scripts/verify-poc.mjs",
+    "verify:command-center": "node scripts/verify-command-center.mjs",
+    "verify:messenger": "node scripts/verify-messenger.mjs"
   },
   "dependencies": {
     "express": "^5.1.0",
