@@ -1,0 +1,7 @@
+ts	phase	decision	why	evidence	result
+2026-10-21T14:10:00+07:00	frame	split delivery into the multi-group command center and Messenger auto-reply plans	each subsystem can run and fail independently	docs/superpowers/plans/2026-10-21-multi-group-command-center.md, docs/superpowers/plans/2026-10-21-messenger-auto-reply.md	plans committed
+2026-10-21T14:11:00+07:00	setup	captured the existing POC source before creating the worktree	the source files were untracked and a worktree from main would omit them	commit 1b1037f	baseline tests pass 11 of 11
+2026-10-21T14:12:00+07:00	setup	created the lead-command-center worktree	implementation must not run on main	/Users/bestty/.codex/worktrees/lead-command-center/post	baseline tests pass 11 of 11
+2026-10-21T14:18:00+07:00	ground	traced backend and frontend flows before choosing module boundaries	the change crosses persistence, browser, API, and UI boundaries	architecture explorer reports in task transcript	confirmed browser lease, reservation, and raw webhook constraints
+2026-10-21T14:19:00+07:00	frame	set the completion predicate	both fixture Groups must analyze without automatic Group replies and one signed Messenger mid must produce at most one outbound send	docs/superpowers/specs/2026-10-21-multi-group-business-relevance-design.md	open
+2026-10-21T14:28:00+07:00	architecture	selected Candidate A with a restricted state boundary	it best preserved the existing one-writer and send-once rules	docs/architecture/2026-10-21-command-center-shape.md	cross-judge scored it 28 of 30
