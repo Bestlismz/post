@@ -1,8 +1,8 @@
 import "./globals.css";
 
 export const metadata = {
-  title: "Reply Review POC",
-  description: "Human-reviewed Facebook group reply prototype",
+  title: "Rental Radar · Lead Command Center",
+  description: "Facebook rental lead monitoring and Messenger operations",
 };
 
 export default function RootLayout({ children }) {

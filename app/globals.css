@@ -103,9 +103,22 @@ button {
 .sidebar nav button.active {
   box-shadow: inset 3px 0 #4c7dff;
 }
-.sidebar nav button span {
+.sidebar nav button .nav-icon-wrap {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: #8495b1;
+  transition: color 180ms ease, transform 180ms ease;
+}
+.sidebar nav button:hover .nav-icon-wrap,
+.sidebar nav button.active .nav-icon-wrap {
+  color: #fff;
+  transform: scale(1.06);
+}
+.nav-icon {
   width: 20px;
-  text-align: center;
+  height: 20px;
 }
 .mode-card {
   display: flex;

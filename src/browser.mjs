@@ -442,21 +442,27 @@ async function liveTargetScope(page, target) {
     if ((await openEditors.count()) > 1) throw new Error("Facebook exposed more than one visible comment reply editor.");
     return controls.locator('xpath=ancestor::*[@role="article"][1]');
   }
-  const article = page.locator('[role="article"]').filter({ hasText: target.text.slice(0, 80) });
-  if ((await article.count()) !== 1) throw new Error("The live post no longer resolves uniquely.");
-  return article;
+  const current = new URL(page.url());
+  const canonicalPost = current.pathname.match(/\/groups\/(\d+)\/posts\/(\d+)\/?$/);
+  if (!canonicalPost || canonicalPost[1] !== target.groupId || canonicalPost[2] !== target.postId) {
+    throw new Error("The live post permalink changed before submission.");
+  }
+  const exactPostText = target.text.split("\n")[0].trim();
+  const visiblePostText = page.getByText(exactPostText, { exact: true }).filter({ visible: true });
+  if ((await visiblePostText.count()) !== 1) throw new Error("The live post text no longer resolves uniquely.");
+  return page.locator("body");
 }
 
 async function verifyLivePlacement(page, target, message) {
   const replies = page.getByText(message, { exact: true }).filter({ visible: true });
-  if ((await replies.count()) !== 1) return false;
-  return replies.first().evaluate((node, targetText) => {
+  if ((await replies.count()) === 0) return false;
+  return replies.evaluateAll((nodes, targetText) => nodes.some((node) => {
     let scope = node.parentElement;
-    for (let depth = 0; depth < 20 && scope; depth += 1, scope = scope.parentElement) {
+    for (let depth = 0; depth < 30 && scope; depth += 1, scope = scope.parentElement) {
       if ((scope.innerText ?? "").includes(targetText)) return true;
     }
     return false;
-  }, target.text);
+  }), target.text.split("\n")[0].trim());
 }
 
 function fixtureScope(page, target) {

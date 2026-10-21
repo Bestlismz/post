@@ -11,14 +11,14 @@ import { MessengerInbox } from "./components/messenger-inbox";
 import { ReplySettings } from "./components/reply-settings";
 import { NavItem, StatusDot, SurfaceHead } from "./components/ui";
 const nav = [
-  ["overview", "Overview", "⌂"],
-  ["leads", "Lead inbox", "◎"],
-  ["groups", "Groups", "◫"],
-  ["review", "Reply review", "✎"],
-  ["messenger", "Messenger", "◌"],
-  ["browser", "Browser", "□"],
-  ["activity", "Activity", "◷"],
-  ["settings", "Settings", "⚙"],
+  ["overview", "Overview", "overview"],
+  ["leads", "Lead inbox", "leads"],
+  ["groups", "Groups", "groups"],
+  ["review", "Reply review", "review"],
+  ["messenger", "Messenger", "messenger"],
+  ["browser", "Browser", "browser"],
+  ["activity", "Activity", "activity"],
+  ["settings", "Settings", "settings"],
 ];
 export default function Dashboard() {
   const [workspace, setWorkspace] = useState(null),
