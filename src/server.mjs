@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { submissionPolicy } from "./submission-policy.mjs";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
@@ -279,7 +280,7 @@ app.post("/api/drafts/:id/review", asyncRoute(async (request, response) => {
       draftId: draft.id,
       draftRevision: draft.revision,
       targetKey: target.key,
-      target: { kind: target.kind, author: target.author, text: target.text, url: target.url, groupId: target.groupId, groupName: state.groups[target.groupId]?.name || `Group ${target.groupId}`, postId: target.postId, commentId: target.commentId },
+      target: { kind: target.kind, author: target.author, text: target.text, url: target.url, groupId: target.groupId, groupName: state.groups[target.groupId]?.name || `Group ${target.groupId}`, postId: target.postId, commentId: target.commentId, demo: target.demo === true },
       exactText: draft.text,
       expiresAt: Date.now() + 5 * 60 * 1000,
     };
@@ -292,9 +293,6 @@ app.post("/api/drafts/:id/review", asyncRoute(async (request, response) => {
 
 app.post("/api/submit", asyncRoute(async (request, response) => {
   if (request.body?.confirmed !== true) throw httpError(400, "Explicit confirmation is required.");
-  if (mode === "live" && !liveSubmissionEnabled) {
-    throw httpError(403, "Live submission is disabled. Enable it only for an authorized test target.");
-  }
   const token = requiredText(request.body?.token, "Review token");
   const reviewKey = digest(token);
   const snapshot = store.read();
@@ -307,6 +305,32 @@ app.post("/api/submit", asyncRoute(async (request, response) => {
   const draft = snapshot.drafts[review.draftId];
   if (!draft || draft.revision !== review.draftRevision || draft.text !== review.exactText) {
     throw httpError(409, "The draft changed after review.");
+  }
+
+  const policy = submissionPolicy({ mode, liveSubmissionEnabled }, target);
+  if (policy === "demo") {
+    const submission = await store.mutate((state) => {
+      if (state.submissions[target.key]) return state.submissions[target.key];
+      const value = {
+        id: id("demo_attempt"),
+        targetKey: target.key,
+        draftId: draft.id,
+        exactText: review.exactText,
+        state: "verified",
+        demo: true,
+        createdAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        detail: "Demo completed locally. Nothing was sent to Facebook.",
+      };
+      state.submissions[target.key] = value;
+      delete state.reviews[reviewKey];
+      addEvent(state, "demo_submission_completed", target.key);
+      return value;
+    });
+    return response.json(submission);
+  }
+  if (policy === "blocked") {
+    throw httpError(403, "Live submission is locked. Use an authorized test target or enable it in the server environment.");
   }
 
   updateBrowserOperation({ status: "running", phase: "preparing_reply", groupId: target.groupId, groupName: snapshot.groups[target.groupId]?.name, groupUrl: snapshot.groups[target.groupId]?.url, current: 1, total: 1, detail: `Locating ${target.kind} by ${target.author || "Facebook member"}` });

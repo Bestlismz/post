@@ -10,7 +10,8 @@ export function buildConversationOptions(workspace) {
     if (seen.has(id)) return [];
     seen.add(id);
     const post = workspace.targets.find((item) => conversationId(item) === id && item.kind === "post");
-    return [{ id, groupId: target.groupId, groupLabel: groups.get(target.groupId) || `Group ${target.groupId}`, targetKey: (post ?? target).key, label: `${post?.author || "Original post"} · ${(post?.text || target.postText || "Post context").slice(0, 85)}` }];
+    const fullLabel = `${post?.author || "Original post"} · ${post?.text || target.postText || "Post context"}`;
+    return [{ id, groupId: target.groupId, groupLabel: groups.get(target.groupId) || `Group ${target.groupId}`, targetKey: (post ?? target).key, fullLabel, label: fullLabel.length > 66 ? `${fullLabel.slice(0, 65)}…` : fullLabel }];
   });
 }
 

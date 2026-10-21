@@ -616,7 +616,7 @@ select:focus {
 .conversation-toolbar { display: flex; align-items: flex-end; gap: 12px; }
 .conversation-choice { flex: 1; min-width: 0; }
 .conversation-choice label { display: block; margin-bottom: 7px; font-size: 13px; font-weight: 600; color: #51545b; }
-.conversation-choice select { width: 100%; min-height: 44px; padding: 10px; font-size: 14px; background: #fff; }
+.conversation-choice select { width: 100%; min-width: 0; max-width: 100%; min-height: 44px; padding: 10px 36px 10px 10px; overflow: hidden; color: #202124; background: #fff; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-navigation { display: flex; gap: 6px; }
 .conversation-navigation button { width: 44px; }
 .conversation-scope { margin: 12px 0 18px; color: #65676b; font-size: 13px; line-height: 1.5; }

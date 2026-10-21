@@ -21,7 +21,7 @@ export function GroupReview({ workspace, initialTargetKey, request, busy, setNot
 
   return <div className="group-review enter">
     <div className="conversation-toolbar">
-      <div className="conversation-choice"><label htmlFor="conversation-select">Choose conversation</label><select id="conversation-select" value={conversation?.id || ""} disabled={locked || !options.length} onChange={(event) => selectTarget(options.find((option) => option.id === event.target.value).targetKey)}>
+      <div className="conversation-choice"><label htmlFor="conversation-select">Choose conversation</label><select id="conversation-select" title={options.find((option) => option.id === conversation?.id)?.fullLabel || ""} value={conversation?.id || ""} disabled={locked || !options.length} onChange={(event) => selectTarget(options.find((option) => option.id === event.target.value).targetKey)}>
         <option value="" disabled>{options.length ? "Select a scanned post" : "Scan a group to collect posts"}</option>
         {groupIds.map((groupId) => <optgroup key={groupId} label={options.find((option) => option.groupId === groupId).groupLabel}>{options.filter((option) => option.groupId === groupId).map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}</optgroup>)}
       </select></div>
@@ -116,6 +116,7 @@ function ReplyWorkflow({ target, identity, request, busy, setNotice, onReviewing
 }
 
 function ExactReplyReview({ review, confirmed, busy, onConfirm, onCancel, onSubmit }) {
+  const demo = review.target.demo === true;
   const dialog = useRef(null);
   const busyRef = useRef(busy);
   busyRef.current = busy;
@@ -141,21 +142,22 @@ function ExactReplyReview({ review, confirmed, busy, onConfirm, onCancel, onSubm
     return () => { if (root) root.inert = wasInert; document.body.style.overflow = previousOverflow; document.removeEventListener("keydown", handleKey); };
   }, []);
   return createPortal(<div className="backdrop group-review-dialog"><section ref={dialog} className="modal" role="dialog" aria-modal="true" aria-labelledby="reply-confirm-title" tabIndex={-1}>
-    <button className="close" disabled={busy} onClick={onCancel} aria-label="Close review">×</button><small>IMMUTABLE REVIEW</small><h2 id="reply-confirm-title">Confirm exact reply</h2><p>This target can be attempted once.</p>
+    <button className="close" disabled={busy} onClick={onCancel} aria-label="Close review">×</button><small>{demo ? "DEMO-SAFE REVIEW" : "IMMUTABLE REVIEW"}</small><h2 id="reply-confirm-title">Confirm exact reply</h2><p>{demo ? "Complete the presentation flow locally. Nothing will be sent to Facebook." : "This target can be attempted once."}</p>
     <div className="summary"><b>{review.target.groupName}</b><p>Post {review.target.postId} · {review.target.kind}{review.target.commentId ? ` · Comment ${review.target.commentId}` : ""}</p><b>{review.target.author}</b><p>{review.target.text}</p><a href={review.target.url} target="_blank" rel="noreferrer">View exact destination on Facebook ↗</a></div>
     <label>Exact message<textarea value={review.exactText} readOnly /></label><label className="check"><input type="checkbox" disabled={busy} checked={confirmed} onChange={(event) => onConfirm(event.target.checked)} /> I confirm this exact reply and destination</label>
-    <footer><button disabled={busy} onClick={onCancel}>Cancel</button><button className="primary" disabled={!confirmed || busy} onClick={onSubmit}>Send once</button></footer>
+    <footer><button disabled={busy} onClick={onCancel}>Cancel</button><button className="primary" disabled={!confirmed || busy} onClick={onSubmit}>{demo ? "Simulate reply" : "Send once"}</button></footer>
   </section></div>, document.body);
 }
 
 function SubmissionResult({ submission, identity }) {
   const verified = submission.state === "verified";
+  const demo = submission.demo === true;
   const timestamp = verified ? submission.finishedAt || submission.createdAt : submission.createdAt;
   const date = timestamp && !Number.isNaN(new Date(timestamp).valueOf()) ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : null;
   const evidence = submission.evidenceId ? <a href={`/api/evidence/${encodeURIComponent(submission.evidenceId)}`} target="_blank" rel="noreferrer">View app evidence ↗</a> : null;
   return <div className={`fb-submission ${verified ? "is-verified" : "is-unconfirmed"}`} role="status">
-    {verified ? <div className="fb-comment"><Avatar name={identity} /><div className="fb-comment-content"><div className="fb-comment-bubble"><b>{identity}</b><p>{submission.exactText}</p></div><div className="fb-submission-meta"><b>Verified by this app</b>{date ? <span>Verification completed {date}</span> : null}{evidence}</div></div></div> : <><b>{submission.state === "attempted" ? "Attempt in progress" : "Attempt recorded · publication unconfirmed"}</b><p className="fb-attempt-text">{submission.exactText}</p>{submission.detail ? <p>{submission.detail}</p> : null}{date ? <small>Attempt recorded {date}</small> : null}{evidence}</>}
-    <p className="fb-target-lock">Sending is locked for this target.</p>
+    {verified ? <div className="fb-comment"><Avatar name={identity} /><div className="fb-comment-content"><div className="fb-comment-bubble"><b>{identity}</b><p>{submission.exactText}</p></div><div className="fb-submission-meta"><b>{demo ? "Demo reply completed" : "Verified by this app"}</b>{date ? <span>{demo ? "Simulated" : "Verification completed"} {date}</span> : null}{evidence}</div></div></div> : <><b>{submission.state === "attempted" ? "Attempt in progress" : "Attempt recorded · publication unconfirmed"}</b><p className="fb-attempt-text">{submission.exactText}</p>{submission.detail ? <p>{submission.detail}</p> : null}{date ? <small>Attempt recorded {date}</small> : null}{evidence}</>}
+    <p className="fb-target-lock">{demo ? "Demo-safe · Nothing was sent to Facebook." : "Sending is locked for this target."}</p>
   </div>;
 }
 
