@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { Intent, StatusDot, SurfaceHead } from "./ui";
 
-export function MessengerInbox({ workspace, request, busy, setNotice, onSettings }) {
+export function MessengerInbox({ workspace, request, busy, setNotice, onSettings, onLoadDemo }) {
   const [threads, setThreads] = useState([]);
   const [selected, setSelected] = useState(null);
 
@@ -29,16 +29,16 @@ export function MessengerInbox({ workspace, request, busy, setNotice, onSettings
 
   return <section className="inbox-grid enter">
     <aside className="surface inbox-queue">
-      <SurfaceHead title="Page Inbox" subtitle={`${threads.length} conversations`} action={<StatusDot state={workspace.messenger.enabled ? "live" : "muted"} />} />
+      <SurfaceHead title="Page Inbox" subtitle={`${threads.length} conversations${threads.some((thread) => thread.demo) ? " · demo ready" : ""}`} action={<StatusDot state={workspace.messenger.enabled ? "live" : "muted"} />} />
       {workspace.mode === "fixture" ? <button className="sample-message" onClick={sample} disabled={!!busy}><span aria-hidden="true">+</span> Simulate inquiry</button> : null}
       <div className="thread-list">{threads.map((thread) => {
         const active = thread.status === "bot_active";
         return <button className={selected?.id === thread.id ? "selected" : ""} key={thread.id} onClick={() => setSelected(thread)} aria-label={`${thread.customerName}, ${active ? "bot active" : "human handoff"}`}>
           <i className="thread-avatar">{thread.customerName?.[0] || "F"}</i>
           <span><b>{thread.customerName}</b><small>{thread.messages.at(-1)?.text || "Attachment"}</small><em>{new Date(thread.lastMessageAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</em></span>
-          <span className={`thread-state ${active ? "bot" : "human"}`}>{active ? "BOT" : "HUMAN"}</span>
+          <span className={`thread-state ${active ? "bot" : "human"}`}>{thread.demo ? `DEMO · ${active ? "BOT" : "HUMAN"}` : active ? "BOT" : "HUMAN"}</span>
         </button>;
-      })}{!threads.length ? <div className="empty">No Page messages yet.</div> : null}</div>
+      })}{!threads.length ? <div className="empty">No Page messages yet.<button onClick={onLoadDemo} disabled={!!busy}>Load customer demo</button></div> : null}</div>
     </aside>
     <article className="surface conversation">{selected ? <>
       <SurfaceHead title={selected.customerName} subtitle={selected.status === "bot_active" ? "Bot is handling this conversation" : "Human handoff · bot paused"} action={<button onClick={() => updateStatus(selected.status === "bot_active" ? "human_handoff" : "bot_active")} disabled={!!busy}>{selected.status === "bot_active" ? "Take over" : "Resume bot"}</button>} />

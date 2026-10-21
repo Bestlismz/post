@@ -25,6 +25,7 @@ const viewIds = new Set(nav.map(([id]) => id));
 export default function Dashboard() {
   const [workspace, setWorkspace] = useState(null),
     [view, setView] = useState("review"),
+    [reviewTargetKey, setReviewTargetKey] = useState(null),
     [busy, setBusy] = useState(""),
     [notice, setNotice] = useState(null);
   const refresh = useCallback(async () => {
@@ -38,14 +39,19 @@ export default function Dashboard() {
     refresh().catch((e) => setNotice({ type: "error", text: e.message }));
   }, [refresh]);
   useEffect(() => {
-    const requested = new URLSearchParams(window.location.search).get("view");
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get("view");
     if (viewIds.has(requested)) setView(requested);
+    setReviewTargetKey(params.get("target"));
   }, []);
-  const navigate = useCallback((nextView) => {
+  const navigate = useCallback((nextView, targetKey = null) => {
     setView(nextView);
+    if (nextView === "review" && targetKey) setReviewTargetKey(targetKey);
     const url = new URL(window.location.href);
     if (nextView === "review") url.searchParams.delete("view");
     else url.searchParams.set("view", nextView);
+    if (nextView === "review" && targetKey) url.searchParams.set("target", targetKey);
+    else url.searchParams.delete("target");
     window.history.replaceState(null, "", url);
   }, []);
   useEffect(() => {
@@ -117,6 +123,13 @@ export default function Dashboard() {
         type: d.failed ? "warning" : "success",
         text: `Scanned ${d.completed} Groups. Found ${d.relevant} relevant leads.`,
       });
+    },
+    demo: async () => {
+      const d = await request("Loading customer demo", "/api/demo/seed", {
+        method: "POST",
+        body: "{}",
+      });
+      setNotice({ type: "success", text: d.created ? "Customer demo scenarios loaded." : "Customer demo is already ready." });
     },
   };
   return (
@@ -192,11 +205,12 @@ export default function Dashboard() {
             workspace={workspace}
             onNavigate={navigate}
             onScanAll={actions.scanAll}
+            onLoadDemo={actions.demo}
             busy={busy}
           />
         ) : null}
         {view === "leads" ? (
-          <LeadsView workspace={workspace} onReview={() => navigate("review")} />
+          <LeadsView workspace={workspace} onReview={(lead) => navigate("review", lead.key)} />
         ) : null}
         {view === "groups" ? (
           <GroupsView workspace={workspace} actions={actions} busy={busy} />
@@ -204,6 +218,7 @@ export default function Dashboard() {
         {view === "review" ? (
           <GroupReview
             workspace={workspace}
+            initialTargetKey={reviewTargetKey}
             request={request}
             busy={busy}
             setNotice={setNotice}
@@ -216,6 +231,7 @@ export default function Dashboard() {
             busy={busy}
             setNotice={setNotice}
             onSettings={() => navigate("settings")}
+            onLoadDemo={actions.demo}
           />
         ) : null}
         {view === "settings" ? (

@@ -778,6 +778,8 @@ select:focus {
 .thread-list em { display: block; margin-top: 3px; color: #98a2b3; font-size: 8px; font-style: normal; }
 .thread-state { align-self: start; padding: 4px 6px; border-radius: 5px; color: #8d5a0e; background: #fff1cf; font-size: 7px; font-weight: 800; letter-spacing: .05em; }
 .thread-state.bot { color: #087552; background: #e1f7ee; }
+.demo-chip { margin-left: 6px; padding: 3px 6px; border-radius: 999px; color: #75520a; background: #fff0c7; font-size: 7px; font-style: normal; font-weight: 800; letter-spacing: .05em; }
+.demo-note { align-self: center; color: var(--muted); font-size: 9px; font-weight: 700; }
 .conversation { display: flex; flex-direction: column; }
 .message-stream { display: flex; flex: 1; min-height: 480px; flex-direction: column; gap: 10px; padding: 20px; background: #f8f9fc; }
 .conversation-date { align-self: center; padding: 4px 8px; border-radius: 99px; color: var(--muted); background: #eaecf0; font-size: 8px; }

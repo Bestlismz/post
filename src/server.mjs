@@ -8,6 +8,7 @@ import httpProxy from "http-proxy";
 import next from "next";
 import { createSiteBrowser } from "./browser.mjs";
 import { createDraftGenerator } from "./generator.mjs";
+import { seedCustomerDemo } from "./demo.mjs";
 import { createGroupService } from "./groups.mjs";
 import { createMessengerFixture } from "./messenger-fixture.mjs";
 import { createMessengerGenerator } from "./messenger-generator.mjs";
@@ -101,6 +102,10 @@ app.use("/novnc", (request, response) => {
 app.get("/api/state", (_request, response) => {
   response.json(publicState(store.read(), runtime()));
 });
+
+app.post("/api/demo/seed", asyncRoute(async (_request, response) => {
+  response.json(await store.mutate((state) => seedCustomerDemo(state)));
+}));
 
 app.get("/api/groups", (_request, response) => {
   response.json({ groups: Object.values(store.read().groups) });

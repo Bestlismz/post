@@ -4,8 +4,8 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { buildConversation, buildConversationOptions, resolveConversationTargetKey } from "../../src/conversation.mjs";
 
-export function GroupReview({ workspace, request, busy, setNotice }) {
-  const [key, setKey] = useState(null);
+export function GroupReview({ workspace, initialTargetKey, request, busy, setNotice }) {
+  const [key, setKey] = useState(initialTargetKey ?? null);
   const [reviewing, setReviewing] = useState(false);
   const options = useMemo(() => buildConversationOptions(workspace), [workspace]);
   const activeKey = resolveConversationTargetKey(options, workspace.targets, key);
