@@ -1,0 +1,28 @@
+services:
+  poc:
+    build: .
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      POC_MODE: ${POC_MODE:-fixture}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      POC_LIVE_SUBMISSION: ${POC_LIVE_SUBMISSION:-false}
+      PORT: "3000"
+      STATE_DIR: /state/${POC_MODE:-fixture}
+      CHROME_CDP_URL: http://127.0.0.1:9222
+    volumes:
+      - browser-profile:/data/chromium
+      - app-state:/state
+    shm_size: 1gb
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+volumes:
+  browser-profile:
+  app-state:
+

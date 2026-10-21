@@ -1,0 +1,20 @@
+{
+  "name": "facebook-group-reply-poc",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "next build",
+    "start": "NODE_ENV=production node src/server.mjs",
+    "test": "node --test scripts/*.test.mjs",
+    "verify": "node scripts/verify-poc.mjs"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "http-proxy": "^1.18.1",
+    "next": "^16.4.2",
+    "openai": "^6.7.0",
+    "playwright-core": "^1.56.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  }
+}
