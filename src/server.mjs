@@ -332,15 +332,16 @@ app.post("/fixture/login", (_request, response) => {
   response.setHeader("Set-Cookie", "fixture_session=connected; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000");
   response.redirect("/fixture/groups/1001");
 });
-app.get("/fixture/groups/1001", (request, response) => {
+app.get("/fixture/groups/:groupId", (request, response) => {
+  if (!["1001", "1002"].includes(request.params.groupId)) return response.status(404).send("Fixture group not found.");
   if (!hasFixtureSession(request)) return response.redirect("/fixture/login");
-  response.send(fixtureGroup(store.read().fixtureReplies));
+  response.send(fixtureGroup(request.params.groupId, store.read().fixtureReplies));
 });
 app.post("/fixture/api/replies", asyncRoute(async (request, response) => {
   if (!hasFixtureSession(request)) throw httpError(401, "Fixture session expired.");
   const targetKey = requiredText(request.body?.targetKey, "Target key");
   const text = validReply(request.body?.text);
-  const allowed = /^fixture:1001:p[12]:(post|c[1-3])$/.test(targetKey);
+  const allowed = /^fixture:(1001|1002):p[12]:(post|c[1-3])$/.test(targetKey);
   if (!allowed) throw httpError(400, "Unknown fixture target.");
   const reply = await store.mutate((state) => {
     const value = { id: id("reply"), targetKey, text, author: "Fixture Admin", createdAt: new Date().toISOString() };
@@ -441,17 +442,22 @@ function fixtureLogin() {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/fixture/assets/fixture.css"><title>Fixture login</title></head><body class="fixture-shell"><main class="login-card"><span class="fixture-mark">f</span><h1>Facebook fixture</h1><p>This page simulates manual authentication. The cookie lives in the persistent Chromium profile.</p><form method="post" action="/fixture/login"><button type="submit">Continue as Fixture Admin</button></form></main></body></html>`;
 }
 
-function fixtureGroup(replies) {
+function fixtureGroup(groupId, replies) {
   const ownReplies = (targetKey) => replies.filter((reply) => reply.targetKey === targetKey).map((reply) => `<div class="own-reply" data-poc-own-reply data-poc-target-key="${escapeHtml(reply.targetKey)}"><b>${escapeHtml(reply.author)}</b><span>${escapeHtml(reply.text)}</span></div>`).join("");
   const comment = (postId, commentId, author, text) => {
-    const key = `fixture:1001:${postId}:${commentId}`;
+    const key = `fixture:${groupId}:${postId}:${commentId}`;
     return `<div class="comment" data-poc-comment-id="${commentId}"><b data-poc-author>${escapeHtml(author)}</b><p data-poc-comment-text>${escapeHtml(text)}</p><div class="replies">${ownReplies(key)}</div><div class="composer"><textarea data-poc-composer="comment" aria-label="Reply to ${escapeHtml(author)}"></textarea><button data-poc-submit="comment" data-target-key="${key}">Reply</button></div></div>`;
   };
   const post = (postId, author, text, comments) => {
-    const key = `fixture:1001:${postId}:post`;
+    const key = `fixture:${groupId}:${postId}:post`;
     return `<article data-poc-post-id="${postId}"><header><div class="avatar">${escapeHtml(author[0])}</div><div><b data-poc-author>${escapeHtml(author)}</b><small>Just now · Test fixture</small></div></header><p class="post-text" data-poc-post-text>${escapeHtml(text)}</p><div class="replies">${ownReplies(key)}</div><section class="comments">${comments}</section><div class="composer"><textarea data-poc-composer="post" aria-label="Write a comment"></textarea><button data-poc-submit="post" data-target-key="${key}">Comment</button></div></article>`;
   };
-  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/fixture/assets/fixture.css"><title>Bangkok Room Finder</title></head><body><nav><span class="fixture-mark">f</span><b>Facebook fixture</b><span>Fixture Admin</span></nav><main class="feed" data-poc-group-id="1001"><section class="group-head"><small>Private group · fixture</small><h1>Bangkok Room Finder Test Group</h1><p>Stable local content for repeatable browser automation.</p></section>${post("p1", "Mali", "หาห้องเช่าใกล้ BTS อ่อนนุช งบไม่เกิน 12,000 บาท ย้ายต้นเดือนหน้า", comment("p1", "c1", "Nok", "สนใจโซนอ่อนนุชเหมือนกันค่ะ") + comment("p1", "c2", "Ton", "มีห้องใกล้สถานีประมาณ 500 เมตรครับ"))}${post("p2", "Beam", "Looking for a studio near Ari. Budget 18,000 THB and pet friendly.", comment("p2", "c3", "May", "I know one building near Soi Ari 2."))}</main><script>document.addEventListener("click",async(event)=>{const button=event.target.closest("button[data-target-key]");if(!button)return;const box=button.parentElement.querySelector("textarea");const text=box.value.trim();if(!text)return;button.disabled=true;const result=await fetch("/fixture/api/replies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({targetKey:button.dataset.targetKey,text})});if(result.ok)location.reload();else{button.disabled=false;alert("Fixture submission failed");}});</script></body></html>`;
+  const ownerGroup = groupId === "1002";
+  const title = ownerGroup ? "Bangkok Condo Owners Test Group" : "Bangkok Room Finder Test Group";
+  const posts = ownerGroup
+    ? post("p1", "Narin", "เจ้าของห้องต้องการเอเจนต์ช่วยปล่อยเช่าคอนโด Ideo สุขุมวิท", comment("p1", "c1", "Pim", "มีรูปและรายละเอียดพร้อมค่ะ")) + post("p2", "Jane", "ปล่อยเช่าคอนโด 1 ห้องนอน 17,000 บาท ใกล้ BTS พระโขนง", comment("p2", "c3", "May", "ห้องว่างเดือนหน้าค่ะ"))
+    : post("p1", "Mali", "หาห้องเช่าใกล้ BTS อ่อนนุช งบไม่เกิน 12,000 บาท ย้ายต้นเดือนหน้า", comment("p1", "c1", "Nok", "สนใจโซนอ่อนนุชเหมือนกันค่ะ") + comment("p1", "c2", "Ton", "มีห้องใกล้สถานีประมาณ 500 เมตรครับ")) + post("p2", "Beam", "Looking for a studio near Ari. Budget 18,000 THB and pet friendly.", comment("p2", "c3", "May", "I know one building near Soi Ari 2."));
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/fixture/assets/fixture.css"><title>${title}</title></head><body><nav><span class="fixture-mark">f</span><b>Facebook fixture</b><span>Fixture Admin</span></nav><main class="feed" data-poc-group-id="${groupId}"><section class="group-head"><small>Private group · fixture</small><h1>${title}</h1><p>Stable local content for repeatable browser automation.</p></section>${posts}</main><script>document.addEventListener("click",async(event)=>{const button=event.target.closest("button[data-target-key]");if(!button)return;const box=button.parentElement.querySelector("textarea");const text=box.value.trim();if(!text)return;button.disabled=true;const result=await fetch("/fixture/api/replies",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({targetKey:button.dataset.targetKey,text})});if(result.ok)location.reload();else{button.disabled=false;alert("Fixture submission failed");}});</script></body></html>`;
 }
 
 function escapeHtml(value) {

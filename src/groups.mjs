@@ -3,7 +3,19 @@ import { normalizeGroupUrl, preserveSubmittedTargetKeys, upsertGroup } from "./s
 
 export function createGroupService({ store, site, analyze, isFresh = isAnalysisFresh, withBrowserLease, now = () => new Date().toISOString() }) {
   async function add(rawUrl) {
-    return store.mutate((state) => upsertGroup(state, rawUrl, now()));
+    return store.mutate((state) => {
+      try {
+        return upsertGroup(state, rawUrl, now());
+      } catch (error) {
+        const canonical = site.normalizeGroupUrl?.(rawUrl);
+        const match = canonical && new URL(canonical).pathname.match(/^\/fixture\/groups\/(\d+)$/);
+        if (!match) throw error;
+        return state.groups[match[1]] ?? (state.groups[match[1]] = {
+          id: match[1], url: canonical, name: null, enabled: true,
+          lastScanAt: null, lastScanState: "never", lastScanDetail: null, createdAt: now(),
+        });
+      }
+    });
   }
 
   async function setEnabled(groupId, enabled) {

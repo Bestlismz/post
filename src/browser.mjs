@@ -14,10 +14,11 @@ export function createSiteBrowser({ cdpUrl, mode, liveSubmissionEnabled, evidenc
     normalizeGroupUrl(raw) {
       const url = new URL(raw);
       if (mode === "fixture") {
-        if (!["127.0.0.1", "localhost"].includes(url.hostname) || url.pathname !== "/fixture/groups/1001") {
-          throw new Error("Fixture mode accepts only the built-in group URL.");
+        const match = url.pathname.match(/^\/fixture\/groups\/(1001|1002)\/?$/);
+        if (!["127.0.0.1", "localhost"].includes(url.hostname) || !match) {
+          throw new Error("Fixture mode accepts only a built-in group URL.");
         }
-        return "http://127.0.0.1:3000/fixture/groups/1001";
+        return `http://127.0.0.1:3000/fixture/groups/${match[1]}`;
       }
       if (url.protocol !== "https:" || !["facebook.com", "www.facebook.com"].includes(url.hostname)) {
         throw new Error("Live mode accepts only an HTTPS facebook.com group URL.");
@@ -137,13 +138,19 @@ async function scanFixture(page, groupUrl) {
       })),
     })),
   );
+  const groupId = new URL(groupUrl).pathname.split("/").pop();
+  const groupName = groupId === "1002" ? "Bangkok Condo Owners Test Group" : "Bangkok Room Finder Test Group";
+  return buildFixtureTargets(groupId, groupUrl, posts, groupName);
+}
+
+export function buildFixtureTargets(groupId, groupUrl, posts, groupName) {
   const targets = [];
   for (const post of posts) {
-    const postKey = `fixture:1001:${post.postId}:post`;
+    const postKey = `fixture:${groupId}:${post.postId}:post`;
     targets.push({
       key: postKey,
       kind: "post",
-      groupId: "1001",
+      groupId,
       postId: post.postId,
       commentId: null,
       url: `${groupUrl}#${post.postId}`,
@@ -155,9 +162,9 @@ async function scanFixture(page, groupUrl) {
     });
     for (const comment of post.comments) {
       targets.push({
-        key: `fixture:1001:${post.postId}:${comment.commentId}`,
+        key: `fixture:${groupId}:${post.postId}:${comment.commentId}`,
         kind: "comment",
-        groupId: "1001",
+        groupId,
         postId: post.postId,
         commentId: comment.commentId,
         url: `${groupUrl}#${comment.commentId}`,
@@ -169,7 +176,7 @@ async function scanFixture(page, groupUrl) {
       });
     }
   }
-  return { groupId: "1001", groupName: "Bangkok Room Finder Test Group", targets };
+  return { groupId, groupName, targets };
 }
 
 async function scanFacebook(page, groupUrl) {
