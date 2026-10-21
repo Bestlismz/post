@@ -27,6 +27,14 @@ const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const desktopSockets = new Set();
 let browserBusy = false;
+let browserOperation = {
+  status: "idle",
+  phase: "idle",
+  current: 0,
+  total: 0,
+  detail: "Waiting for the next browser operation",
+  updatedAt: new Date().toISOString(),
+};
 
 const site = createSiteBrowser({
   cdpUrl: process.env.CHROME_CDP_URL ?? "http://127.0.0.1:9222",
@@ -36,7 +44,7 @@ const site = createSiteBrowser({
 });
 const generateText = createDraftGenerator({ apiKey: process.env.OPENAI_API_KEY, model });
 const analyzeRelevance = createRelevanceAnalyzer({ apiKey: process.env.OPENAI_API_KEY, model });
-const groups = createGroupService({ store, site, analyze: analyzeRelevance, withBrowserLease });
+const groups = createGroupService({ store, site, analyze: analyzeRelevance, withBrowserLease, onProgress: updateBrowserOperation });
 const metaConfig = {
   pageId: process.env.META_PAGE_ID || (mode === "fixture" ? "fixture-page" : ""),
   pageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || (mode === "fixture" ? "fixture-token" : ""),
@@ -83,6 +91,7 @@ app.use("/fixture/assets", express.static(path.join(root, "fixture"), { index: f
 
 app.get("/health", (_request, response) => response.json({ ok: true, mode }));
 
+app.get("/novnc/package.json", (_request, response) => response.json({ name: "novnc", version: "system" }));
 app.use("/novnc", (request, response) => {
   if (browserBusy) return response.status(423).send("Automation is using the browser. Try again when the operation finishes.");
   request.url = request.originalUrl.replace(/^\/novnc/, "") || "/";
@@ -295,8 +304,10 @@ app.post("/api/submit", asyncRoute(async (request, response) => {
     throw httpError(409, "The draft changed after review.");
   }
 
+  updateBrowserOperation({ status: "running", phase: "preparing_reply", groupId: target.groupId, groupName: snapshot.groups[target.groupId]?.name, groupUrl: snapshot.groups[target.groupId]?.url, current: 1, total: 1, detail: `Locating ${target.kind} by ${target.author || "Facebook member"}` });
   const submission = await withBrowserLease(async () => {
     await site.preflight(target);
+    updateBrowserOperation({ status: "running", phase: "sending_reply", detail: `Sending the reviewed reply to ${target.author || "Facebook member"}` });
     const reservation = await store.mutate((state) => {
       if (state.submissions[target.key]) return { created: false, value: state.submissions[target.key] };
       const value = {
@@ -317,6 +328,7 @@ app.post("/api/submit", asyncRoute(async (request, response) => {
 
     try {
       const evidence = await site.submitOnce(target, review.exactText, reservation.value.id);
+      updateBrowserOperation({ status: evidence.verified ? "completed" : "failed", phase: evidence.verified ? "reply_verified" : "reply_unverified", detail: evidence.detail ?? "Reply attempt finished" });
       return store.mutate((state) => {
         const current = state.submissions[target.key];
         current.state = evidence.verified ? "verified" : "unknown";
@@ -327,6 +339,7 @@ app.post("/api/submit", asyncRoute(async (request, response) => {
         return current;
       });
     } catch (error) {
+      updateBrowserOperation({ status: "failed", phase: "reply_failed", detail: safeMessage(error) });
       return store.mutate((state) => {
         const current = state.submissions[target.key];
         current.state = "unknown";
@@ -443,7 +456,21 @@ function runtime() {
     openAIConfigured: Boolean(process.env.OPENAI_API_KEY),
     model,
     browserBusy,
+    browserOperation,
     messengerConfigured: Boolean(metaConfig.pageId && metaConfig.pageAccessToken && metaConfig.appSecret && metaConfig.verifyToken),
+  };
+}
+
+function updateBrowserOperation(next) {
+  const startedAt = next.status === "running" && browserOperation.status !== "running"
+    ? new Date().toISOString()
+    : browserOperation.startedAt;
+  browserOperation = {
+    ...browserOperation,
+    ...next,
+    startedAt,
+    updatedAt: new Date().toISOString(),
+    finishedAt: next.status === "completed" || next.status === "failed" ? new Date().toISOString() : null,
   };
 }
 

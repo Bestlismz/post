@@ -39,8 +39,8 @@ assert.equal(repliesAfter.replies.filter((reply) => reply.targetKey === target.k
 const dashboard = await context.newPage();
 await dashboard.goto(baseUrl, { waitUntil: "networkidle" });
 await dashboard.setViewportSize({ width: 1440, height: 1000 });
-await dashboard.getByRole("button", { name: /Fixture mode/ }).click();
-await dashboard.getByRole("button", { name: /Nok Comment/ }).click();
+await dashboard.getByRole("button", { name: "Reply review" }).click();
+await dashboard.getByRole("button", { name: /Nok/ }).click();
 await dashboard.getByRole("button", { name: "Generate reply draft" }).click();
 await dashboard.getByRole("button", { name: "Review exact reply" }).click();
 await dashboard.getByRole("dialog").waitFor({ state: "visible" });

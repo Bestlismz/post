@@ -4,6 +4,7 @@ import {
   CommandCenter,
   GroupsView,
   LeadsView,
+  OperationStatus,
   SettingsView,
 } from "./components/command-center";
 import { GroupReview } from "./components/group-review";
@@ -35,6 +36,11 @@ export default function Dashboard() {
   useEffect(() => {
     refresh().catch((e) => setNotice({ type: "error", text: e.message }));
   }, [refresh]);
+  useEffect(() => {
+    if (!busy && workspace?.browserOperation?.status !== "running") return;
+    const timer = window.setInterval(() => refresh().catch(() => undefined), 900);
+    return () => window.clearInterval(timer);
+  }, [busy, refresh, workspace?.browserOperation?.status]);
   const request = useCallback(
     async (label, url, options = {}) => {
       setBusy(label);
@@ -212,32 +218,40 @@ export default function Dashboard() {
           </div>
         ) : null}
         {view === "browser" ? (
-          <Browser busy={workspace.browserBusy || !!busy} />
+          <Browser workspace={workspace} />
         ) : null}
         {view === "activity" ? <Activity events={workspace.events} /> : null}
       </section>
     </main>
   );
 }
-function Browser({ busy }) {
+function Browser({ workspace }) {
   const [k, setK] = useState(0);
+  const locked = workspace.browserBusy;
   return (
-    <section className="surface">
-      <SurfaceHead
-        title="Persistent Chromium"
-        subtitle="Credentials stay inside this browser profile"
-        action={<button onClick={() => setK(k + 1)}>Reconnect</button>}
-      />
-      {busy ? (
-        <div className="empty">Automation owns the browser.</div>
-      ) : (
-        <iframe
-          key={k}
-          title="Remote Chromium"
-          src="/novnc/vnc.html?path=novnc/websockify&autoconnect=1&resize=scale"
+    <div className="browser-layout enter">
+      <section className="surface browser-stage">
+        <SurfaceHead
+          title="Live Facebook browser"
+          subtitle="Persistent session shared with the automation worker"
+          action={<button onClick={() => setK(k + 1)} disabled={locked}>Reconnect</button>}
         />
-      )}
-    </section>
+        {locked ? (
+          <div className="browser-lock"><span className="browser-orbit"><i/><i/><i/></span><h2>Automation has control</h2><p>Input is temporarily locked to prevent clicks from colliding with the worker.</p></div>
+        ) : (
+          <iframe
+            key={k}
+            title="Remote Chromium"
+            src="/novnc/vnc.html?path=novnc/websockify&autoconnect=1&resize=scale"
+          />
+        )}
+      </section>
+      <aside className="surface browser-status">
+        <SurfaceHead title="Operation inspector" subtitle="What the worker is doing now"/>
+        <OperationStatus operation={workspace.browserOperation}/>
+        <div className="browser-note"><b>Safe control handoff</b><p>You can browse and sign in while idle. During a scan or reply, control moves to automation and returns automatically.</p></div>
+      </aside>
+    </div>
   );
 }
 function Activity({ events }) {

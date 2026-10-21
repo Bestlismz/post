@@ -108,6 +108,7 @@ export function publicState(state, runtime) {
     openAIConfigured: runtime.openAIConfigured,
     model: runtime.model,
     browserBusy: runtime.browserBusy,
+    browserOperation: runtime.browserOperation,
     config: state.config,
     businessProfile: state.businessProfile,
     replyProfile: state.replyProfile,

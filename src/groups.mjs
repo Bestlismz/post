@@ -1,7 +1,7 @@
 import { isAnalysisFresh } from "./relevance.mjs";
 import { normalizeGroupUrl, preserveSubmittedTargetKeys, upsertGroup } from "./state.mjs";
 
-export function createGroupService({ store, site, analyze, isFresh = isAnalysisFresh, withBrowserLease, now = () => new Date().toISOString() }) {
+export function createGroupService({ store, site, analyze, isFresh = isAnalysisFresh, withBrowserLease, onProgress = () => {}, now = () => new Date().toISOString() }) {
   async function add(rawUrl) {
     return store.mutate((state) => {
       try {
@@ -27,7 +27,7 @@ export function createGroupService({ store, site, analyze, isFresh = isAnalysisF
     });
   }
 
-  async function scanOne(groupId) {
+  async function scanOne(groupId, batch = {}) {
     const snapshot = store.read();
     const group = snapshot.groups[groupId];
     if (!group) throw statusError(404, "Group not found.");
@@ -36,10 +36,12 @@ export function createGroupService({ store, site, analyze, isFresh = isAnalysisF
       state.groups[groupId].lastScanState = "scanning";
       state.groups[groupId].lastScanDetail = null;
     });
+    onProgress({ status: "running", phase: "checking_session", groupId, groupName: group.name, groupUrl: group.url, current: batch.current ?? 1, total: batch.total ?? 1, detail: "Checking the saved Facebook session" });
     try {
       const scan = await withBrowserLease(async () => {
         const session = await site.inspectSession(group.url);
         if (session.state !== "connected") throw statusError(409, "Use the browser panel to sign in before scanning.");
+        onProgress({ status: "running", phase: "reading_group", groupId, groupName: group.name, groupUrl: group.url, current: batch.current ?? 1, total: batch.total ?? 1, detail: "Reading posts and comments" });
         return site.scan(group.url);
       });
       const result = await store.mutate((state) => {
@@ -69,7 +71,9 @@ export function createGroupService({ store, site, analyze, isFresh = isAnalysisF
         }
         return { groupId, count: stableTargets.length, targets: stableTargets };
       });
+      onProgress({ status: "running", phase: "analyzing", groupId, groupName: scan.groupName ?? group.name, groupUrl: group.url, current: batch.current ?? 1, total: batch.total ?? 1, detail: `Analyzing ${result.targets.length} targets` });
       await analyzePending(result.targets.map((target) => target.key));
+      onProgress({ status: batch.keepRunning ? "running" : "completed", phase: "group_completed", groupId, groupName: scan.groupName ?? group.name, groupUrl: group.url, current: batch.current ?? 1, total: batch.total ?? 1, detail: `${result.count} targets analyzed` });
       return result;
     } catch (error) {
       await store.mutate((state) => {
@@ -78,23 +82,25 @@ export function createGroupService({ store, site, analyze, isFresh = isAnalysisF
         current.lastScanState = "failed";
         current.lastScanDetail = safeMessage(error);
       });
+      onProgress({ status: batch.keepRunning ? "running" : "failed", phase: "group_failed", groupId, groupName: group.name, groupUrl: group.url, current: batch.current ?? 1, total: batch.total ?? 1, detail: safeMessage(error) });
       throw error;
     }
   }
 
   async function scanAll() {
     const enabled = Object.values(store.read().groups).filter((group) => group.enabled);
+    onProgress({ status: "running", phase: "queue_started", current: 0, total: enabled.length, detail: `Preparing ${enabled.length} groups` });
     const outcomes = [];
-    for (const group of enabled) {
+    for (const [index, group] of enabled.entries()) {
       try {
-        const result = await scanOne(group.id);
+        const result = await scanOne(group.id, { current: index + 1, total: enabled.length, keepRunning: true });
         outcomes.push({ groupId: group.id, state: "completed", count: result.count });
       } catch (error) {
         outcomes.push({ groupId: group.id, state: "failed", detail: safeMessage(error) });
       }
     }
     const state = store.read();
-    return {
+    const summary = {
       completed: outcomes.filter((item) => item.state === "completed").length,
       failed: outcomes.filter((item) => item.state === "failed").length,
       targets: Object.keys(state.targets).length,
@@ -102,6 +108,8 @@ export function createGroupService({ store, site, analyze, isFresh = isAnalysisF
       fallback: Object.values(state.analyses).filter((item) => item.source === "deterministic_fallback").length,
       outcomes,
     };
+    onProgress({ status: summary.failed === enabled.length && enabled.length ? "failed" : "completed", phase: "queue_completed", current: enabled.length, total: enabled.length, detail: `${summary.completed} completed · ${summary.failed} failed · ${summary.relevant} relevant leads` });
+    return summary;
   }
 
   async function analyzePending(targetKeys = null) {

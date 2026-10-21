@@ -299,7 +299,7 @@ button {
 }
 .lead-list > button {
   display: grid;
-  grid-template-columns: 48px 1fr 120px;
+  grid-template-columns: 48px minmax(0, 1fr) 120px;
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -310,6 +310,9 @@ button {
   text-align: left;
   animation: rowin 200ms both;
   animation-delay: var(--delay);
+}
+.lead-list > button > span:nth-child(2) {
+  min-width: 0;
 }
 .lead-list > button:hover {
   background: #f8faff;
@@ -402,13 +405,55 @@ button {
   width: calc(100% - 36px);
   margin: 14px 18px 0;
 }
+.operation-card {
+  margin: 14px 18px 2px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f8faff;
+}
+.operation-card.active {
+  border-color: #b8caff;
+  background: linear-gradient(135deg, #edf3ff, #f7fbff);
+}
+.operation-title { display: flex; align-items: flex-start; gap: 9px; }
+.operation-title > span { display: flex; min-width: 0; flex: 1; flex-direction: column; }
+.operation-title b { font-size: 11px; }
+.operation-title small,
+.operation-detail { color: var(--muted); font-size: 9px; }
+.operation-title em { color: var(--blue); font-size: 10px; font-style: normal; font-weight: 800; }
+.operation-card > p { margin: 12px 0 8px; }
+.operation-card > p b,
+.operation-card > p small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.operation-card > p b { font-size: 10px; }
+.operation-card > p small { margin-top: 2px; color: var(--muted); font-size: 8px; }
+.operation-track { overflow: hidden; height: 5px; margin: 10px 0 7px; border-radius: 99px; background: #dfe6f3; }
+.operation-track i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--blue), #45a6ff); transition: width 300ms ease; }
+.browser-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; }
+.browser-stage,
+.browser-status { min-width: 0; }
+.browser-status { align-self: start; }
+.browser-lock { display: flex; min-height: 680px; align-items: center; justify-content: center; flex-direction: column; padding: 30px; text-align: center; background: radial-gradient(circle at 50% 45%, #edf3ff, #fff 52%); }
+.browser-lock h2 { margin: 20px 0 5px; font-size: 18px; }
+.browser-lock p { max-width: 380px; margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.browser-orbit { position: relative; width: 66px; height: 66px; border: 1px solid #b9caff; border-radius: 50%; animation: spin 3s linear infinite; }
+.browser-orbit:after { content: ""; position: absolute; inset: 12px; border: 1px solid #d4dfff; border-radius: 50%; }
+.browser-orbit i { position: absolute; width: 8px; height: 8px; border-radius: 50%; background: var(--blue); box-shadow: 0 0 0 5px #2457e61d; }
+.browser-orbit i:nth-child(1) { top: -4px; left: 29px; }
+.browser-orbit i:nth-child(2) { right: 2px; bottom: 10px; background: var(--mint); }
+.browser-orbit i:nth-child(3) { bottom: 9px; left: 2px; background: #45a6ff; }
+.browser-note { margin: 12px 18px 18px; padding: 12px; border-radius: 10px; background: #f4f6f9; }
+.browser-note b { font-size: 10px; }
+.browser-note p { margin: 5px 0 0; color: var(--muted); font-size: 9px; line-height: 1.5; }
 .filters {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   padding: 13px 18px;
   border-bottom: 1px solid var(--line);
 }
+.filters select { min-width: 0; max-width: 100%; }
 select,
 input,
 textarea {
@@ -545,7 +590,7 @@ select:focus {
 }
 .targets > button {
   display: grid;
-  grid-template-columns: 36px 1fr auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 10px;
   width: 100%;
   padding: 12px 7px;
@@ -553,6 +598,9 @@ select:focus {
   border-bottom: 1px solid #edf0f4;
   background: transparent;
   text-align: left;
+}
+.targets > button > span {
+  min-width: 0;
 }
 .targets > button.selected {
   border-radius: 9px;
@@ -608,7 +656,7 @@ select:focus {
 }
 .activity > div {
   display: grid;
-  grid-template-columns: 12px 145px 160px 1fr;
+  grid-template-columns: 12px 145px 160px minmax(0, 1fr);
   gap: 9px;
   padding: 10px 0;
   border-bottom: 1px solid var(--line);
@@ -639,7 +687,7 @@ select:focus {
 }
 .thread-list > button {
   display: grid;
-  grid-template-columns: 38px 1fr 10px;
+  grid-template-columns: 38px minmax(0, 1fr) 10px;
   gap: 9px;
   align-items: center;
   width: 100%;
@@ -766,6 +814,7 @@ select:focus {
     filter: drop-shadow(0 20px 28px #2457e64a);
   }
 }
+@keyframes spin { to { transform: rotate(360deg); } }
 @media (max-width: 1050px) {
   .metrics {
     grid-template-columns: repeat(2, 1fr);
@@ -780,6 +829,8 @@ select:focus {
   .inbox-grid { grid-template-columns: 220px 1fr; }
   .inbox-grid .insight { grid-column: 1 / -1; }
   .reply-settings { grid-template-columns: 1fr; }
+  .browser-layout { grid-template-columns: 1fr; }
+  .browser-status { order: -1; }
 }
 @media (max-width: 800px) {
   .app-shell {
@@ -809,6 +860,15 @@ select:focus {
   .system-pill span {
     display: none;
   }
+  .overview .operations { order: -1; }
+  .filters select { flex: 1 1 140px; }
+  .lead-list > button { grid-template-columns: 42px minmax(0, 1fr); }
+  .lead-list .place { display: flex; grid-column: 2; gap: 8px; text-align: left; }
+  .activity > div { grid-template-columns: 12px minmax(0, 1fr); }
+  .activity > div .status-dot { grid-column: 1; grid-row: 1 / span 3; }
+  .activity > div time,
+  .activity > div b,
+  .activity > div > span { grid-column: 2; min-width: 0; overflow-wrap: anywhere; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,

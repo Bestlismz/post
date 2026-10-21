@@ -55,6 +55,31 @@ test("scans enabled groups sequentially and continues after one failure", async 
   assert.ok(store.read().targets["live:300:new:post"]);
 });
 
+test("reports the current group and phase while scanning a queue", async () => {
+  const state = migrateState({}, "2026-10-21T00:00:00.000Z");
+  for (const id of ["100", "200"]) state.groups[id] = { id, url: `https://www.facebook.com/groups/${id}`, name: `Group ${id}`, enabled: true, lastScanAt: null, lastScanState: "never", lastScanDetail: null, createdAt: "2026-10-21T00:00:00.000Z" };
+  const store = fakeStore(state);
+  const progress = [];
+  const site = {
+    inspectSession: async () => ({ state: "connected" }),
+    scan: async (url) => {
+      const id = url.match(/(\d+)$/)[1];
+      return { groupId: id, groupName: `Group ${id}`, targets: [] };
+    },
+  };
+  const service = createGroupService({ store, site, analyze: async () => {}, withBrowserLease: (fn) => fn(), onProgress: (event) => progress.push(event), now: () => "2026-10-21T00:00:00.000Z" });
+
+  await service.scanAll();
+
+  assert.equal(progress[0].phase, "queue_started");
+  assert.deepEqual(progress.filter((event) => event.phase === "reading_group").map(({ groupId, current, total }) => ({ groupId, current, total })), [
+    { groupId: "100", current: 1, total: 2 },
+    { groupId: "200", current: 2, total: 2 },
+  ]);
+  assert.equal(progress.at(-1).phase, "queue_completed");
+  assert.equal(progress.at(-1).status, "completed");
+});
+
 test("analyzes only missing or stale targets", async () => {
   const state = migrateState({}, "2026-10-21T00:00:00.000Z");
   state.targets.a = { key: "a", fingerprint: "a1", text: "A", postText: "A", context: [] };
