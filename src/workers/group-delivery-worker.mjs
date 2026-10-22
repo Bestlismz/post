@@ -16,7 +16,12 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
   async function claimJob(intentId=null) {
     const leaseOwner=randomUUID();
     const {rows:[job]}=await pool.query(`WITH candidate AS (
-      SELECT j.id FROM jobs j WHERE j.kind='deliver_group_reply'
+      SELECT j.id FROM jobs j
+      JOIN delivery_intents d ON d.organization_id=j.organization_id AND d.id=j.payload->>'deliveryIntentId'
+      JOIN group_sources s ON s.organization_id=d.organization_id AND s.id=d.group_source_id
+      JOIN organizations o ON o.id=j.organization_id
+      WHERE j.kind='deliver_group_reply' AND NOT o.group_automation_paused AND NOT s.kill_switch AND NOT s.archived
+      AND NOT s.session_circuit AND NOT s.selector_circuit AND s.session_health='healthy' AND s.selector_health='healthy'
       AND ($2::text IS NULL OR j.payload->>'deliveryIntentId'=$2)
       AND ((j.status='pending' AND j.available_at<=now()) OR (j.status='running' AND j.lease_expires_at<=now()))
       AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.organization_id=j.organization_id AND a.delivery_intent_id=j.payload->>'deliveryIntentId')
@@ -72,7 +77,14 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
     if(!intent||!intent.group_source_id||intent.source_id)return {state:'failed',code:'INTENT_NOT_FOUND',retrySafe:false};
     await recoverInterruptedAttempts(intent.id);
     const prior=await withTransaction(pool,async tx=>{await lockIntent(tx,intent);return existing(tx,intent);});if(prior)return prior;
-    claim??=await claimJob(intent.id);if(!claim)return {state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true};
+    claim??=await claimJob(intent.id);
+    if(!claim) {
+      const {rows:[availability]}=await pool.query(`SELECT o.group_automation_paused,s.kill_switch,s.archived,s.session_circuit,s.selector_circuit,s.session_health,s.selector_health
+        FROM group_sources s JOIN organizations o ON o.id=s.organization_id WHERE s.organization_id=$1 AND s.id=$2`,[intent.organization_id,intent.group_source_id]);
+      const unavailable=availability&&(availability.group_automation_paused||availability.kill_switch||availability.archived||availability.session_circuit||availability.selector_circuit||availability.session_health!=='healthy'||availability.selector_health!=='healthy');
+      if(unavailable)return withTransaction(pool,async tx=>{await lockIntent(tx,intent);return await existing(tx,intent)??cancel(tx,intent,'SOURCE_UNAVAILABLE');});
+      return {state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true};
+    }
     const attemptId=randomUUID(),operationId=randomUUID();let attempted=false,operation;
     try {
       const gate=await withTransaction(pool,async tx=>{

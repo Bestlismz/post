@@ -5,7 +5,8 @@ import {createAutomationWorker} from './workers/automation-worker.mjs';
 import {createMetaDeliveryWorker} from './workers/meta-delivery-worker.mjs';
 import {createMetaCredentialRepository} from './channels/meta/credentials.mjs';
 import {metaConnectionConfig} from './channels/meta/oauth.mjs';
-import {runWorkers} from './workers/runner.mjs';
+import {runApplicationRuntimes} from './workers/runner.mjs';
+import {createGroupScheduler} from './workers/scheduler.mjs';
 
 const controller=new AbortController();
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>controller.abort());
@@ -23,9 +24,15 @@ try {
   const automation=createAutomationWorker({pool,service,workerId:`messenger-${process.pid}`});
   const credentials=createMetaCredentialRepository({pool,keys:tokenConfig.keys,keyVersion:tokenConfig.keyVersion});
   const delivery=createMetaDeliveryWorker({pool,credentials});
+  const running=runApplicationRuntimes({automation,delivery,controller,env:process.env,createScheduler:config=>createGroupScheduler({pool,supportedSelectorVersions:config.supportedSelectorVersions,batchSize:config.schedulerBatchSize,tickTimeoutMs:config.schedulerTickTimeoutMs}),
+    onWorkerError:code=>process.stderr.write(code+'\n'),onSchedulerEvent:event=>{
+      const line=event.code==='SCHEDULER_TICK_COMPLETED'?{code:event.code,scheduled:event.scheduled,skipped:event.skipped,considered:event.considered}:event;
+      (event.code==='SCHEDULER_TICK_FAILED'?process.stderr:process.stdout).write(JSON.stringify(line)+'\n');
+    }});
   process.stdout.write('Messenger worker started.\n');
-  await runWorkers({automation,delivery,signal:controller.signal,onError:code=>process.stderr.write(code+'\n')});
+  process.stdout.write('Group scheduler started.\n');
+  await running;
 } catch {
-  process.stderr.write('Messenger worker startup failed. Check runtime permissions and provider configuration.\n');
+  process.stderr.write('Application worker startup failed. Check runtime permissions and provider configuration.\n');
   process.exitCode=1;
 } finally {await pool?.end();}

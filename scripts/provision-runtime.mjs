@@ -35,6 +35,10 @@ const grants = {
   group_scan_receipts: "SELECT",
   group_observations: "SELECT",
   group_targets: "SELECT",
+  group_source_schedules: "SELECT, INSERT, UPDATE (enabled, cadence_minutes, time_zone, days, start_local, end_local, daily_limit, maintenance_windows, revision, updated_at)",
+  group_schedule_receipts: "SELECT",
+  automation_control_receipts: "SELECT, INSERT",
+  group_scan_dispatches: "SELECT",
 };
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 
@@ -72,12 +76,17 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     workerTables.add('group_operations');
     for(const table of ['group_scan_receipts','group_observations','group_targets']) workerTables.add(table);
     for(const table of ['group_delivery_attempts','group_send_receipts']) workerTables.add(table);
+    for(const table of ['group_source_schedules','group_schedule_receipts']) workerTables.add(table);
+    workerTables.add('group_scan_dispatches');
     for (const [table, webPermissions] of Object.entries(grants)) {
       if(profile==='worker' && !workerTables.has(table))continue;
       const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':
         profile==='worker' && table==='group_sources'?'SELECT, UPDATE (session_health, selector_health, selector_version, session_circuit, selector_circuit, selector_failures, last_result_order, updated_at)':
         profile==='worker' && ['group_scan_receipts','group_observations'].includes(table)?'SELECT, INSERT':
         profile==='worker' && ['group_delivery_attempts','group_send_receipts'].includes(table)?'SELECT, INSERT':
+        profile==='worker' && table==='group_source_schedules'?'SELECT':
+        profile==='worker' && table==='group_schedule_receipts'?'SELECT, INSERT':
+        profile==='worker' && table==='group_scan_dispatches'?'SELECT, INSERT':
         profile==='worker' && table==='group_targets'?'SELECT, INSERT, UPDATE (observation_id, operation_order)':
         profile==='worker' && ['projects','units'].includes(table)?'SELECT, UPDATE (id)':
         profile==='worker' && table==='organizations'?'SELECT, UPDATE (id)':
