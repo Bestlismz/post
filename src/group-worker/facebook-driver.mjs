@@ -27,11 +27,19 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
   let senderId=null;
   async function locateExactTarget(command) {
     const identity=targetIdentity(command.targetId);
-    const indexes=await page.locator('[role="article"]').evaluateAll((articles,{groupId,postId,commentId})=>articles.flatMap((article,index)=>{
+    const locate=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId,commentId})=>articles.flatMap((article,index)=>{
       const owned=Array.from(article.querySelectorAll('a[href]')).filter(link=>link.closest('[role="article"]')===article);
       const matches=owned.filter(link=>{try{const url=new URL(link.href),path=url.pathname.match(/^\/groups\/(\d+)\/posts\/(\d+)\/?$/);return url.origin==='https://www.facebook.com'&&path?.[1]===groupId&&path[2]===postId&&(url.searchParams.get('comment_id')??null)===commentId;}catch{return false;}});
       return matches.length===1?[index]:[];
     }),{groupId:command.groupId,postId:identity.postId,commentId:identity.commentId});
+    let indexes=await locate();
+    if(indexes.length===0&&typeof page.goto==='function') {
+      const target=new URL(`/groups/${command.groupId}/posts/${identity.postId}/`,'https://www.facebook.com');
+      if(identity.commentId)target.searchParams.set('comment_id',identity.commentId);
+      await page.goto(target.href,{waitUntil:'domcontentloaded'});
+      await page.waitForTimeout?.(500);
+      indexes=await locate();
+    }
     if(indexes.length!==1)throw Error('Exact Facebook target unavailable');
     return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,groupId:command.groupId,scope:page.locator('[role="article"]').nth(indexes[0]),identity};
   }

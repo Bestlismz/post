@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, MessagesSquare, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ExternalLink, MessagesSquare, Plus, RefreshCw, ShieldCheck, Unplug, X } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
 import { BrowserRecovery } from "./browser-recovery";
 import { createOperationPoller } from "./operation-poller.mjs";
@@ -24,6 +24,7 @@ export default function SourcesPage() {
   const [expanded, setExpanded] = useState(null);
   const [browserHealth, setBrowserHealth] = useState({});
   const [recovery, setRecovery] = useState(null);
+  const [pagePicker, setPagePicker] = useState(null);
   const [operationIssues, dispatchOperationIssue] = useReducer(operationStatusReducer, {});
   const csrfRef = useRef("");
   const pollersRef = useRef(new Map());
@@ -35,6 +36,18 @@ export default function SourcesPage() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const pendingId = new URLSearchParams(window.location.search).get("meta");
+    if (!pendingId) return undefined;
+    let cancelled = false;
+    setBusy("page-picker");
+    void api.request(`/api/meta/connection/${encodeURIComponent(pendingId)}/pages`).then((pages) => {
+      if (cancelled) return;
+      setPagePicker({ pendingId, pages });
+      window.history.replaceState({}, "", "/sources");
+    }).catch((error) => { if (!cancelled) setNotice(error.status === 410 ? "รายการเชื่อมต่อหมดอายุ กรุณาเริ่มใหม่" : error.message); }).finally(() => { if (!cancelled) setBusy(""); });
+    return () => { cancelled = true; };
+  }, []);
   useEffect(() => {
     const pendingSources = data.groups.filter((source) => source.latestOperation?.state === "queued" && operationIssues[source.latestOperation.operationId]?.state !== "retry_required");
     const pending = new Set(pendingSources.map((source) => source.latestOperation.operationId));
@@ -119,20 +132,50 @@ export default function SourcesPage() {
     catch (error) { setNotice(`หน้าต่างถูกปิดแล้ว แต่การยกเลิก lease ต้องรอหมดอายุ: ${error.message}`); }
     finally { await load(); }
   }
+  async function connectPage() {
+    setBusy("page-connect"); setNotice("");
+    try {
+      const result = await mutate("/api/meta/connection/begin");
+      const target = new URL(result.authorizationUrl);
+      if (target.protocol !== "https:" || target.hostname !== "www.facebook.com" || !/^\/v\d+\.\d+\/dialog\/oauth$/.test(target.pathname)) throw new Error("ลิงก์อนุญาต Facebook ไม่ถูกต้อง");
+      window.location.assign(target.href);
+    } catch (error) { setNotice(error.status === 503 ? "ยังไม่ได้ตั้งค่า Meta App สำหรับระบบนี้" : error.message); setBusy(""); }
+  }
+  async function selectPage(pageId) {
+    if (!pagePicker) return;
+    setBusy("page-select");
+    try { await mutate(`/api/meta/connection/${encodeURIComponent(pagePicker.pendingId)}/select`, { body: { pageId } }); setPagePicker(null); setNotice("เชื่อมต่อ Facebook Page และเปิดรับ Messenger แล้ว"); await load(); }
+    catch (error) { setNotice(error.message); }
+    finally { setBusy(""); }
+  }
+  async function checkPage(page) {
+    setBusy(`${page.id}:page-health`);
+    try { const next = await api.request(`/api/meta/sources/${encodeURIComponent(page.id)}/health`); setData((current) => ({ ...current, pages: current.pages.map((entry) => entry.id === page.id ? { ...entry, ...next } : entry) })); setNotice("อัปเดตสถานะ Facebook Page แล้ว"); }
+    catch (error) { setNotice(error.message); }
+    finally { setBusy(""); }
+  }
+  async function disconnectPage(page) {
+    if (!window.confirm(`ยกเลิกการเชื่อมต่อ ${page.name}? ระบบจะหยุดรับและตอบ Messenger ของเพจนี้`)) return;
+    setBusy(`${page.id}:disconnect`);
+    try { const next = await mutate(`/api/meta/sources/${encodeURIComponent(page.id)}/disconnect`); setData((current) => ({ ...current, pages: current.pages.map((entry) => entry.id === page.id ? { ...entry, ...next } : entry) })); setNotice("ยกเลิกการเชื่อมต่อ Facebook Page แล้ว"); }
+    catch (error) { setNotice(error.message); }
+    finally { setBusy(""); }
+  }
 
   return <div className="ops-page sources-page">
     <header className="ops-heading"><div><p>Connections &amp; health</p><h1>แหล่งข้อมูล Facebook</h1><span>เพจและกลุ่มที่ได้รับอนุญาต พร้อมสถานะสแกนและ browser session จากระบบจริง</span></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => setAddOpen(true)}><Plus size={17}/>เพิ่มกลุ่ม</button> : null}</header>
     {notice ? <div className="ops-notice" role="status"><CheckCircle2 size={17}/><span>{notice}</span><button aria-label="ปิดข้อความ" onClick={() => setNotice("")}><X size={16}/></button></div> : null}
     {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={() => load()}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
     <div className="ops-content">
-      <section className="ops-section" aria-labelledby="page-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="page-source-title">Facebook Page</h2><p>Messenger ผ่าน Meta API ทางการ</p></div></div><span className="ops-count">{data.pages.length} เพจ</span></div>
-        {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div><strong>{page.name}</strong><p>รับข้อความและส่งคำตอบผ่าน Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : "ต้องตรวจสอบการเชื่อมต่อ"}</span></article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div></div>}
+      <section className="ops-section" aria-labelledby="page-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="page-source-title">Facebook Page</h2><p>Messenger ผ่าน Meta API ทางการ</p></div></div><div className="page-section-actions"><span className="ops-count">{data.pages.length} เพจ</span>{data.actorRole === "admin" ? <button className="ops-button ops-button--secondary" type="button" disabled={busy === "page-connect"} onClick={() => void connectPage()}><ExternalLink size={16}/>เชื่อมต่อเพจ</button> : null}</div></div>
+        {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div><strong>{page.name}</strong><p>รับข้อความและส่งคำตอบผ่าน Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : page.health === "disconnected" ? "ยกเลิกแล้ว" : "ต้องตรวจสอบ"}</span>{data.actorRole === "admin" ? <div className="page-row-actions"><button type="button" disabled={busy.startsWith(page.id)} onClick={() => void checkPage(page)}><RefreshCw size={15}/>ตรวจสถานะ</button>{page.health !== "disconnected" ? <button className="is-danger" type="button" disabled={busy.startsWith(page.id)} onClick={() => void disconnectPage(page)}><Unplug size={15}/>ยกเลิก</button> : null}</div> : null}</article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => void connectPage()}>เชื่อมต่อ Facebook Page</button> : null}</div>}
       </section>
       <section className="ops-section" aria-labelledby="group-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="group-source-title">Facebook Groups</h2><p>ลิงก์ถาวรหลายกลุ่ม โหมดแยกต่อแหล่ง และหลักฐานการสแกนล่าสุด</p></div></div><span className="ops-count">{data.groups.length} กลุ่ม</span></div>
         <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} operationIssue={operationIssues[source.latestOperation?.operationId]} onMode={setMode} onScan={scan} onRetry={retryOperation} onInspect={inspect} onRecovery={beginRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
       </section>
     </div>
     {addOpen ? <div className="ops-dialog-backdrop"><form className="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="add-group-title" onSubmit={addGroup}><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => { setAddOpen(false); setFormError(""); }}><X size={18}/></button><span className="ops-dialog__eyebrow">New source</span><h2 id="add-group-title">เพิ่ม Facebook Group</h2><p>วางลิงก์กลุ่มที่ทีมของคุณได้รับอนุญาตให้ติดตาม ระบบจะบันทึกเป็นลิงก์ถาวรให้</p><label>ลิงก์ Facebook Group<input aria-label="ลิงก์ Facebook Group" autoFocus value={groupUrl} onChange={(event) => setGroupUrl(event.target.value)} placeholder="https://www.facebook.com/groups/1742522453522327"/></label>{formError ? <div className="ops-field-error" role="alert">{formError}</div> : null}<footer><button className="ops-button ops-button--secondary" type="button" onClick={() => setAddOpen(false)}>ยกเลิก</button><button className="ops-button ops-button--primary" disabled={busy === "add"}>ยืนยันเพิ่มกลุ่ม</button></footer></form></div> : null}
+    {pagePicker ? <div className="ops-dialog-backdrop"><section className="ops-dialog page-picker" role="dialog" aria-modal="true" aria-labelledby="page-picker-title"><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => setPagePicker(null)}><X size={18}/></button><span className="ops-dialog__eyebrow">Messenger access</span><h2 id="page-picker-title">เลือก Facebook Page</h2><p>เลือกเพจที่ต้องการรับข้อความและตอบผ่าน Rental Radar</p><div className="page-picker__list">{pagePicker.pages.length ? pagePicker.pages.map((page) => <button type="button" key={page.id} disabled={busy === "page-select"} onClick={() => void selectPage(page.id)}><span className="page-source-row__mark"><MessagesSquare size={18}/></span><span><strong>{page.name}</strong><small>Page ID {page.id}</small></span><CheckCircle2 size={18}/></button>) : <div className="ops-empty"><AlertTriangle size={22}/><div><strong>ไม่พบเพจที่มีสิทธิ์ Messenger</strong><p>ตรวจสอบบทบาทในเพจและสิทธิ์ที่อนุญาตให้แอป</p></div></div>}</div></section></div> : null}
     {recovery ? <BrowserRecovery recovery={recovery} onClose={closeRecovery}/> : null}
   </div>;
 }

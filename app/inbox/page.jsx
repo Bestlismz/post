@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../lib/api-client.mjs";
+import { retryOnceWithFreshCsrf } from "../lib/csrf-retry.mjs";
 import { canonicalInboxHref, inboxHref, readInboxRouteState } from "../lib/routes.mjs";
 import { FocusSheet } from "./focus-sheet";
 import { InboxTable } from "./inbox-queue";
@@ -111,11 +112,14 @@ function InboxWorkspace() {
   const runCommand = useCallback(async (action, input = {}) => {
     if (!detail) return null;
     const revision = detail.processingRevision;
-    if (action === "prepare") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/prepare`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken }), body: "{}" });
-    if (action === "handoff") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/handoff`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken }), body: JSON.stringify({ reason: input.reason ?? "ส่งต่อให้ทีมดูแลจาก Inbox" }) });
-    if (action === "edit") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/edit`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken }), body: JSON.stringify({ text: input.text }) });
-    if (action === "approve") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/approve`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken }), body: "{}" });
-    throw new Error("Unsupported Inbox command");
+    const request = (token) => {
+      if (action === "prepare") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/prepare`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: "{}" });
+      if (action === "handoff") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/handoff`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: JSON.stringify({ reason: input.reason ?? "ส่งต่อให้ทีมดูแลจาก Inbox" }) });
+      if (action === "edit") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/edit`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
+      if (action === "approve") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/approve`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: "{}" });
+      throw new Error("Unsupported Inbox command");
+    };
+    return retryOnceWithFreshCsrf({ token: csrfToken, request, refresh: async () => (await api.request("/api/auth/csrf", { method: "POST" })).csrfToken, onRefresh: setCsrfToken });
   }, [csrfToken, detail]);
 
   return <section className="inbox-table-view" aria-label="กล่องข้อความรวม">

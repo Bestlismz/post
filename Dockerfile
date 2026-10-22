@@ -15,6 +15,8 @@ COPY src/channels ./src/channels
 COPY src/workers ./src/workers
 COPY src/replies ./src/replies
 COPY src/policy ./src/policy
+COPY src/sources ./src/sources
+COPY src/automation ./src/automation
 COPY src/config.mjs src/server.mjs src/worker.mjs src/meta-webhook.mjs src/conversation.mjs ./src/
 COPY app ./app
 COPY public ./public

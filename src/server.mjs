@@ -30,7 +30,7 @@ const shutdown=new AbortController();
 const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env });
 const groupSigning=groupCommandKeyConfig(process.env,{optional:true});
 const groupKeys=groupSigning?.keys??{},groupKeyId=groupSigning?.keyId??'',groupKey=groupSigning?.key;
-const sourceService=createSourceService(pool,{signingKey:groupKey,keyId:groupKeyId,supportedSelectorVersions:(process.env.GROUP_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean)});
+const sourceService=createSourceService(pool,{signingKey:groupKey,keyId:groupKeyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean)});
 const recoveryClient=groupKey?createGroupRecoveryClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',keys:groupKeys,keyId:groupKeyId,key:groupKey}):null;
 const recovery={
   start:input=>recoveryClient?recoveryClient.start(input):Promise.reject(httpError(503,'Group worker unavailable')),
@@ -52,7 +52,10 @@ app.use(createMetaConnectionRouter({ pool, config, connection: metaConnection })
 app.use(createInboxRouter({pool,config,events:{signal:shutdown.signal}}));
 app.use(createAutomationRouter({pool,config}));
 app.use(createSourceRouter({pool,config,recovery,registry:recoveryRegistry,proxyHttp:(request,response)=>recoveryProxy.web(request,response),sourceService}));
-app.get("/health", (_request, response) => response.json({ ok: true }));
+app.get("/health", async (_request, response) => {
+  try { await Promise.all([pool.query("SELECT 1"), frontendReady ??= frontend.prepare()]); response.json({ ok: true }); }
+  catch { response.status(503).json({ ok: false }); }
+});
 app.use(["/api", "/fixture", "/novnc"], (_request, response) => response.status(404).json({ error: "Resource not found", fieldErrors: {} }));
 app.use(async (request, response) => {
   frontendReady ??= frontend.prepare();

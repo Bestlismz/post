@@ -32,23 +32,33 @@ function Menu({ buttonRef, open, onClose, label, children, activeIndex = 0 }) {
 }
 
 export function AppShell({ children }) {
-  const [session, setSession] = useState({ user: null, csrfToken: "", facebook: null });
+  const [session, setSession] = useState({ state: "loading", user: null, csrfToken: "", facebook: null });
   const [accountOpen, setAccountOpen] = useState(false);
   const pathname = usePathname(), router = useRouter();
   const accountButton = useRef(null);
 
+  const publicRoute = pathname === "/login" || pathname === "/settings/meta/callback";
   useEffect(() => {
+    if (publicRoute) { setSession((value) => ({ ...value, state: "public" })); return undefined; }
     let cancelled = false;
+    setSession((value) => ({ ...value, state: "loading" }));
     Promise.allSettled([api.request("/api/me"), api.request("/api/facebook/session-summary")]).then(([identity, facebook]) => {
       if (cancelled) return;
+      if (identity.status === "rejected" && identity.reason?.status === 401) {
+        const next = ["/inbox", "/properties", "/sources", "/automations", "/settings"].includes(pathname) ? pathname : "/inbox";
+        router.replace(`/login?next=${encodeURIComponent(next)}`);
+        setSession((value) => ({ ...value, state: "signed_out", user: null }));
+        return;
+      }
       setSession({
+        state: identity.status === "fulfilled" ? "signed_in" : "unavailable",
         user: identity.status === "fulfilled" ? identity.value?.user ?? null : null,
         csrfToken: "",
         facebook: facebook.status === "fulfilled" ? facebook.value : null,
       });
     });
     return () => { cancelled = true; };
-  }, []);
+  }, [pathname, publicRoute, router]);
 
   const active = routes.find((route) => route.path === pathname) ?? routes[0];
   const closeAccount = useCallback((restore) => { setAccountOpen(false); if (restore) requestAnimationFrame(() => accountButton.current?.focus()); }, []);
@@ -56,9 +66,13 @@ export function AppShell({ children }) {
     const csrfToken = session.csrfToken || (await api.request("/api/auth/csrf", { method: "POST" }))?.csrfToken;
     if (!csrfToken) return;
     await api.request("/api/auth/logout", { method: "POST", headers: { "X-CSRF-Token": csrfToken }, body: "{}" });
-    setSession((value) => ({ ...value, user: null, csrfToken: "" })); closeAccount(false); router.replace("/");
+    setSession((value) => ({ ...value, state: "signed_out", user: null, csrfToken: "" })); closeAccount(false); router.replace("/login");
   };
   const facebook = session.facebook, fbConnected = facebook?.state === "connected", fbName = fbConnected ? facebook?.identity?.displayName : null, avatar = safeAvatar(facebook?.identity?.avatarUrl);
+
+  if (publicRoute) return children;
+  if (session.state === "unavailable") return <main className="rr-session-boundary"><span className="rr-session-boundary__mark">R</span><h1>เชื่อมต่อระบบไม่ได้</h1><p>กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่</p><button type="button" onClick={() => window.location.reload()}>ลองอีกครั้ง</button></main>;
+  if (session.state !== "signed_in") return <main className="rr-session-boundary" aria-label="กำลังตรวจสอบบัญชี"><span className="rr-session-boundary__mark">R</span><p>กำลังตรวจสอบบัญชี…</p></main>;
 
   return <div className="rr-shell">
     <header className="rr-topbar">
