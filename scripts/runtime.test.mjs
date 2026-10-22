@@ -11,13 +11,14 @@ test("production image runs only the web process without browser or fixture asse
   assert.doesNotMatch(server, /import\(["'].*(?:fixture|import-json-state)/);
 });
 
-test("Compose declares only postgres and web with health checks and separated future browser storage", async () => {
+test("Compose separates Messenger worker and future browser storage from the web process", async () => {
   await assert.rejects(access(new URL("../compose.yaml", import.meta.url)), { code: "ENOENT" });
   const compose = await readFile(new URL("../docker-compose.yml", import.meta.url), "utf8");
   assert.match(compose, /\n  postgres:/);
   assert.match(compose, /\n  web:/);
   const services = compose.slice(compose.indexOf("services:"), compose.indexOf("\nvolumes:"));
-  assert.doesNotMatch(services, /\n  (?:worker|group-worker|browser):/);
+  assert.match(services, /\n  worker:/);
+  assert.doesNotMatch(services, /\n  (?:group-worker|browser):/);
   assert.equal((compose.match(/healthcheck:/g) ?? []).length, 2);
   assert.match(compose, /condition: service_healthy/);
   const web = services.slice(services.indexOf("\n  web:"));

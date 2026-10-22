@@ -92,11 +92,27 @@ export async function getInboxItem(pool, id, actor) {
       'direction',tm.direction,'processingRevision',tm.processing_revision,
       'createdAt',to_char(tm.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
       ORDER BY tm.processing_revision,tm.id),'[]'::jsonb)
-      FROM messages tm WHERE tm.organization_id=w.organization_id AND tm.conversation_id=w.conversation_id) AS timeline
+      FROM (SELECT * FROM messages WHERE organization_id=w.organization_id AND conversation_id=w.conversation_id ORDER BY processing_revision DESC LIMIT 100) tm) AS timeline,
+    (SELECT coalesce(jsonb_agg(r),'[]') FROM (SELECT id,version,conversation_revision AS "processingRevision",content->>'text' AS text
+      FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 20) r) AS replies,
+    (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",
+      CASE WHEN a.state='attempting' THEN 'unknown' ELSE coalesce(a.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
+      a.provider_message_id AS "providerMessageId"
+      FROM delivery_intents di JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id
+      LEFT JOIN delivery_attempts a ON a.organization_id=di.organization_id AND a.delivery_intent_id=di.id
+      LEFT JOIN delivery_cancellations dc ON dc.organization_id=di.organization_id AND dc.delivery_intent_id=di.id
+      WHERE di.organization_id=w.organization_id AND rv.work_item_id=w.id ORDER BY di.created_at DESC LIMIT 20) d) AS deliveries,
+    (SELECT coalesce(jsonb_agg(jsonb_build_object('receiptId',e.payload->'receiptId','resourceId',e.payload->'resourceId',
+      'resourceType',e.payload->'resourceType','state',e.payload->'state') ORDER BY e.event_position),'[]') FROM (SELECT payload,event_position FROM outbox
+      WHERE organization_id=w.organization_id AND kind IN ('inbox.changed','inbox.operation')
+      AND (payload->>'resourceId'=w.id OR payload->>'resourceId'=w.conversation_id
+        OR payload->>'resourceId' IN (SELECT id FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id)
+        OR payload->>'resourceId' IN (SELECT di.id FROM delivery_intents di JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id WHERE di.organization_id=w.organization_id AND rv.work_item_id=w.id))
+      ORDER BY event_position DESC LIMIT 100) e) AS events
     ${relations} WHERE w.organization_id=$1 AND w.id=$2`, [organizationId, id]);
   if (!row) return null;
   return { ...itemDto(row), timeline: row.timeline.map((message) => ({
     id: message.id, text: message.text, direction: message.direction,
     processingRevision: message.processingRevision, createdAt: message.createdAt,
-  })) };
+  })), replies:row.replies,deliveries:row.deliveries,events:row.events };
 }

@@ -31,6 +31,12 @@ services:
       DATABASE_URL: ${RUNTIME_DATABASE_URL:?Set RUNTIME_DATABASE_URL using rental_radar_web and host postgres}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to at least 32 characters}
+      META_APP_ID: ${META_APP_ID:-}
+      META_APP_SECRET: ${META_APP_SECRET:-}
+      META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
+      META_REDIRECT_URI: ${META_REDIRECT_URI:-}
+      META_TOKEN_KEYS: ${META_TOKEN_KEYS:-{}}
+      META_TOKEN_KEY_VERSION: ${META_TOKEN_KEY_VERSION:-}
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     networks:
@@ -41,6 +47,24 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  worker:
+    build: .
+    init: true
+    restart: unless-stopped
+    command: ["node", "src/worker.mjs"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL using rental_radar_worker and host postgres}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
+      META_TOKEN_KEYS: ${META_TOKEN_KEYS:-{}}
+      META_TOKEN_KEY_VERSION: ${META_TOKEN_KEY_VERSION:-}
+    networks:
+      - backend
 
 volumes:
   postgres-data:

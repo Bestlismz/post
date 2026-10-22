@@ -13,7 +13,7 @@ export function sendEntity(response, entity, status = 200) {
   if (entity.revision) response.set("ETag", `"${entity.revision}"`);
   return response.status(status).json(entity);
 }
-export function errorHandler(error, _request, response, _next) {
+export function errorHandler(error, request, response, _next) {
   let status = error.status ?? 500, fieldErrors = error.fieldErrors ?? {};
   let message = status === 500 ? "Internal server error" : error.message;
   if (error.type === "entity.parse.failed") {
@@ -28,5 +28,8 @@ export function errorHandler(error, _request, response, _next) {
     fieldErrors = Object.fromEntries(error.fields.map((field) => [field, ["Required for publication"]]));
   } else if (error.code === "23505") { status = 409; message = "Resource already exists"; }
   if (error.retryAfter) response.set("Retry-After", String(error.retryAfter));
-  response.status(status).json({ error: message, fieldErrors });
+  const inbox=/^\/api\/(?:inbox|replies)(?:\/|$)/.test(request.path ?? '');
+  const code=error.code && /^[A-Z_]+$/.test(error.code)?error.code:
+    ({400:'INVALID_REQUEST',401:'AUTHENTICATION_REQUIRED',403:'FORBIDDEN',404:'NOT_FOUND',409:'CONFLICT',413:'PAYLOAD_TOO_LARGE',422:'INVALID_REQUEST',429:'RATE_LIMITED'}[status] ?? 'INTERNAL_ERROR');
+  response.status(status).json({ error: message, fieldErrors,...(inbox?{code}:{}) });
 }

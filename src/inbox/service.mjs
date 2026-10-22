@@ -14,6 +14,7 @@ import { matchInventory } from '../inventory/matcher.mjs';
 import { getUnit, getProject, saveSnapshot } from '../inventory/repository.mjs';
 import { snapshotUnitFacts } from '../inventory/facts.mjs';
 import { evaluatePolicy } from '../policy/evaluator.mjs';
+import { operationReceipt } from './receipts.mjs';
 
 const fail = (message,code='INVALID_REPLY_STATE') => { throw inboxConflict(code,message); };
 const evidence = context => ({ policyRevision: context.org.automation_policy_revision, profileRevision: context.org.profile_revision,
@@ -119,7 +120,14 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     validateInboxText(actor.id,'actor ID');
     const result=await withTransaction(pool,tx=>runIdempotent(tx,{
       organizationId:actor.organizationId,actorId:actor.id,route,key:options.idempotencyKey,body,
-    },async()=>({status:200,body:await persist(tx)})));
+    },async()=>{
+      const result=await persist(tx);
+      if(!['inbox.approveAndQueue','inbox.requestHandoff'].includes(route))return {status:200,body:result};
+      const operation=await operationReceipt(tx,{organizationId:actor.organizationId,
+        resourceId:result.id ?? body.workItemId,resourceType:route==='inbox.approveAndQueue'?'delivery_intent':'work_item',
+        state:route==='inbox.requestHandoff'?'handoff':'queued'});
+      return {status:200,body:{...result,operation}};
+    }));
     return result.body;
   }
   async function authorize(tx, reply, context, actor, actorKind, now = clock()) {
@@ -234,12 +242,17 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     });
   }
 
-  async function requestHandoff(workItemId,reason,actor) {
+  async function requestHandoff(workItemId,reason,actor,options) {
     const organizationId=authorizeInboxActor(actor,{write:true}); validateInboxText(workItemId,'work item ID'); validateInboxText(reason,'handoff reason');
-    return withTransaction(pool,async tx => {
+    const expectedRevision=options?.expectedRevision;
+    return mutation(actor,'inbox.requestHandoff',{workItemId,reason,...(expectedRevision===undefined?{}:{expectedRevision})},options?{idempotencyKey:options.idempotencyKey}:undefined,async tx => {
       await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
       const item=(await tx.query('SELECT * FROM work_items WHERE organization_id=$1 AND id=$2',[organizationId,workItemId])).rows[0];
       if (!item) throw httpError(404,'Work item not found');
+      if(expectedRevision!==undefined) {
+        const conversation=(await tx.query('SELECT processing_revision FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,item.conversation_id])).rows[0];
+        if(item.processing_revision!==expectedRevision || conversation.processing_revision!==expectedRevision) fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      }
       await tx.query('UPDATE conversations SET human_takeover=true,updated_at=now() WHERE organization_id=$1 AND id=$2',[organizationId,item.conversation_id]);
       await tx.query("UPDATE work_items SET status='handoff',updated_at=now() WHERE organization_id=$1 AND conversation_id=$2 AND status NOT IN ('completed','superseded')",[organizationId,item.conversation_id]);
       await tx.query(`INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason,actor_id) SELECT organization_id,id,$3,$4 FROM delivery_intents WHERE organization_id=$1 AND conversation_id=$2 ON CONFLICT DO NOTHING`,[organizationId,item.conversation_id,reason,actor.id]);

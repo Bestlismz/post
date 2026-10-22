@@ -8,6 +8,7 @@ const grants = {
   sessions: "SELECT, INSERT, UPDATE",
   login_attempts: "SELECT, INSERT, UPDATE",
   idempotency_keys: "SELECT, INSERT, UPDATE",
+  outbox: "SELECT, INSERT",
   projects: "SELECT, INSERT, UPDATE",
   units: "SELECT, INSERT, UPDATE",
   project_transit: "SELECT, INSERT",
@@ -30,7 +31,8 @@ const grants = {
 };
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 
-export async function provisionRuntime(pool, { role = "rental_radar_web", password } = {}) {
+export async function provisionRuntime(pool, { role = "rental_radar_web", password, profile = "web" } = {}) {
+  if(!['web','worker'].includes(profile)) throw new Error('Invalid runtime permission profile');
   if (!/^[a-z_][a-z0-9_]{0,62}$/.test(role) || typeof password !== "string" || password.length < 16) {
     throw new Error("A valid dedicated role and runtime password of at least 16 characters are required");
   }
@@ -57,10 +59,20 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     await client.query(`REVOKE CREATE ON SCHEMA ${quote(context.schema)} FROM PUBLIC`);
     await client.query(`GRANT USAGE ON SCHEMA ${quote(context.schema)} TO ${quote(role)}`);
     await client.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${quote(context.schema)} FROM ${quote(role)}`);
-    for (const [table, permissions] of Object.entries(grants)) {
+    const workerTables=new Set(['organizations','memberships','projects','units','project_transit','project_amenities','audit_entries','unit_fact_revisions','match_snapshots','jobs','conversations','messages','work_items','reply_versions','reply_supersessions','reply_authorizations','delivery_intents','delivery_attempts','delivery_cancellations','meta_page_sources','outbox']);
+    const workerReadOnly=new Set(['memberships','project_transit','project_amenities','unit_fact_revisions','messages']);
+    for (const [table, webPermissions] of Object.entries(grants)) {
+      if(profile==='worker' && !workerTables.has(table))continue;
+      const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':
+        profile==='worker' && ['projects','units'].includes(table)?'SELECT, UPDATE (id)':
+        profile==='worker' && table==='organizations'?'SELECT, UPDATE (id)':
+        profile==='worker' && table==='meta_page_sources'?'SELECT, UPDATE (id)':
+        webPermissions;
       await client.query(`GRANT ${permissions} ON TABLE ${quote(context.schema)}.${quote(table)} TO ${quote(role)}`);
     }
     for (const signature of ["meta_credential_read(text,text)", "meta_credential_write(text,text,text,text,jsonb,timestamptz)", "meta_credential_delete(text,text)"]) {
+      await client.query(`REVOKE EXECUTE ON FUNCTION ${quote(context.schema)}.${signature} FROM ${quote(role)}`);
+      if(profile==='worker' && !signature.startsWith('meta_credential_read('))continue;
       await client.query(`GRANT EXECUTE ON FUNCTION ${quote(context.schema)}.${signature} TO ${quote(role)}`);
     }
     await client.query(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA ${quote(context.schema)} FROM ${quote(role)}`);
@@ -78,7 +90,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   let pool;
   try {
     pool = createPool({ databaseUrl: process.env.MIGRATION_DATABASE_URL });
-    await provisionRuntime(pool, { password: process.env.RUNTIME_DATABASE_PASSWORD });
+    const worker=process.argv.includes('--worker');
+    await provisionRuntime(pool, { role:worker?'rental_radar_worker':'rental_radar_web', profile:worker?'worker':'web',password: worker?process.env.WORKER_DATABASE_PASSWORD:process.env.RUNTIME_DATABASE_PASSWORD });
     process.stdout.write("Runtime database permissions provisioned.\n");
   } catch {
     process.stderr.write("Runtime provisioning failed. Check owner access, dedicated role ownership, migrations, and runtime password.\n");

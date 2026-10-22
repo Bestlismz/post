@@ -230,7 +230,18 @@ test("official Meta connection protects state, Page selection, credentials and t
       const session = await login.json(), cookie = login.headers.get("set-cookie").split(";")[0];
       const headers = { Cookie: cookie, Origin: authConfig.appOrigin, "X-CSRF-Token": session.csrfToken };
       for (const invalid of [{ ...headers, Origin: "https://evil.example" }, { ...headers, "X-CSRF-Token": "wrong" }]) assert.equal((await fetch(base + "/api/meta/connection/begin", { method: "POST", headers: invalid })).status, 403);
-      assert.equal((await fetch(base + "/api/meta/connection/begin", { method: "POST", headers })).status, 200);
+      const begun=await fetch(base + "/api/meta/connection/begin", { method: "POST", headers });
+      assert.equal(begun.status,200);
+      const callbackBody={code:'official-code',state:new URL((await begun.json()).authorizationUrl).searchParams.get('state')};
+      const callbackHeaders={...headers,'Content-Type':'application/json'};
+      for(const invalid of [{...callbackHeaders,Origin:'https://evil.example'},{...callbackHeaders,'X-CSRF-Token':''}]) {
+        assert.equal((await fetch(base+'/api/meta/connection/callback',{method:'POST',headers:invalid,body:JSON.stringify(callbackBody)})).status,403);
+      }
+      const callback=await fetch(base+'/api/meta/connection/callback',{method:'POST',headers:callbackHeaders,body:JSON.stringify(callbackBody)});
+      assert.equal(callback.status,200);const connected=await callback.json();
+      assert.equal(connected.status,'select_page');assert.equal(typeof connected.id,'string');
+      assert.ok(!JSON.stringify(connected).includes('private-'));
+      assert.equal((await fetch(base+'/api/meta/connection/callback',{method:'POST',headers:callbackHeaders,body:JSON.stringify(callbackBody)})).status,403);
       await pool.query("UPDATE memberships SET role='operator' WHERE user_id=$1", [userId]);
       assert.equal((await fetch(base + "/api/meta/connection/begin", { method: "POST", headers })).status, 403);
       await assert.rejects(service.beginMetaConnection({ ...actor, role: "operator" }), { status: 403 });
