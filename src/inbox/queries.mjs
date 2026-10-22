@@ -12,7 +12,7 @@ const relations = `FROM work_items w
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
   JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id AND m.conversation_id=c.id
   LEFT JOIN meta_page_sources s ON c.channel='messenger' AND s.organization_id=c.organization_id AND s.page_id=c.page_id
-  LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND g.group_id=c.page_id`;
+  LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND 'facebook_group:' || g.group_id=c.page_id`;
 
 function itemDto(row) {
   return {

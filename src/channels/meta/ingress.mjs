@@ -47,7 +47,8 @@ export async function acceptMetaWebhook({ pool, rawBody, signature, appSecret, e
         await tx.query(`INSERT INTO conversations(id,organization_id,page_id,psid) VALUES ($1,$2,$3,$4)
           ON CONFLICT (organization_id,page_id,psid) DO NOTHING`, [randomUUID(), organizationId, event.pageId, event.senderId]);
         const { rows: [conversation] } = await tx.query(`SELECT id,processing_revision FROM conversations
-          WHERE organization_id=$1 AND page_id=$2 AND psid=$3 FOR UPDATE`, [organizationId, event.pageId, event.senderId]);
+          WHERE organization_id=$1 AND page_id=$2 AND psid=$3 AND channel='messenger' FOR UPDATE`, [organizationId, event.pageId, event.senderId]);
+        if (!conversation) throw new Error('Conversation channel binding conflict');
         const revision = conversation.processing_revision + 1;
         const messageId = randomUUID();
         const inserted = await tx.query(`INSERT INTO messages(id,organization_id,conversation_id,page_id,mid,text,provider_timestamp_ms,processing_revision,raw_evidence)

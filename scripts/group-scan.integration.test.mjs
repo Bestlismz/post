@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import test from 'node:test';
 import { createPool } from '../src/db/pool.mjs';
 import { migrate } from '../src/db/migrate.mjs';
@@ -42,24 +42,90 @@ integration('signed scan replay and concurrent repeats return one immutable rece
   assert.equal(first.acceptedCount,1);
   for(const table of ['group_scan_receipts','group_observations','group_targets','conversations','messages','work_items']) assert.equal((await pool.query(`SELECT count(*)::int n FROM ${table}`)).rows[0].n,1,table);
   assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='analyze_group_work_item'")).rows[0].n,1);
-  assert.deepEqual((await pool.query('SELECT channel,page_id,psid FROM conversations')).rows[0],{channel:'facebook_group',page_id:'123',psid:'456'});
+  assert.deepEqual((await pool.query('SELECT channel,page_id,psid FROM conversations')).rows[0],{channel:'facebook_group',page_id:'facebook_group:123',psid:'facebook_group_target:456'});
   setTime('2026-10-22T12:10:00Z');
   assert.deepEqual(await accept(signed),first,'already accepted authentic replays survive expiry');
   await assert.rejects(pool.query("UPDATE group_scan_receipts SET coverage='none'"),/append-only/i);
   await assert.rejects(pool.query("DELETE FROM group_observations"),/append-only/i);
 });
 
-integration('changed and partial scans retain immutable observation evidence without duplicate work',async({pool,scan,result,accept,observation})=>{
+integration('partial scans retain old targets and changed content creates one new work revision',async({pool,scan,result,accept,observation})=>{
   await accept(result(await scan(),{observations:[observation('456','old'),observation('456','comment','789')]}));
   await accept(result(await scan(),{coverage:'partial',reason:'scan_limit',observations:[observation('456','new')]}));
   await accept(result(await scan(),{observations:[observation('456','new')]}));
   assert.equal((await pool.query('SELECT count(*)::int n FROM group_observations')).rows[0].n,4);
   assert.equal((await pool.query('SELECT count(*)::int n FROM group_targets')).rows[0].n,2);
-  assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,2);
-  assert.equal((await pool.query('SELECT count(*)::int n FROM work_items')).rows[0].n,2);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,3);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM work_items')).rows[0].n,3);
   assert.equal((await pool.query("SELECT text FROM group_observations ORDER BY text")).rows.some(row=>row.text==='old'),true);
   assert.equal((await pool.query("SELECT o.text FROM group_targets t JOIN group_observations o ON o.id=t.observation_id WHERE t.target_id='post:456'")).rows[0].text,'new');
   assert.equal((await pool.query("SELECT count(*)::int n FROM group_scan_receipts WHERE coverage='partial'")).rows[0].n,1);
+});
+
+integration('semantic edits preserve history and supersede actionable work once under concurrent repeats',async({pool,source,scan,result,accept,observation})=>{
+  await accept(result(await scan(),{observations:[observation('456','Looking for a rental')]}));
+  await pool.query("UPDATE work_items SET status='needs_review'");
+  const edited=result(await scan(),{observations:[observation('456','Already found a room, thank you')]}),repeat=result(await scan(),{observations:[observation('456','Already found a room, thank you')]});
+  await Promise.all([accept(edited),accept(edited),accept(repeat)]);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM conversations')).rows[0].n,1);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_targets')).rows[0].n,1);
+  assert.equal((await pool.query('SELECT processing_revision FROM conversations')).rows[0].processing_revision,2);
+  assert.deepEqual((await pool.query('SELECT text,processing_revision FROM messages ORDER BY processing_revision')).rows,[{text:'Looking for a rental',processing_revision:1},{text:'Already found a room, thank you',processing_revision:2}]);
+  assert.deepEqual((await pool.query('SELECT status,processing_revision FROM work_items ORDER BY processing_revision')).rows,[{status:'superseded',processing_revision:1},{status:'pending',processing_revision:2}]);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='analyze_group_work_item'")).rows[0].n,2);
+  const {createInboxQueries}=await import('../src/inbox/queries.mjs');
+  const inbox=createInboxQueries({pool}),actor={id:'admin',organizationId:'org_default',role:'admin'};
+  const current=(await inbox.listInbox({sourceId:source.id},actor)).items.find(item=>item.processingRevision===2);
+  assert.equal(current.message.text,'Already found a room, thank you');
+  const detail=await inbox.getInboxItem(current.id,actor);
+  assert.deepEqual(detail.timeline.map(item=>item.text),['Looking for a rental','Already found a room, thank you']);
+});
+
+integration('out-of-order edited results retain evidence without reverting text or enqueueing stale analysis',async({pool,scan,result,accept,observation})=>{
+  const old=await scan(),current=await scan();
+  await accept(result(current,{observations:[observation('456','Already found a room')]}));
+  await accept(result(old,{observations:[observation('456','Looking for a rental')]}));
+  assert.deepEqual((await pool.query('SELECT text,processing_revision FROM messages')).rows,[{text:'Already found a room',processing_revision:1}]);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_observations')).rows[0].n,2);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='analyze_group_work_item'")).rows[0].n,1);
+});
+
+integration('a newer return to earlier content creates a fresh revision while identical content does not',async({pool,scan,result,accept,observation})=>{
+  for(const text of ['Looking for a rental','Already found a room','Looking for a rental','Looking for a rental']) await accept(result(await scan(),{observations:[observation('456',text)]}));
+  assert.deepEqual((await pool.query('SELECT text,processing_revision FROM messages ORDER BY processing_revision')).rows,[{text:'Looking for a rental',processing_revision:1},{text:'Already found a room',processing_revision:2},{text:'Looking for a rental',processing_revision:3}]);
+  assert.equal((await pool.query('SELECT count(DISTINCT mid)::int n FROM messages')).rows[0].n,3);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='analyze_group_work_item'")).rows[0].n,3);
+});
+
+for(const first of ['messenger','facebook_group']) integration(`${first}-first provider IDs cannot collide with the other channel`,async({pool,source,scan,result,accept,observation})=>{
+  const {acceptMetaWebhook}=await import('../src/channels/meta/ingress.mjs');
+  await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('meta-source','org_default','123','Messenger Page','connected')");
+  const messenger=async()=>{
+    const rawBody=Buffer.from(JSON.stringify({object:'page',entry:[{id:'123',messaging:[{sender:{id:'456'},recipient:{id:'123'},timestamp:1000,message:{mid:'post:456',text:'Messenger demand'}}]}]}));
+    assert.equal((await acceptMetaWebhook({pool,rawBody,appSecret:'secret',signature:`sha256=${createHmac('sha256','secret').update(rawBody).digest('hex')}`})).status,200);
+  };
+  const group=async()=>accept(result(await scan(),{observations:[observation('456','Group demand')]}));
+  if(first==='messenger') {await messenger();await group();} else {await group();await messenger();}
+  await messenger();await group();
+  assert.deepEqual((await pool.query('SELECT channel,processing_revision FROM conversations ORDER BY channel')).rows,[{channel:'facebook_group',processing_revision:1},{channel:'messenger',processing_revision:1}]);
+  assert.deepEqual((await pool.query('SELECT c.channel,m.text FROM messages m JOIN conversations c ON c.id=m.conversation_id ORDER BY c.channel')).rows,[{channel:'facebook_group',text:'Group demand'},{channel:'messenger',text:'Messenger demand'}]);
+  assert.deepEqual((await pool.query("SELECT kind,count(*)::int n FROM jobs WHERE kind IN ('analyze_group_work_item','analyze_work_item') GROUP BY kind ORDER BY kind")).rows,[{kind:'analyze_group_work_item',n:1},{kind:'analyze_work_item',n:1}]);
+  const {createInboxQueries}=await import('../src/inbox/queries.mjs');
+  const inbox=createInboxQueries({pool}),actor={id:'admin',organizationId:'org_default',role:'admin'};
+  assert.equal((await inbox.listInbox({channel:'facebook_group',sourceId:source.id},actor)).items[0].message.text,'Group demand');
+  assert.equal((await inbox.listInbox({channel:'messenger',sourceId:'meta-source'},actor)).items[0].message.text,'Messenger demand');
+});
+
+integration('Meta ingress refuses an existing legacy Group identity instead of appending Messenger work to it',async({pool})=>{
+  const {acceptMetaWebhook}=await import('../src/channels/meta/ingress.mjs');
+  await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('meta-source','org_default','777','Messenger Page','connected')");
+  await pool.query("INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES('legacy-group','org_default','facebook_group','777','888')");
+  const rawBody=Buffer.from(JSON.stringify({object:'page',entry:[{id:'777',messaging:[{sender:{id:'888'},recipient:{id:'777'},message:{mid:'messenger-message',text:'Messenger demand'}}]}]}));
+  const response=await acceptMetaWebhook({pool,rawBody,appSecret:'secret',signature:`sha256=${createHmac('sha256','secret').update(rawBody).digest('hex')}`});
+  assert.equal(response.status,503);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM work_items')).rows[0].n,0);
+  assert.equal((await pool.query("SELECT processing_revision FROM conversations WHERE id='legacy-group'")).rows[0].processing_revision,0);
 });
 
 integration('invalid signatures routing identities and expired first results never write',async({pool,scan,result,accept,observation,setTime})=>{

@@ -80,18 +80,27 @@ async function persistObservation(tx,operation,source,result,item) {
   const organizationId=operation.organization_id,observationId=randomUUID();
   await tx.query(`INSERT INTO group_observations(id,organization_id,source_id,operation_id,target_id,post_id,comment_id,kind,text,author_label,observed_at,provider_timestamp,evidence_hash,content_hash,selector_version)
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[observationId,organizationId,source.id,operation.id,item.targetId,item.postId,item.commentId??null,item.kind,item.text,item.authorLabel,item.observedAt,item.providerTimestamp??null,item.evidenceHash,item.contentHash,result.selectorVersion]);
-  await tx.query(`INSERT INTO group_targets(organization_id,source_id,target_id,observation_id,operation_order) VALUES($1,$2,$3,$4,$5)
+  const {rows:[previous]}=await tx.query(`SELECT o.content_hash FROM group_targets t
+    JOIN group_observations o ON o.organization_id=t.organization_id AND o.id=t.observation_id
+    WHERE t.organization_id=$1 AND t.source_id=$2 AND t.target_id=$3 FOR UPDATE OF t`,[organizationId,source.id,item.targetId]);
+  const projected=await tx.query(`INSERT INTO group_targets(organization_id,source_id,target_id,observation_id,operation_order) VALUES($1,$2,$3,$4,$5)
     ON CONFLICT(organization_id,source_id,target_id) DO UPDATE SET observation_id=EXCLUDED.observation_id,operation_order=EXCLUDED.operation_order
-    WHERE group_targets.operation_order<EXCLUDED.operation_order`,[organizationId,source.id,item.targetId,observationId,operation.operation_order]);
+    WHERE group_targets.operation_order<EXCLUDED.operation_order RETURNING target_id`,[organizationId,source.id,item.targetId,observationId,operation.operation_order]);
+  // Late evidence stays immutable history. Only a current material change creates new Inbox work.
+  if(!projected.rowCount||previous?.content_hash===item.contentHash) return;
+  const pageId=`facebook_group:${source.group_id}`,rootTarget=`facebook_group_target:${item.postId}`;
   await tx.query(`INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES($1,$2,'facebook_group',$3,$4)
-    ON CONFLICT(organization_id,page_id,psid) DO NOTHING`,[randomUUID(),organizationId,source.group_id,item.postId]);
-  const {rows:[conversation]}=await tx.query('SELECT * FROM conversations WHERE organization_id=$1 AND page_id=$2 AND psid=$3 FOR UPDATE',[organizationId,source.group_id,item.postId]);
-  if(conversation.channel!=='facebook_group') throw conflict('Conversation channel binding conflict');
+    ON CONFLICT(organization_id,page_id,psid) DO NOTHING`,[randomUUID(),organizationId,pageId,rootTarget]);
+  const {rows:[conversation]}=await tx.query("SELECT * FROM conversations WHERE organization_id=$1 AND page_id=$2 AND psid=$3 AND channel='facebook_group' FOR UPDATE",[organizationId,pageId,rootTarget]);
+  if(!conversation) throw conflict('Conversation channel binding conflict');
   const revision=conversation.processing_revision+1,messageId=randomUUID();
   const inserted=await tx.query(`INSERT INTO messages(id,organization_id,conversation_id,page_id,mid,text,provider_timestamp_ms,processing_revision,raw_evidence)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(organization_id,page_id,mid) DO NOTHING RETURNING id`,[messageId,organizationId,conversation.id,source.group_id,item.targetId,item.text,item.providerTimestamp?Date.parse(item.providerTimestamp):null,revision,JSON.stringify({observationId,evidenceHash:item.evidenceHash,contentHash:item.contentHash,selectorVersion:result.selectorVersion})]);
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(organization_id,page_id,mid) DO NOTHING RETURNING id`,[messageId,organizationId,conversation.id,pageId,`facebook_group_message:${item.targetId}:${operation.operation_order}:${item.contentHash}`,item.text,item.providerTimestamp?Date.parse(item.providerTimestamp):null,revision,JSON.stringify({observationId,evidenceHash:item.evidenceHash,contentHash:item.contentHash,selectorVersion:result.selectorVersion})]);
   if(!inserted.rowCount) return;
   await tx.query('UPDATE conversations SET processing_revision=$2,updated_at=now() WHERE id=$1',[conversation.id,revision]);
+  await tx.query(`UPDATE work_items SET status='superseded',updated_at=now()
+    WHERE organization_id=$1 AND conversation_id=$2 AND processing_revision<$3
+      AND status IN ('pending','preparing','needs_review','ready','failed')`,[organizationId,conversation.id,revision]);
   const workItemId=randomUUID();
   await tx.query('INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision) VALUES($1,$2,$3,$4,$5)',[workItemId,organizationId,conversation.id,messageId,revision]);
   await enqueueJob(tx,{organizationId,kind:'analyze_group_work_item',retrySafe:true,payload:{workItemId,conversationId:conversation.id,messageId,processingRevision:revision}});
