@@ -345,7 +345,7 @@
   .rr-topbar { display: flex; height: 56px; padding-inline: 14px; }
   .rr-brand { flex: 0 0 auto; }
   .rr-brand__mark { width: 32px; height: 32px; }
-  .rr-search { flex: 1 1 auto; height: 40px; }
+  .rr-search { display: none; }
   .rr-topbar__actions { flex: 0 0 auto; }
   .rr-connection, .rr-profile b, .rr-profile > svg, .rr-review-filter > span, .rr-review-filter > svg:last-child { display: none; }
   .rr-review-filter { display: inline-flex; width: 44px; padding: 0; justify-content: center; }
@@ -379,6 +379,7 @@
   }
   .rr-mobile-title__status { color: var(--rr-text-soft); font-size: 11px; font-weight: 500; }
   .rr-mobile-title__status--online { color: var(--rr-emerald); }
+  .rr-main[data-route="inbox"] > .rr-mobile-title { display: none; }
   .rr-empty { min-height: calc(100dvh - 56px - 48px - 68px); padding: 24px; }
 }
 

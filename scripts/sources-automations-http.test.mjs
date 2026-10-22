@@ -143,6 +143,8 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
 }));
 
 dbtest("Facebook session summary exposes only safe identity and connection health", async () => fixture(async ({ pool, request }) => {
+  const { rows: [admin] } = await pool.query("SELECT user_id FROM memberships WHERE organization_id='org_default' AND role='admin'");
+  await pool.query("SELECT meta_credential_write('org_default','page-source',$1,'page','{}'::jsonb,now()+interval '1 day')", [admin.user_id]);
   await pool.query(`INSERT INTO group_sources(id,organization_id,group_id,canonical_url,session_health,selector_health)
     VALUES('summary-group','org_default','1742522453522327','https://www.facebook.com/groups/1742522453522327','auth_required','healthy')`);
   const summary = await request("/api/facebook/session-summary");
@@ -160,6 +162,17 @@ dbtest("Facebook session summary exposes only safe identity and connection healt
   const reauth = await request("/api/facebook/session-summary");
   assert.equal(reauth.body.state, "reauth_required");
   assert.equal(reauth.body.identity, null, "stale Page names are not presented as the active Facebook identity");
+
+  await pool.query("UPDATE meta_page_sources SET health='connected'");
+  await pool.query("SELECT meta_credential_write('org_default','page-source',$1,'page','{}'::jsonb,now()-interval '1 minute')", [admin.user_id]);
+  const expiredCredential = await request("/api/facebook/session-summary");
+  assert.equal(expiredCredential.body.connections.pageState, "reauth_required");
+  assert.equal(expiredCredential.body.identity, null, "an expired credential cannot project a connected Facebook identity");
+
+  await pool.query("UPDATE memberships SET role='inventory_manager' WHERE organization_id='org_default' AND user_id=$1", [admin.user_id]);
+  const inventoryManager = await request("/api/facebook/session-summary");
+  assert.equal(inventoryManager.status, 200);
+  assert.equal(inventoryManager.body.canRecover, false);
 }));
 
 dbtest("Automations API persists exact format and policy revisions and exposes immutable receipts", async () => fixture(async ({ pool, request }) => {

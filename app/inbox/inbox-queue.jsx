@@ -38,7 +38,7 @@ function InboxFilterBar({ filters, onChange, resultCount }) {
   </div>;
 }
 
-export function InboxTable({ items, resultCount = items.length, selectedId, onSelect, state, onRetry, filters, onFiltersChange, obscured = false }) {
+export function InboxTable({ items, resultCount = items.length, nextCursor = null, selectedId, onSelect, state, onRetry, onLoadMore, filters, onFiltersChange, obscured = false }) {
   const content = items.map((item) => ({ ...item, location: item.summary?.location ?? "ยังไม่ระบุ", budget: budgetLabel(item.summary?.budgetMax), assigneeLabel: item.summary?.assignee?.label ?? "ยังไม่มอบหมาย" }));
   const empty = !state.loading && !state.error && !content.length;
   return <section className="inbox-table" aria-label="Inbox แบบตาราง" aria-hidden={obscured || undefined} inert={obscured || undefined}>
@@ -51,6 +51,7 @@ export function InboxTable({ items, resultCount = items.length, selectedId, onSe
     {content.length ? <div className="inbox-table__scroll">
       <table aria-label="รายการ Inbox"><thead><tr><th>ช่องทาง</th><th>ลูกค้า / กลุ่ม</th><th>ข้อความล่าสุด</th><th>ทำเล</th><th>งบประมาณ</th><th>แหล่งที่มา</th><th>ผู้ดูแล</th><th>สถานะ</th><th>เวลา</th></tr></thead><tbody>{content.map((item) => <tr key={item.id} tabIndex={0} aria-selected={item.id === selectedId} onClick={(event) => onSelect(item.id, event.currentTarget)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onSelect(item.id, event.currentTarget); } }}><td><span className="inbox-table__channel">{item.channel === "facebook_group" ? <UsersRound size={15} /> : <MessageCircleMore size={15} />}{channelLabel(item.channel)}</span></td><td><strong>{item.participant?.label ?? "ไม่ระบุชื่อ"}</strong></td><td><span className="inbox-table__message">{item.message?.text}</span></td><td>{item.location}</td><td>{item.budget}</td><td>{item.source?.name ?? "—"}</td><td>{item.assigneeLabel}</td><td><span className={`inbox-table__status inbox-table__status--${item.status}`}><i />{statusLabels[item.status] ?? item.status}</span></td><td><time>{timeLabel(item.createdAt)}</time></td></tr>)}</tbody></table>
       <div className="inbox-row-list" role="list" aria-label="รายการ Inbox">{content.map((item) => <div role="listitem" key={item.id}><button type="button" aria-label={`${item.participant?.label ?? "ไม่ระบุชื่อ"} ${item.message?.text ?? ""}`} onClick={(event) => onSelect(item.id, event.currentTarget)}><span className="inbox-row-list__top"><strong>{item.participant?.label ?? "ไม่ระบุชื่อ"}</strong><time>{timeLabel(item.createdAt)}</time></span><span className="inbox-row-list__message">{item.message?.text}</span><span className="inbox-row-list__facts"><em>{channelLabel(item.channel)}</em><span>{item.location}</span><span>{item.budget}</span><span>{statusLabels[item.status] ?? item.status}</span></span></button></div>)}</div>
+      {nextCursor && !state.loading ? <div className="inbox-table__more"><button type="button" onClick={onLoadMore} disabled={state.loadingMore}>{state.loadingMore ? "กำลังโหลด…" : "โหลดเพิ่ม"}<span>{content.length} จาก {resultCount}</span></button></div> : null}
     </div> : null}
   </section>;
 }

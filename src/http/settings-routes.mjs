@@ -16,7 +16,7 @@ function metaOauthConfigurationIsValid(env) {
   } catch { return false; }
 }
 
-async function readPageConnections(pool, organizationId) {
+export async function readPageConnections(pool, organizationId) {
   const { rows } = await pool.query(`
     SELECT s.id,s.name,s.health,s.expires_at,
       (s.health='connected' AND (s.expires_at IS NULL OR s.expires_at>now()) AND EXISTS (

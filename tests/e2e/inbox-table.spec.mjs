@@ -41,15 +41,17 @@ const detail = {
   events: [],
 };
 
-async function mockInbox(page) {
+async function mockInbox(page, { pageSize = 100, delays = {} } = {}) {
   let failNextList = false;
   await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "ณัฐวุฒิ", role: "admin" }, csrfToken: "test-csrf" } }));
   await page.route("**/api/auth/csrf", (route) => route.fulfill({ json: { csrfToken: "test-csrf" } }));
   await page.route("**/api/inbox/events", (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: ": heartbeat\n\n" }));
-  await page.route(/\/api\/inbox(?:\?.*)?$/, (route) => {
+  await page.route(/\/api\/inbox(?:\?.*)?$/, async (route) => {
     if (failNextList) { failNextList = false; return route.fulfill({ status: 503, json: { error: "temporary" } }); }
     const url = new URL(route.request().url());
+    const query = url.searchParams.get("q") ?? "";
+    if (delays[query]) await new Promise((resolve) => setTimeout(resolve, delays[query]));
     const value = items.filter((item) => {
       const min = Number(url.searchParams.get("budgetMin") || 0), max = Number(url.searchParams.get("budgetMax") || Number.MAX_SAFE_INTEGER);
       const budget = item.summary?.budgetMax;
@@ -60,7 +62,8 @@ async function mockInbox(page) {
         && (!url.searchParams.get("budgetMax") || (budget != null && budget <= max))
         && (!url.searchParams.get("q") || `${item.participant.label} ${item.message.text} ${item.source.name}`.toLowerCase().includes(url.searchParams.get("q").toLowerCase()));
     });
-    return route.fulfill({ json: { items: value, resultCount: value.length, nextCursor: null } });
+    const offset = Number(url.searchParams.get("cursor") || 0);
+    return route.fulfill({ json: { items: value.slice(offset, offset + pageSize), resultCount: value.length, nextCursor: offset + pageSize < value.length ? String(offset + pageSize) : null } });
   });
   await page.route(/\/api\/inbox\/[^/]+$/, (route) => route.fulfill({ json: detail }));
   return { failNextList() { failNextList = true; } };
@@ -139,6 +142,27 @@ test("cached rows stay usable and expose a regional retry after refresh failure"
 
 });
 
+test("cursor pages remain accessible and stale searches cannot replace the latest URL state", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "desktop pagination and request ordering");
+  await mockInbox(page, { pageSize: 2, delays: { Mint: 250 } });
+  await page.goto("/inbox");
+  await expect(page.getByRole("row")).toHaveCount(3);
+  await expect(page.getByRole("button", { name: /โหลดเพิ่ม/ })).toContainText("2 จาก 18");
+  await page.getByRole("button", { name: /โหลดเพิ่ม/ }).click();
+  await expect(page.getByRole("row")).toHaveCount(5);
+
+  const search = page.getByRole("searchbox", { name: "ค้นหา", exact: true });
+  await search.fill("Mint");
+  await page.getByRole("button", { name: "ค้นหา Inbox" }).click();
+  await expect(page).toHaveURL(/q=Mint/);
+  await search.fill("Nattapong");
+  await page.getByRole("button", { name: "ค้นหา Inbox" }).click();
+  await expect(page).toHaveURL(/q=Nattapong/);
+  await expect(page.getByRole("row", { name: /Nattapong S\./ })).toBeVisible();
+  await page.waitForTimeout(300);
+  await expect(page.getByRole("row", { name: /Mint Kanyarat/ })).toHaveCount(0);
+});
+
 test("table view becomes a deliberate row list below tablet without horizontal overflow", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "mobile table fallback");
   await mockInbox(page);
@@ -148,5 +172,12 @@ test("table view becomes a deliberate row list below tablet without horizontal o
   await expect(page.getByRole("list", { name: "รายการ Inbox" })).toBeVisible();
   await expect(page.getByRole("button", { name: /Mint Kanyarat/ })).toBeVisible();
   await expect(page.getByRole("combobox", { name: "ช่องทาง" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "ทำเล" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "งบต่ำสุด" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "งบสูงสุด" })).toBeVisible();
+  await expect(page.locator(".rr-mobile-title")).toBeHidden();
+  await expect(page.locator(".inbox-table__header")).toBeVisible();
+  await expect(page.getByRole("searchbox", { name: "ค้นหาทั่วทั้ง Inbox" })).toBeHidden();
+  await expect(page.getByRole("searchbox", { name: "ค้นหา", exact: true })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });

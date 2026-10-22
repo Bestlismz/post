@@ -26,7 +26,13 @@ export function createInboxWorkspaceFixture() {
         && (!normalized.budgetMax||(budget!=null&&budget<=Number(normalized.budgetMax)))
         && (!normalized.assignee||normalized.assignee==="unassigned"&&item.summary?.assignee==null)
         && (!normalized.search||haystack.includes(String(normalized.search).toLocaleLowerCase("th")));
-    });return {items:filtered,resultCount:filtered.length,nextCursor:null};},
+    });
+      const limit=Math.max(1,Math.min(100,Number(query.limit)||100));
+      const scope=JSON.stringify([normalized.channel??null,normalized.status??null,normalized.location??"",normalized.budgetMin??null,normalized.budgetMax??null,normalized.assignee??null,normalized.search??""]);
+      let offset=0;
+      if(query.cursor){const position=JSON.parse(Buffer.from(String(query.cursor),"base64url").toString("utf8"));if(position.scope!==scope||!Number.isSafeInteger(position.offset)||position.offset<0)throw new Error("Invalid Inbox cursor");offset=position.offset;}
+      const items=filtered.slice(offset,offset+limit),nextOffset=offset+items.length;
+      return {items,resultCount:filtered.length,nextCursor:nextOffset<filtered.length?Buffer.from(JSON.stringify({offset:nextOffset,scope})).toString("base64url"):null};},
     get(id){return details.get(id)??null;},
     stream(response){streams.add(response);response.write(": fixture workspace connected\n\n");response.on("close",()=>streams.delete(response));},
     prepare(id){const value=details.get(id);if(!value)return null;value.replies=[{id:`fixture-reply-${id}`,version:1,processingRevision:value.processingRevision,text:"สวัสดีค่ะ ขอบคุณที่ติดต่อมา ทีมงานกำลังตรวจสอบห้องที่ตรงกับความต้องการจากรายการปัจจุบันให้นะคะ"}];value.status="needs_review";return emit(id,"work_item","needs_review");},

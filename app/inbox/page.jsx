@@ -15,9 +15,10 @@ function commandHeaders({ action, id, revision, csrfToken }) {
   return headers;
 }
 
-function listResource(filters) {
+function listResource(filters, cursor = null) {
   const params = new URLSearchParams({ limit: "100" });
   for (const [key, value] of Object.entries({ channel: filters.channel, status: filters.status, location: filters.location, budgetMin: filters.budgetMin, budgetMax: filters.budgetMax, assignee: filters.assignee, q: filters.search })) if (value) params.set(key, value);
+  if (cursor) params.set("cursor", cursor);
   return `/api/inbox?${params}`;
 }
 
@@ -25,10 +26,11 @@ function InboxWorkspace() {
   const router = useRouter(), searchParams = useSearchParams();
   const routeState = readInboxRouteState(searchParams), requestedId = routeState.item, filters = routeState.filters;
   const filterKey = JSON.stringify(filters);
-  const [items, setItems] = useState([]), [resultCount, setResultCount] = useState(0), [listState, setListState] = useState({ loading: true, error: null });
+  const [items, setItems] = useState([]), [resultCount, setResultCount] = useState(0), [nextCursor, setNextCursor] = useState(null), [listState, setListState] = useState({ loading: true, loadingMore: false, error: null });
   const [selectedId, setSelectedId] = useState(requestedId), [detail, setDetail] = useState(null);
   const [detailState, setDetailState] = useState({ loading: false, error: null }), [csrfToken, setCsrfToken] = useState("");
   const tableTriggerRef = useRef(null), sheetWasOpenRef = useRef(false), selectedRef = useRef(selectedId), detailRef = useRef(detail);
+  const listAbortRef = useRef(null), listRequestRef = useRef(0);
   const routeSearchRef = useRef(searchParams.toString() ? `?${searchParams}` : "");
   selectedRef.current = selectedId; detailRef.current = detail;
 
@@ -47,14 +49,26 @@ function InboxWorkspace() {
     if (new URLSearchParams(window.location.search).get("item") !== nextId) navigateState({ item: nextId }, { history });
     return changed;
   }, [applySelection, navigateState]);
-  const loadList = useCallback(async () => {
-    setListState({ loading: true, error: null });
+  const loadList = useCallback(async ({ append = false, cursor = null } = {}) => {
+    const requestId = ++listRequestRef.current;
+    listAbortRef.current?.abort();
+    const controller = new AbortController();
+    listAbortRef.current = controller;
+    if (!append) setNextCursor(null);
+    setListState((state) => ({ loading: !append, loadingMore: append, error: append ? state.error : null }));
     try {
-      const payload = await api.request(listResource(JSON.parse(filterKey))), nextItems = Array.isArray(payload?.items) ? payload.items : [];
-      setItems(nextItems); setResultCount(Number.isSafeInteger(payload?.resultCount) ? payload.resultCount : nextItems.length);
-      if (selectedRef.current && !nextItems.some((item) => item.id === selectedRef.current)) navigateSelection(null);
-      setListState({ loading: false, error: null });
-    } catch (error) { setListState({ loading: false, error }); }
+      const payload = await api.request(listResource(JSON.parse(filterKey), cursor), { signal: controller.signal });
+      if (controller.signal.aborted || requestId !== listRequestRef.current) return;
+      const nextItems = Array.isArray(payload?.items) ? payload.items : [];
+      setItems((current) => append ? [...new Map([...current, ...nextItems].map((item) => [item.id, item])).values()] : nextItems);
+      setResultCount(Number.isSafeInteger(payload?.resultCount) ? payload.resultCount : nextItems.length);
+      setNextCursor(typeof payload?.nextCursor === "string" && payload.nextCursor ? payload.nextCursor : null);
+      if (!append && selectedRef.current && !nextItems.some((item) => item.id === selectedRef.current)) navigateSelection(null);
+      setListState({ loading: false, loadingMore: false, error: null });
+    } catch (error) {
+      if (controller.signal.aborted || requestId !== listRequestRef.current) return;
+      setListState({ loading: false, loadingMore: false, error });
+    }
   }, [filterKey, navigateSelection]);
   const loadDetail = useCallback(async (id) => {
     if (!id) { setDetail(null); return; }
@@ -68,7 +82,7 @@ function InboxWorkspace() {
     routeSearchRef.current = new URL(canonical, window.location.origin).search;
     if (`${window.location.pathname}${window.location.search}` !== canonical) router.replace(canonical, { scroll: false });
   }, [router, searchParams]);
-  useEffect(() => { void loadList(); }, [loadList]);
+  useEffect(() => { void loadList(); return () => listAbortRef.current?.abort(); }, [loadList]);
   useEffect(() => { void api.request("/api/auth/csrf", { method: "POST" }).then((value) => setCsrfToken(value?.csrfToken ?? "")).catch(() => undefined); }, []);
   useEffect(() => { applySelection(requestedId); }, [applySelection, requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
@@ -105,7 +119,7 @@ function InboxWorkspace() {
   }, [csrfToken, detail]);
 
   return <section className="inbox-table-view" aria-label="กล่องข้อความรวม">
-    <InboxTable items={items} resultCount={resultCount} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} filters={filters} onFiltersChange={changeFilters} obscured={Boolean(selectedId)} />
+    <InboxTable items={items} resultCount={resultCount} nextCursor={nextCursor} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} onLoadMore={() => loadList({ append: true, cursor: nextCursor })} filters={filters} onFiltersChange={changeFilters} obscured={Boolean(selectedId)} />
     <FocusSheet open={Boolean(selectedId)} detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} onClose={closeFocusSheet} runCommand={runCommand} onRefresh={() => loadDetail(selectedId)} commandsReady={Boolean(csrfToken)} />
   </section>;
 }

@@ -6,6 +6,13 @@ test("fixture Inbox uses the production table URL filters and one focus sheet", 
   const payload = await filtered.json();
   expect(payload.resultCount).toBe(1);
   expect(payload.items[0]).toEqual(expect.objectContaining({ channel: "messenger", summary: expect.objectContaining({ location: "อโศก" }) }));
+  const firstPage = await (await request.get("/api/inbox?limit=1")).json();
+  expect(firstPage.items).toHaveLength(1);
+  expect(firstPage.resultCount).toBe(3);
+  expect(firstPage.nextCursor).toBeTruthy();
+  const secondPage = await (await request.get(`/api/inbox?limit=1&cursor=${encodeURIComponent(firstPage.nextCursor)}`)).json();
+  expect(secondPage.items).toHaveLength(1);
+  expect(secondPage.items[0].id).not.toBe(firstPage.items[0].id);
 
   await page.goto("/inbox?view=workspace&state=needs_review");
   await expect(page).toHaveURL(/\/inbox\?status=needs_review/);
