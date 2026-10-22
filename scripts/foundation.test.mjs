@@ -8,7 +8,7 @@ import { appendAudit, runIdempotent, withTransaction } from "../src/db/transacti
 import { claimJobs, enqueueJob } from "../src/jobs/queue.mjs";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
-const tables = ["audit_entries", "idempotency_keys", "jobs", "legacy_state_imports", "login_attempts", "match_snapshots", "memberships", "organizations", "outbox", "project_amenities", "project_transit", "projects", "sessions", "unit_fact_revisions", "units", "users"];
+const tables = ["audit_entries", "conversations", "idempotency_keys", "jobs", "legacy_state_imports", "login_attempts", "match_snapshots", "memberships", "messages", "organizations", "outbox", "project_amenities", "project_transit", "projects", "sessions", "unit_fact_revisions", "units", "users", "work_items"];
 
 async function withDatabase(fn) {
   const admin = createPool({ databaseUrl });
@@ -65,7 +65,7 @@ test("migrations are atomic and concurrency safe", { skip: !databaseUrl }, async
     await Promise.all([migrate(pool), migrate(pool)]);
     await migrate(pool);
     const ledger = await pool.query("SELECT version, checksum FROM schema_migrations ORDER BY version");
-    assert.deepEqual(ledger.rows.map((row) => row.version), [1, 2, 3, 4, 5, 6]);
+    assert.deepEqual(ledger.rows.map((row) => row.version), [1, 2, 3, 4, 5, 6, 7]);
     assert.match(ledger.rows[0].checksum, /^[a-f0-9]{64}$/);
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM organizations WHERE id = 'org_default'")).rows[0].count, 1);
     const actualTables = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> 'schema_migrations' ORDER BY tablename");

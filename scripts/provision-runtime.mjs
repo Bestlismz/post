@@ -16,6 +16,9 @@ const grants = {
   unit_fact_revisions: "SELECT, INSERT",
   match_snapshots: "SELECT, INSERT",
   jobs: "SELECT, INSERT",
+  conversations: "SELECT, INSERT, UPDATE (processing_revision, updated_at)",
+  messages: "SELECT, INSERT",
+  work_items: "SELECT, INSERT",
 };
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 

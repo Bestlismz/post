@@ -60,6 +60,19 @@ test("runtime role supports authenticated API writes but cannot administer schem
     await catalog.saveMatchSnapshot(command({ requirementsRevision: 1, requirements: {}, expectedInventory: [] }));
     assert.equal((await runtime.query("SELECT count(*)::int AS count FROM match_snapshots")).rows[0].count, 1);
     assert.equal((await runtime.query("SELECT count(*)::int AS count FROM jobs")).rows[0].count, 1);
+    const { acceptMetaWebhook } = await import("../src/channels/meta/ingress.mjs");
+    const { createHmac } = await import("node:crypto");
+    const rawBody = Buffer.from(JSON.stringify({ object: "page", entry: [{ id: "page", messaging: [{ sender: { id: "psid" }, recipient: { id: "page" }, message: { mid: "mid", text: "hello" } }] }] }));
+    const accepted = await acceptMetaWebhook({ pool: runtime, organizationId: "org_default", pageId: "page", appSecret: "secret", rawBody, signature: `sha256=${createHmac("sha256", "secret").update(rawBody).digest("hex")}` });
+    assert.equal(accepted.status, 200);
+    assert.equal(accepted.acceptedEventIds.length, 1);
+    for (const table of ["conversations", "messages", "work_items"]) {
+      await assert.rejects(runtime.query(`DELETE FROM ${table}`), (error) => error.code === "42501");
+      await assert.rejects(runtime.query(`ALTER TABLE ${table} ADD COLUMN forbidden text`), (error) => error.code === "42501");
+    }
+    await assert.rejects(runtime.query("UPDATE messages SET text='tampered'"), (error) => error.code === "42501");
+    await assert.rejects(runtime.query("UPDATE conversations SET psid='tampered'"), (error) => error.code === "42501");
+    await assert.rejects(runtime.query("UPDATE work_items SET status='completed'"), (error) => error.code === "42501");
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     await runtime?.end();

@@ -7,6 +7,7 @@ import { loadConfig } from "./config.mjs";
 import { createPool } from "./db/pool.mjs";
 import { createApplicationRouter } from "./http/auth-routes.mjs";
 import { errorHandler } from "./http/boundary.mjs";
+import { createMetaRouter } from "./http/meta-routes.mjs";
 
 const config = loadConfig();
 const pool = createPool(config);
@@ -16,6 +17,7 @@ const frontend = next({ dev: false, dir: root });
 let frontendReady;
 const app = express();
 app.disable("x-powered-by");
+app.use(createMetaRouter({ pool, organizationId: process.env.META_ORGANIZATION_ID, pageId: process.env.META_PAGE_ID, appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
 app.use(express.json({ limit: "32kb" }));
 app.use(createApplicationRouter({ pool, config }));
 app.get("/health", (_request, response) => response.json({ ok: true }));
