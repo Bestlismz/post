@@ -95,7 +95,9 @@ export function AppShell({ children }) {
           </button>
           <Menu buttonRef={accountButton} open={accountOpen} onClose={closeAccount} label="เมนูบัญชี">
             <div className="rr-menu__identity"><small>Facebook identity</small><strong>{fbName || "ยังไม่เชื่อมต่อ Facebook"}</strong><span>{facebook?.state === "reauth_required" ? "ต้องเข้าสู่ระบบ Facebook ใหม่" : fbConnected ? `Page ${facebook.connections?.pages ?? 0} · Group ${facebook.connections?.groups ?? 0}` : "ไม่มีเซสชันที่พร้อมใช้งาน"}</span></div>
-            <Link role="menuitem" href="/sources" onClick={() => closeAccount(false)}>{facebook?.canRecover ? "จัดการการเชื่อมต่อ / กู้คืน" : "ดูสถานะการเชื่อมต่อ"}</Link>
+            {session.user?.role === "inventory_manager"
+              ? <div className="rr-menu__status"><strong>สถานะการเชื่อมต่อ Facebook</strong><span>ดูแลโดยผู้ดูแลระบบ</span></div>
+              : <Link role="menuitem" href="/sources" onClick={() => closeAccount(false)}>{facebook?.canRecover ? "จัดการการเชื่อมต่อ / กู้คืน" : "ดูสถานะการเชื่อมต่อ"}</Link>}
             <div className="rr-menu__identity rr-menu__identity--app"><small>บัญชีแอป</small><strong>{session.user?.displayName ?? "ไม่พบผู้ใช้"}</strong><span>{roleLabels[session.user?.role] ?? session.user?.role ?? "ไม่ทราบสิทธิ์"}</span></div>
             {session.user?.role === "admin" ? <Link role="menuitem" href="/settings" onClick={() => closeAccount(false)}>ตั้งค่าระบบ</Link> : null}
             <button type="button" role="menuitem" className="rr-menu__logout" onClick={() => void logout()}>ออกจากระบบ</button>

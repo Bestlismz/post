@@ -73,3 +73,14 @@ test("mobile menus stay available without horizontal overflow and viewers do not
   await expect(page.getByRole("menuitem", { name: "ดูสถานะการเชื่อมต่อ" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });
+
+test("inventory managers see Facebook status without an inaccessible Sources action", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "role-specific account menu");
+  await mockShell(page, "inventory_manager");
+  await page.goto("/inbox");
+  await page.getByRole("button", { name: "เปิดเมนูบัญชี" }).click();
+  const menu = page.getByRole("menu", { name: "เมนูบัญชี" });
+  await expect(menu.getByText("สถานะการเชื่อมต่อ Facebook")).toBeVisible();
+  await expect(menu.getByRole("menuitem", { name: /เชื่อมต่อ|สถานะ/ })).toHaveCount(0);
+  await expect(menu.getByRole("menuitem", { name: "ตั้งค่าระบบ" })).toHaveCount(0);
+});

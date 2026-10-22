@@ -207,6 +207,9 @@
 .rr-menu__identity strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
 .rr-menu__identity span { color: var(--rr-text-soft); font-size: 11px; }
 .rr-menu__identity--app { margin-top: 4px; border-top: 1px solid var(--rr-line); }
+.rr-menu__status { display: grid; gap: 2px; min-height: 52px; align-content: center; padding: 7px 11px; color: var(--rr-text); }
+.rr-menu__status strong { font-size: 12px; }
+.rr-menu__status span { color: var(--rr-text-soft); font-size: 11px; }
 .rr-menu .rr-menu__logout { justify-content: flex-start; color: #9a302d; }
 
 .rr-rail {
