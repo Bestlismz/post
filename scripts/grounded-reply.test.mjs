@@ -229,3 +229,37 @@ test("requirement boundaries cannot disguise multiplier or malformed numeric suf
     await assert.rejects(extractRequirements({ conversation: { id: "tail", revision: 1, messages: [{ id: "tail", revision: 1, text }] }, client: fake(fields) }), /evidence/i, text);
   }
 });
+
+test("original-source budget grammar rejects unknown amount continuations without multiplier guesses", async () => {
+  const cases = [
+    ["Maximum budget 1\nmillion baht", 1, false], ["Maximum budget 18\nhundred baht", 18, false],
+    ["Maximum budget 1 million baht", 1, false], ["Maximum budget 1. million baht", 1, false],
+    ["Maximum budget 1; hundred baht", 1, false], ["Maximum budget 1\nthousand baht", 1, false],
+    ["Maximum budget 1, bn", 1, false], ["Maximum budget 1\nbn", 1, false],
+    ["Maximum budget 1 THB\nmillion", 1, false], ["Maximum budget 1 baht; hundred", 1, false],
+    ["Maximum budget 1\nพันบาท", 1, false], ["Maximum budget 1. หมื่นบาท", 1, false],
+    ["Maximum budget 1 แสนบาท", 1, false], ["Maximum budget 1\nล้านบาท", 1, false],
+    ["Maximum budget 18k", 18, false], ["Maximum budget 18\nk", 18, false],
+    ["Maximum budget 18\nunknown-next-token", 18, false], ["Maximum budget 18 and something", 18, false],
+    ["Maximum budget 18000. Need one bedroom.", 18000, true], ["Maximum budget 18000\n1 bedroom", 18000, true],
+    ["Maximum budget 18000 and pets allowed", 18000, true], ["Maximum budget 18000 and near Asoke", 18000, true],
+    ["Maximum budget 18000\nMove-in date 2026-11-01", 18000, true],
+    ["Maximum budget 18000\n1 ห้องนอน", 18000, true], ["Maximum budget 18000 และเลี้ยงสัตว์ได้", 18000, true],
+    ["Maximum budget 18000\nทำเลอโศก", 18000, true], ["Maximum budget 18000\nย้ายเข้า 2026-11-01", 18000, true],
+  ];
+  for (const suffix of ["million baht", "hundred baht", "thousand baht", "bn", "พันบาท", "หมื่นบาท", "แสนบาท", "ล้านบาท", "k"]) {
+    for (const separator of [" ", "\n", ". ", "; ", ", "]) {
+      for (const currency of ["", " THB"]) cases.push([`Maximum budget 18${currency}${separator}${suffix}`, 18, false]);
+    }
+  }
+  for (const [sourceText, value, valid] of cases) for (const bound of ["Maximum", "Minimum"]) {
+    const text = sourceText.replace(/^Maximum/u, bound), field = bound === "Maximum" ? "budgetMax" : "budgetMin";
+    for (const quote of [text, text.slice(0, `${bound} budget ${value}`.length)]) {
+      const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+      fields[field] = { status: "known", value, evidence: [{ messageId: "grammar", messageRevision: 1, start: 0, end: quote.length, quote }] };
+      const input = { conversation: { id: "grammar", revision: 1, messages: [{ id: "grammar", revision: 1, text }] }, client: fake(fields) };
+      if (valid) assert.deepEqual((await extractRequirements(input)).requirements, { [field]: value }, text);
+      else await assert.rejects(extractRequirements(input), /evidence/i, text);
+    }
+  }
+});
