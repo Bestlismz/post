@@ -167,7 +167,7 @@ dbtest('handoff atomically fences pending and running Messenger and Group work w
   assert.equal(audits.length,1);assert.equal(audits[0].details.reason,'ลูกค้าขอให้เจ้าหน้าที่ดูแล');assert.equal(audits[0].details.workItemId,workItemId);
   assert.equal(await createAutomationWorker({pool,service,workerId:'after-handoff'}).runOnce(),null);
   let sends=0;
-  const delivery=createGroupDeliveryWorker({pool,client:{reply:async()=>{sends++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const delivery=createGroupDeliveryWorker({pool,client:{reply:async()=>{sends++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   assert.equal((await delivery.deliverGroupIntent(intent.id)).state,'cancelled');assert.equal(sends,0);
 });
 
@@ -177,7 +177,7 @@ dbtest('group worker commits attempting before private dispatch and accepts only
   let calls=0,seen;
   const client={reply:async command=>{calls++;seen=command;assert.equal((await pool.query('SELECT state FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].state,'attempting');
     return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature'&&name!=='text')),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'d'.repeat(64),remoteId:'remote-1'},{key,keyId,now:instant});}};
-  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   const outcome=await worker.deliverGroupIntent(intent.id);assert.equal(outcome.state,'sent');assert.equal(calls,1);
   assert.equal(seen.targetId,'comment:456:789');assert.equal(seen.text,reply.content.text);assert.equal(seen.textHash,hash(reply.content.text));
   const receipt=(await pool.query('SELECT result FROM group_send_receipts')).rows[0];assert.match(receipt.result.signature,/^[a-f0-9]{64}$/);
@@ -190,7 +190,7 @@ dbtest('possible group send is terminal unknown, not_found stays unknown, and re
   let replies=0,reconcilePatch={state:'not_found'};
   const client={reply:async command=>{replies++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'e'.repeat(64),remoteId:null},{key,keyId,now:instant});},
     reconcile:async command=>signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature')),kind:'ReconcileResult',remoteId:null,evidenceHash:'f'.repeat(64),...reconcilePatch},{key,keyId,now:instant})};
-  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   assert.equal((await worker.deliverGroupIntent(intent.id)).state,'unknown');assert.equal((await worker.deliverGroupIntent(intent.id)).state,'unknown');assert.equal(replies,1);
   assert.equal((await worker.reconcileGroupIntent(intent.id)).state,'unknown','not_found never permits resend');
   reconcilePatch={state:'sent',remoteId:'remote-wrong',senderId:'wrong'};
@@ -206,7 +206,7 @@ dbtest('production Group reconciliation stage consumes each unresolved attempt o
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let replies=0,reconciles=0;
   const client={reply:async command=>{replies++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'e'.repeat(64),remoteId:null},{key,keyId,now:instant});},
     reconcile:async command=>{reconciles++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature')),kind:'ReconcileResult',state:'sent',remoteId:'remote-reconciled',evidenceHash:'f'.repeat(64)},{key,keyId,now:instant});}};
-  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   assert.equal((await worker.runOnce()).state,'unknown');assert.equal(replies,1);
   assert.equal((await worker.runReconcileOnce()).state,'sent');assert.equal(reconciles,1);assert.equal(replies,1);
   assert.equal(await worker.runReconcileOnce(),null);assert.equal(reconciles,1);
@@ -216,7 +216,7 @@ dbtest('production Group reconciliation stage consumes each unresolved attempt o
 dbtest('source health, target revision, and exact immutable content are rechecked before group dispatch',async({pool,actor,workItemId,observationId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
-  const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;throw Error('must not dispatch');}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;throw Error('must not dispatch');}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   await pool.query("UPDATE group_sources SET kill_switch=true WHERE id='group-source'");
   assert.equal((await worker.deliverGroupIntent(intent.id)).state,'cancelled');assert.equal(calls,0);
   assert.equal((await pool.query('SELECT count(*)::int n FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0);
@@ -237,7 +237,7 @@ dbtest('group delivery re-evaluates DB policy at the final dispatch instant',asy
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   await pool.query("UPDATE group_sources SET policy=$1 WHERE id='group-source'",[JSON.stringify({businessHours:{timeZone:'UTC',days:[4],start:'00:00',end:'24:00'},rateLimits:{organization:10,source:10,conversation:10}})]);
   const service=createInboxService({pool,clock:()=>instant});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
-  const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;throw Error('must not dispatch');}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>new Date('2026-10-23T12:00:00.000Z')});
+  const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;throw Error('must not dispatch');}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>new Date('2026-10-23T12:00:00.000Z'),policyClock:()=>new Date('2026-10-23T12:00:00.000Z')});
   const result=await worker.deliverGroupIntent(intent.id);assert.equal(result.state,'cancelled');assert.equal(result.code,'FINAL_POLICY_GATE');assert.equal(calls,0);
 });
 
@@ -260,11 +260,11 @@ dbtest('aged interrupted attempts become audited terminal unknown without dispat
 dbtest('lost gate COMMIT acknowledgement is recovered to terminal unknown without dispatch',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
-  const failing=createGroupDeliveryWorker({pool:failCommitOnConnection(pool,2),client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const failing=createGroupDeliveryWorker({pool:failCommitOnConnection(pool,2),client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   const unresolved=await failing.deliverGroupIntent(intent.id);assert.equal(unresolved.state,'unknown');assert.equal(calls,0,'a lost gate commit acknowledgement must never dispatch');
   assert.equal((await pool.query('SELECT state FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].state,'attempting');
   await pool.query("UPDATE delivery_attempts SET started_at=$2 WHERE delivery_intent_id=$1",[intent.id,new Date(instant-180000)]);
-  const recovered=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const recovered=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   const final=await recovered.deliverGroupIntent(intent.id);assert.equal(final.state,'unknown');assert.equal(final.code,'ATTEMPT_INTERRUPTED');assert.equal(calls,0);
 });
 
@@ -272,12 +272,12 @@ dbtest('failed outcome settlement leaves an aging attempt that direct rerun safe
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
   const client={reply:async command=>{calls++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'8'.repeat(64),remoteId:'remote-lost-settlement'},{key,keyId,now:instant});}};
-  const failing=createGroupDeliveryWorker({pool:failSettlementOnConnection(pool,3),client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const failing=createGroupDeliveryWorker({pool:failSettlementOnConnection(pool,3),client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   const unresolved=await failing.deliverGroupIntent(intent.id);assert.equal(unresolved.state,'unknown');assert.equal(calls,1);
   assert.equal((await pool.query('SELECT state FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].state,'attempting');
   assert.equal((await pool.query('SELECT count(*)::int n FROM group_send_receipts WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0,'rolled-back settlement evidence is not trusted');
   await pool.query("UPDATE delivery_attempts SET started_at=$2 WHERE delivery_intent_id=$1",[intent.id,new Date(instant-180000)]);
-  const recovered=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const recovered=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   const final=await recovered.deliverGroupIntent(intent.id);assert.equal(final.state,'unknown');assert.equal(final.code,'ATTEMPT_INTERRUPTED');assert.equal(calls,1,'direct rerun must not redispatch');
 });
 
@@ -288,7 +288,7 @@ dbtest('lost or unsigned transport outcome keeps an untrusted reconciliation see
     assert.equal(command.senderId,null);assert.equal(typeof command.attemptOperationId,'string');
     return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature')),kind:'ReconcileResult',state:'sent',senderId:'sender-recovered',attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'9'.repeat(64),remoteId:'remote-recovered'},{key,keyId,now});
   }};
-  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>now});
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>now,policyClock:()=>now});
   assert.equal((await worker.deliverGroupIntent(intent.id)).state,'unknown');
   const seed=(await pool.query('SELECT * FROM group_delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0];
   assert.equal(seed.canonical_target,'https://www.facebook.com/groups/123');assert.equal(seed.sender_id,null);assert.ok(seed.attempt_started_at);assert.ok(seed.attempt_deadline_at);
@@ -306,7 +306,7 @@ dbtest('only the restricted worker role can write immutable group attempt eviden
     const runtimeUrl=role=>{const url=new URL(process.env.TEST_DATABASE_URL);url.username=role;url.password=password;url.searchParams.set('options',`-c search_path=${schema}`);return url.href;};
     workerPool=createPool({databaseUrl:runtimeUrl(workerRole)});webPool=createPool({databaseUrl:runtimeUrl(webRole)});
     const client={reply:async command=>signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-role',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'7'.repeat(64),remoteId:'remote-role'},{key,keyId,now:instant})};
-    const worker=createGroupDeliveryWorker({pool:workerPool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+    const worker=createGroupDeliveryWorker({pool:workerPool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
     assert.equal((await worker.deliverGroupIntent(intent.id)).state,'sent','worker role writes attempt seed and signed receipt');
     assert.equal((await webPool.query('SELECT count(*)::int n FROM group_delivery_attempts')).rows[0].n,1);assert.equal((await webPool.query('SELECT count(*)::int n FROM group_send_receipts')).rows[0].n,1);
     for(const statement of ['INSERT INTO group_delivery_attempts DEFAULT VALUES','UPDATE group_delivery_attempts SET sender_id=sender_id','DELETE FROM group_delivery_attempts','INSERT INTO group_send_receipts DEFAULT VALUES','UPDATE group_send_receipts SET state=state','DELETE FROM group_send_receipts']) {

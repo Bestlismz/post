@@ -73,7 +73,7 @@ test("a second operation starts a fresh lifecycle after the first exhausts", asy
   }, { absoluteCapMs: 10_000 });
   poller.start("scan-first");
   await clock.advance(11_000);
-  assert.equal(poller.state("scan-first"), "expired");
+  assert.equal(poller.state("scan-first"), "stale");
   poller.start("scan-second");
   await clock.advance(1_000);
   assert(calls.includes("scan-second"));
@@ -127,4 +127,41 @@ test("visibility and destroy always clean up pending timers", async () => {
   poller.destroy();
   assert.equal(clock.pending(), 0);
   assert.equal(visibilityListener, undefined);
+});
+
+for (const terminal of ["completed", "stuck"]) test(`visibility resume after cap performs a final reload and projects ${terminal}`, async () => {
+  let visible = true;
+  let visibilityListener;
+  let calls = 0;
+  const { clock, poller } = harness(async () => { calls += 1; return terminal; }, {
+    absoluteCapMs: 10_000,
+    isVisible: () => visible,
+    subscribeVisibility: (listener) => { visibilityListener = listener; return () => { visibilityListener = undefined; }; },
+  });
+  poller.start(`scan-${terminal}`);
+  visible = false;
+  visibilityListener();
+  await clock.advance(12_000);
+  visible = true;
+  visibilityListener();
+  await clock.advance(0);
+  assert.equal(calls, 1);
+  assert.equal(poller.state(`scan-${terminal}`), terminal);
+  assert.equal(clock.pending(), 0);
+});
+
+test("a transient error on the final reload gets one bounded retry and does not remain queued", async () => {
+  let calls = 0;
+  const exposed = [];
+  const { clock, poller } = harness(async () => { calls += 1; throw new Error("temporary"); }, {
+    absoluteCapMs: 1_000,
+    finalRetryDelayMs: 250,
+    onFinalError: (operationId, state) => exposed.push({ operationId, state }),
+  });
+  poller.start("scan-final-error");
+  await clock.advance(1_250);
+  assert.equal(calls, 2);
+  assert.equal(poller.state("scan-final-error"), "retry_required");
+  assert.deepEqual(exposed, [{ operationId: "scan-final-error", state: "retry_required" }]);
+  assert.equal(clock.pending(), 0);
 });

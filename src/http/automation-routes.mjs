@@ -4,8 +4,7 @@ import {z} from 'zod';
 import {authenticate,checkCsrf,checkOrigin} from '../auth/session.mjs';
 import {httpError,requireRole} from '../auth/authorize.mjs';
 import {appendAudit,runIdempotent,withTransaction} from '../db/transaction.mjs';
-import {evaluateSourceDecision} from '../policy/source-decision.mjs';
-import {loadHourlyAttemptCounts} from '../policy/attempt-counts.mjs';
+import {evaluateCurrentSourceDecision} from '../policy/current-source-decision.mjs';
 import {evaluateSchedule} from '../workers/scheduler.mjs';
 import {errorHandler} from './boundary.mjs';
 import {readFormat} from '../replies/contracts.mjs';
@@ -32,7 +31,7 @@ function revision(request) {
   return Number(match[1]);
 }
 
-export function createAutomationRouter({pool,config}) {
+export function createAutomationRouter({pool,config,policyClock}) {
   const router=Router(),write=[requireRole('admin'),checkOrigin(config),checkCsrf];
   router.use('/api/automation',authenticate(pool));
   router.get('/api/automation',requireRole('admin','operator','viewer'),async(req,res)=>{
@@ -53,10 +52,8 @@ export function createAutomationRouter({pool,config}) {
       if(!source)throw httpError(404,'Source not found');
       const {rows:[conversation]}=await tx.query("SELECT id FROM conversations WHERE organization_id=$1 AND id=$2 AND channel='facebook_group' AND page_id=$3 FOR SHARE",[req.actor.organizationId,input.conversationId,`facebook_group:${source.group_id}`]);
       if(!conversation)throw httpError(404,'Conversation context not found');
-      const {rows:[clock]}=await tx.query('SELECT clock_timestamp() AS now');
-      const counts=await loadHourlyAttemptCounts(tx,{organizationId:req.actor.organizationId,sourceId:source.id,conversationId:conversation.id,now:clock.now});
-      const decision=evaluateSourceDecision({organizationPaused:organization.group_automation_paused,organizationPolicy:organization.automation_policy,source,context:{...input.sample,counts},now:clock.now});
-      return {...decision,source:{id:source.id,label:source.canonical_url},conversation:{id:conversation.id}};
+      const {decision,evaluatedAt}=await evaluateCurrentSourceDecision(tx,{organizationId:req.actor.organizationId,sourceId:source.id,conversationId:conversation.id,organizationPaused:organization.group_automation_paused,organizationPolicy:organization.automation_policy,source,context:input.sample},{clock:policyClock});
+      return {...decision,source:{id:source.id,label:source.canonical_url},conversation:{id:conversation.id},evaluatedAt:evaluatedAt.toISOString()};
     });
     res.json(result);
   });

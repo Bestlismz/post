@@ -25,6 +25,7 @@ export default function SourcesPage() {
   const [recovery, setRecovery] = useState(null);
   const csrfRef = useRef("");
   const pollersRef = useRef(new Map());
+  const staleOperationsRef = useRef(new Set());
 
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoadError("");
@@ -34,7 +35,7 @@ export default function SourcesPage() {
   }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    const pending = new Set(data.groups.filter((source) => source.latestOperation?.state === "queued").map((source) => source.latestOperation.operationId));
+    const pending = new Set(data.groups.filter((source) => source.latestOperation?.state === "queued" && !staleOperationsRef.current.has(source.latestOperation.operationId)).map((source) => source.latestOperation.operationId));
     for (const [operationId, poller] of pollersRef.current) {
       if (!pending.has(operationId)) { poller.destroy(); pollersRef.current.delete(operationId); }
     }
@@ -43,7 +44,7 @@ export default function SourcesPage() {
       const poller = createOperationPoller({ reload: async (id) => {
         const next = await load({ quiet: true });
         return next.groups.flatMap((source) => source.latestOperation ?? []).find((operation) => operation.operationId === id)?.state ?? "replaced";
-      } });
+      }, onFinalError: (id) => { staleOperationsRef.current.add(id); setLoadError("ยังยืนยันสถานะสแกนล่าสุดไม่ได้ กรุณากดโหลดอีกครั้ง"); } });
       pollersRef.current.set(operationId, poller);
       poller.start(operationId);
     }
@@ -52,6 +53,10 @@ export default function SourcesPage() {
     for (const poller of pollersRef.current.values()) poller.destroy();
     pollersRef.current.clear();
   }, []);
+  async function retryLoad() {
+    staleOperationsRef.current.clear();
+    await load();
+  }
 
   async function csrf(force = false) {
     if (!force && csrfRef.current) return csrfRef.current;
@@ -110,7 +115,7 @@ export default function SourcesPage() {
   return <div className="ops-page sources-page">
     <header className="ops-heading"><div><p>Connections &amp; health</p><h1>แหล่งข้อมูล Facebook</h1><span>เพจและกลุ่มที่ได้รับอนุญาต พร้อมสถานะสแกนและ browser session จากระบบจริง</span></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => setAddOpen(true)}><Plus size={17}/>เพิ่มกลุ่ม</button> : null}</header>
     {notice ? <div className="ops-notice" role="status"><CheckCircle2 size={17}/><span>{notice}</span><button aria-label="ปิดข้อความ" onClick={() => setNotice("")}><X size={16}/></button></div> : null}
-    {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={load}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
+    {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={retryLoad}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
     <div className="ops-content">
       <section className="ops-section" aria-labelledby="page-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="page-source-title">Facebook Page</h2><p>Messenger ผ่าน Meta API ทางการ</p></div></div><span className="ops-count">{data.pages.length} เพจ</span></div>
         {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div><strong>{page.name}</strong><p>รับข้อความและส่งคำตอบผ่าน Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : "ต้องตรวจสอบการเชื่อมต่อ"}</span></article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div></div>}

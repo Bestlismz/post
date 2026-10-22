@@ -13,6 +13,8 @@ export function createOperationPoller({
   },
   delays = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000],
   absoluteCapMs = 12 * 60_000,
+  finalRetryDelayMs = 1_000,
+  onFinalError = () => {},
 }) {
   let active = null;
   let timer = null;
@@ -29,8 +31,7 @@ export function createOperationPoller({
     if (destroyed || !active || !isVisible()) return;
     const elapsed = now() - active.startedAt;
     if (elapsed >= absoluteCapMs) {
-      states.set(active.id, "expired");
-      active = null;
+      timer = setTimer(tick, 0);
       return;
     }
     const backoff = delays[Math.min(active.attempt, delays.length - 1)];
@@ -40,12 +41,8 @@ export function createOperationPoller({
   async function tick() {
     timer = null;
     if (destroyed || !active || !isVisible()) return;
-    if (now() - active.startedAt >= absoluteCapMs) {
-      states.set(active.id, "expired");
-      active = null;
-      return;
-    }
     const operation = active;
+    const atCap = now() - operation.startedAt >= absoluteCapMs;
     try {
       const state = await reload(operation.id);
       if (destroyed || active !== operation) return;
@@ -56,6 +53,23 @@ export function createOperationPoller({
       }
     } catch {
       if (destroyed || active !== operation) return;
+      if (atCap) {
+        if (operation.finalAttempts < 1) {
+          operation.finalAttempts += 1;
+          timer = setTimer(tick, finalRetryDelayMs);
+          return;
+        }
+        states.set(operation.id, "retry_required");
+        onFinalError(operation.id, "retry_required");
+        active = null;
+        return;
+      }
+    }
+    if (atCap) {
+      states.set(operation.id, "stale");
+      onFinalError(operation.id, "stale");
+      active = null;
+      return;
     }
     operation.attempt += 1;
     schedule();
@@ -64,7 +78,7 @@ export function createOperationPoller({
   function start(operationId) {
     if (destroyed || !operationId || active?.id === operationId) return;
     clearPending();
-    active = { id: operationId, attempt: 0, startedAt: now() };
+    active = { id: operationId, attempt: 0, finalAttempts: 0, startedAt: now() };
     states.set(operationId, "queued");
     schedule();
   }

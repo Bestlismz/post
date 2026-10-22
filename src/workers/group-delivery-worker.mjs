@@ -5,8 +5,7 @@ import {appendAudit,withTransaction} from '../db/transaction.mjs';
 import {loadContext,assertReplyFresh} from '../inbox/service.mjs';
 import {freshnessConflictCodes,terminalPreparationCodes} from '../inbox/errors.mjs';
 import {validateReply} from '../replies/validator.mjs';
-import {evaluateSourceDecision} from '../policy/source-decision.mjs';
-import {loadHourlyAttemptCounts} from '../policy/attempt-counts.mjs';
+import {evaluateCurrentSourceDecision} from '../policy/current-source-decision.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -14,7 +13,7 @@ const outcome=row=>({state:row.state==='attempting'?'unknown':row.state,attemptI
 const reject=code=>{throw Object.assign(new Error(code),{code});};
 const terminalCodes=new Set([...freshnessConflictCodes,...terminalPreparationCodes,'INVALID_AUTHORIZATION','DELIVERY_STATE_CHANGED','SOURCE_UNAVAILABLE','TARGET_CHANGED','REPLY_SUPERSEDED','LOCAL_INVALID_REQUEST','FINAL_POLICY_GATE']);
 
-export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clock=()=>new Date(),stagingSendEnabled=true,stagingAllowedGroups=null}) {
+export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clock=()=>new Date(),policyClock,stagingSendEnabled=true,stagingAllowedGroups=null}) {
   const stagingGroups=stagingAllowedGroups===null?null:[...new Set(stagingAllowedGroups)];
   async function claimJob(intentId=null) {
     const leaseOwner=randomUUID();
@@ -105,12 +104,11 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
           await assertReplyFresh(tx,reply,context);validateReply(reply.content,reply.context);
           if(!isDeepStrictEqual(authorization.evidence.inventory,reply.context.snapshot.inventoryWatermark))reject('INVALID_AUTHORIZATION');
           const source=context.source;
-          const now=clock();
-          const counts=await loadHourlyAttemptCounts(tx,{organizationId:intent.organization_id,sourceId:source.id,conversationId:intent.conversation_id,now});
           const human=authorization.actor_kind==='human',policy=reply.context.evidence.policy;
-          const decision=evaluateSourceDecision({organizationPaused:context.org.group_automation_paused,organizationPolicy:policy,source,
-            actorKind:human?'human':'policy',context:{confidence:reply.context.confidence,grounded:reply.content.grounded,automaticEligible:reply.content.automaticEligible,
-              replyWindowOpen:true,optOut:context.conversation.opted_out,humanTakeover:context.conversation.human_takeover,counts},now});
+          const {decision,evaluatedAt}=await evaluateCurrentSourceDecision(tx,{organizationId:intent.organization_id,sourceId:source.id,conversationId:intent.conversation_id,
+            organizationPaused:context.org.group_automation_paused,organizationPolicy:policy,source,actorKind:human?'human':'policy',
+            context:{confidence:reply.context.confidence,grounded:reply.content.grounded,automaticEligible:reply.content.automaticEligible,
+              replyWindowOpen:true,optOut:context.conversation.opted_out,humanTakeover:context.conversation.human_takeover}},{clock:policyClock});
           if(decision.action!=='authorize')reject('FINAL_POLICY_GATE');
           const {rows:[target]}=await tx.query(`SELECT o.target_id,o.id FROM messages m
             JOIN group_observations o ON o.organization_id=m.organization_id AND o.id=m.raw_evidence->>'observationId'
@@ -118,11 +116,11 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
             WHERE m.organization_id=$1 AND m.id=(SELECT message_id FROM work_items WHERE organization_id=$1 AND id=$2) AND o.source_id=$3`,[intent.organization_id,reply.work_item_id,source.id]);
           if(!target)reject('TARGET_CHANGED');
           const textHash=digest(intent.content.text);
-          const command=signCommand({version:1,kind:'GroupReplyCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:target.target_id,text:intent.content.text,textHash,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
+          const command=signCommand({version:1,kind:'GroupReplyCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:target.target_id,text:intent.content.text,textHash,issuedAt:evaluatedAt.toISOString(),expiresAt:new Date(+evaluatedAt+300000).toISOString(),keyId},{key:signingKey,keyId,now:evaluatedAt});
           await tx.query('INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,$4,$5)',[operationId,intent.organization_id,source.id,'GroupReplyCommand',JSON.stringify(command)]);
-          await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at) VALUES($1,$2,$3,'attempting',$4)",[attemptId,intent.organization_id,intent.id,now]);
+          await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at) VALUES($1,$2,$3,'attempting',$4)",[attemptId,intent.organization_id,intent.id,evaluatedAt]);
           await tx.query(`INSERT INTO group_delivery_attempts(organization_id,delivery_intent_id,delivery_attempt_id,operation_id,target_id,text_hash,canonical_target,sender_id,attempt_started_at,attempt_deadline_at)
-            VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9)`,[intent.organization_id,intent.id,attemptId,operationId,target.target_id,textHash,source.canonical_url,now,command.expiresAt]);
+            VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9)`,[intent.organization_id,intent.id,attemptId,operationId,target.target_id,textHash,source.canonical_url,evaluatedAt,command.expiresAt]);
           await tx.query("UPDATE jobs SET lease_owner=$3,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[claim.id,claim.lease_owner,attemptId]);
           await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.attempting',entityType:'delivery_intent',entityId:intent.id,details:{attemptId,operationId,replyVersionId:reply.id,channel:'facebook_group'}});
           attempted=true;return {command,operation:{id:operationId}};

@@ -6,3 +6,9 @@ export async function loadHourlyAttemptCounts(database, { organizationId, source
     WHERE a.organization_id=$1 AND a.started_at>$4::timestamptz-interval '1 hour'`, [organizationId, sourceId, conversationId, now]);
   return counts;
 }
+
+export async function loadPolicyEvaluationSnapshot(database, identifiers, { clock } = {}) {
+  const now = clock ? clock() : (await database.query("SELECT clock_timestamp() AS now")).rows[0].now;
+  const counts = await loadHourlyAttemptCounts(database, { ...identifiers, now });
+  return { now, counts };
+}
