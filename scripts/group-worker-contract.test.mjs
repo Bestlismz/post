@@ -190,6 +190,27 @@ test('a no-op Reply never reuses or types into a pre-existing card-owned textbox
   await assert.rejects(unrelatedDriver.sendExact(unrelatedTarget,'Must never be typed',{deadline:Date.now()+250}));assert.equal(await unrelatedPage.locator('[contenteditable]').textContent(),'');
 });
 
+test('visible pre-click editors can never be promoted by Reply/Edit/Write relabel and focus',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  for(const label of ['Reply to Ann','Edit comment','Write a comment']) {
+    const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><button id="reply">Reply</button><div id="old" contenteditable="true" role="textbox" aria-label="${label}"></div></div></div><script>window.keydowns=0;const old=document.querySelector('#old');old.addEventListener('keydown',()=>window.keydowns++);document.querySelector('#reply').onclick=()=>{old.setAttribute('aria-label','Reply to Ann');old.focus();};</script>`);
+    const driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'comment:900:901'});
+    await assert.rejects(driver.sendExact(target,'Never type here',{deadline:Date.now()+250}));
+    assert.equal(await page.locator('#old').textContent(),'');assert.equal(await page.evaluate(()=>window.keydowns),0,label);
+  }
+});
+
+test('a previously hidden card reply editor may activate, but abort during final text read prevents Enter',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const html=`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><button id="reply">Reply</button><div id="hidden" style="display:none" contenteditable="true" role="textbox" aria-label="Reply to Ann"></div></div></div><script>window.keydowns=0;const editor=document.querySelector('#hidden');editor.addEventListener('keydown',event=>{window.keydowns++;if(event.key!=='Enter')return;const item=document.createElement('div');item.setAttribute('role','article');item.innerHTML='<h3><a href="/me">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message"></div>';item.querySelector('[data-ad-preview]').textContent=editor.textContent;editor.closest('[role=article]').append(item);});document.querySelector('#reply').onclick=()=>{editor.style.display='block';editor.focus();};</script>`;
+  const validPage=await fixturePage(t,html),validDriver=createFacebookGroupDriver(validPage),validTarget=await validDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  assert.equal((await validDriver.sendExact(validTarget,'Hidden editor',{deadline:Date.now()+1000})).state,'sent');assert.equal(await validPage.evaluate(()=>window.keydowns),1);
+  const abortedPage=await fixturePage(t,html),controller=new AbortController();
+  const abortedDriver=createFacebookGroupDriver(abortedPage,{readEditorText:async editor=>{controller.abort();return editor.textContent();}}),abortedTarget=await abortedDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  await assert.rejects(abortedDriver.sendExact(abortedTarget,'Never dispatch',{signal:controller.signal,deadline:Date.now()+1000}),/cancel/i);
+  assert.equal(await abortedPage.evaluate(()=>window.keydowns),0);
+});
+
 test('page close during Enter is a possible send and the durable ledger prevents automatic retry',async t=>{
   const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
   const {createGroupDeliveryBoundary}=await import('../src/group-worker/delivery.mjs');
@@ -201,6 +222,11 @@ test('page close during Enter is a possible send and the durable ledger prevents
   const result=await boundary.deliver(input);assert.equal(result.state,'unknown');assert.equal(result.code,'POSSIBLE_SEND');
   const restarted=createGroupDeliveryBoundary({ledgerPath:directory,driver:{sendExact:async()=>{retrySends++;}}});
   assert.equal((await restarted.deliver(input)).state,'unknown');assert.equal(retrySends,0);
+  const cancelPage=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><button onclick="const e=document.createElement('div');e.contentEditable='true';e.setAttribute('role','textbox');e.setAttribute('aria-label','Reply to Ann');this.after(e);e.focus();e.addEventListener('keydown',event=>{if(event.key==='Enter')window.cancelAfterEnter();})">Reply</button></div></div>`);
+  const cancelController=new AbortController();await cancelPage.exposeFunction('cancelAfterEnter',()=>cancelController.abort());
+  const cancelInput=signCommand({...Object.fromEntries(Object.entries(input).filter(([name])=>name!=='signature')),operationId:'cancel-on-enter'},{key,keyId:'current'});
+  const cancelled=await createGroupDeliveryBoundary({ledgerPath:directory,driver:createFacebookGroupDriver(cancelPage)}).deliver(cancelInput,{signal:cancelController.signal});
+  assert.equal(cancelled.state,'unknown');assert.equal(cancelled.code,'POSSIBLE_SEND');
 });
 
 test('sender identity comes only from an unambiguous session-owned account surface',async t=>{

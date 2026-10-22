@@ -23,7 +23,7 @@ export async function resolveFacebookSessionIdentity(page) {
   }));
 }
 
-export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSessionIdentity=resolveFacebookSessionIdentity}={}) {
+export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSessionIdentity=resolveFacebookSessionIdentity,readEditorText=editor=>editor.textContent()}={}) {
   let senderId=null;
   async function locateExactTarget(command) {
     const identity=targetIdentity(command.targetId);
@@ -104,9 +104,10 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
       do {
         assertActive({signal,deadline});const after=await editorRecords(activeTarget),candidates=[];
         for(const record of after) {
-          const prior=await priorRecord(record,before),changed=!prior||prior.signature!==record.signature;
-          const associated=!prior||record.focused||(controlledId&&record.id===controlledId);
-          if(record.role==='reply'&&changed&&associated)candidates.push(record.locator);
+          const prior=await priorRecord(record,before);
+          if(prior)continue;
+          if(controlledId&&record.id!==controlledId)continue;
+          if(record.role==='reply')candidates.push(record.locator);
         }
         if(candidates.length>1)throw Error('Exact Facebook composer ambiguous');
         if(candidates.length===1){editor=candidates[0];break;}
@@ -119,7 +120,10 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
     await editor.fill(text);assertActive({signal,deadline});
     activeTarget=await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId});
     const stillOwned=(await ownedEditors(activeTarget));
-    if(stillOwned.length!==1||await stillOwned[0].textContent()!==text)throw Error('Exact Facebook composer changed');
+    if(stillOwned.length!==1)throw Error('Exact Facebook composer changed');
+    const finalText=await readEditorText(stillOwned[0]);
+    if(finalText!==text)throw Error('Exact Facebook composer changed');
+    assertActive({signal,deadline});
     try {await stillOwned[0].press('Enter');}catch(error){error.possibleClick=true;throw error;}
     try {do {assertActive({signal,deadline});const matches=(await findReplyEvidence({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId})).filter(item=>item.text===text);if(matches.length===1)return {state:'sent',visible:true,remoteId:matches[0].remoteId};await page.waitForTimeout(250);} while(Date.now()<deadline);}
     catch(error) {error.possibleClick=true;throw error;}
