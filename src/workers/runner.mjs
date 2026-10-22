@@ -5,6 +5,7 @@ export async function runWorkers({automation,delivery,signal,pollMs=1000,onError
   while(!signal.aborted) {
     let worked=false;
     for(const worker of [automation,delivery]) {
+      if(signal.aborted)break;
       try {worked=Boolean(await worker.runOnce()) || worked;}
       catch {onError('WORKER_POLL_FAILED');}
     }

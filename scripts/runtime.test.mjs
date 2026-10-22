@@ -5,7 +5,7 @@ import test from "node:test";
 test("production image runs only the web process without browser or fixture assets", async () => {
   const dockerfile = await readFile(new URL("../Dockerfile", import.meta.url), "utf8");
   assert.match(dockerfile, /USER node/);
-  assert.match(dockerfile, /CMD \["npm", "start"\]/);
+  assert.match(dockerfile, /CMD \["node", "src\/server\.mjs"\]/);
   assert.doesNotMatch(dockerfile, /chromium|supervisord|COPY fixture|COPY src \.\/src/);
   const server = await readFile(new URL("../src/server.mjs", import.meta.url), "utf8");
   assert.doesNotMatch(server, /import\(["'].*(?:fixture|import-json-state)/);

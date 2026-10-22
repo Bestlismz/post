@@ -24,5 +24,5 @@ RUN npm run build && chown -R node:node /app/.next
 
 USER node
 EXPOSE 3000
-CMD ["npm", "start"]
+CMD ["node", "src/server.mjs"]
 

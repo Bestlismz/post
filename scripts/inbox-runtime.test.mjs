@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 
-test('single worker polls automation and delivery and drains in-flight work on stop',async()=>{
+test('stop during delayed automation drains that invocation without claiming delivery',async()=>{
   const runtime=await import('../src/workers/runner.mjs').catch(()=>null);
   assert.equal(typeof runtime?.runWorkers,'function','Production worker runner must exist');
   const controller=new AbortController();let started,release;
@@ -12,7 +12,17 @@ test('single worker polls automation and delivery and drains in-flight work on s
     delivery:{async runOnce(){calls.push('delivery');return null;}},signal:controller.signal,pollMs:5});
   await entered;controller.abort();let drained=false;running.then(()=>drained=true);
   await new Promise(resolve=>setTimeout(resolve,10));assert.equal(drained,false);
-  release();await running;assert.deepEqual(calls,['automation','delivery']);
+  release();await running;assert.deepEqual(calls,['automation']);
+});
+
+test('stop during delivery settles that invocation and never claims the next automation job',async()=>{
+  const {runWorkers}=await import('../src/workers/runner.mjs');
+  const controller=new AbortController();let entered,release;
+  const waiting=new Promise(resolve=>entered=resolve),barrier=new Promise(resolve=>release=resolve),calls=[];
+  const running=runWorkers({automation:{async runOnce(){calls.push('automation');return null;}},
+    delivery:{async runOnce(){calls.push('delivery');entered();await barrier;calls.push('settled');return 'sent';}},signal:controller.signal});
+  await waiting;controller.abort();assert.deepEqual(calls,['automation','delivery']);
+  release();await running;assert.deepEqual(calls,['automation','delivery','settled']);
 });
 
 test('worker continues polling both queues after a transient database failure without leaking exception text',async()=>{
@@ -30,6 +40,10 @@ test('Compose production worker uses its restricted URL and only environment sec
     WORKER_DATABASE_URL:'postgres://rental_radar_worker:runtime@postgres/rental_radar',SESSION_SECRET:'x'.repeat(32),OPENAI_API_KEY:'fake-no-live-calls',META_TOKEN_KEYS:'{}'}}));
   assert.ok(config.services.worker,'Compose must start a production worker');
   const worker=config.services.worker;
+  for(const name of ['web','worker']) {
+    assert.equal(config.services[name].init,true);
+    assert.equal(config.services[name].stop_grace_period,'2m0s','Allow two 30s OpenAI calls plus database settlement');
+  }
   assert.deepEqual(worker.command,['node','src/worker.mjs'],'SIGTERM must reach the runner without an npm wrapper');assert.match(worker.environment.DATABASE_URL,/rental_radar_worker/);
   for(const name of ['MIGRATION_DATABASE_URL','POSTGRES_PASSWORD','SESSION_SECRET'])assert.equal(worker.environment[name],undefined);
   assert.equal(worker.environment.OPENAI_API_KEY,'fake-no-live-calls');assert.equal(worker.environment.META_TOKEN_KEYS,'{}');

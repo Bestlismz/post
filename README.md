@@ -59,6 +59,8 @@ Both runtime roles own no schema objects and cannot run migrations or disable im
 
 Configure `OPENAI_API_KEY`, `META_TOKEN_KEY_VERSION`, and `META_TOKEN_KEYS` before `docker compose up -d worker`. The worker uses the official OpenAI Responses SDK and encrypted Page credentials saved by the OAuth workflow. It refuses owner database credentials and drains in-flight work on SIGTERM. Web receives Meta app/webhook/OAuth configuration; the worker receives only its provider key and Page encryption keys. No Groups worker is included.
 
+Both production processes start directly with Node under Compose's init process. SIGTERM closes web receipt streams and stops accepting requests while accepted requests drain. The worker finishes its current invocation, then stops before claiming another queue stage or job. Both services have a 120-second stop grace period. Automation can make two sequential 30-second OpenAI calls; the grace period leaves another 60 seconds for normal database settlement. The Meta client permits a call timeout up to 60 seconds, with the same settlement allowance. An abnormal database stall beyond that window may still require forced termination; durable job leases and irreversible delivery-attempt records preserve recovery and no-resend behavior.
+
 The [Inbox HTTP contract](docs/inbox-http-contract.md) describes authenticated resources, commands, and receipt replay. Frontend Cutover must implement `/settings/meta/callback` using the authenticated login flow's CSRF token. The backend accepts code/state only through the protected POST callback, and does not redirect callback query parameters into an unauthenticated mutation.
 
 The repository ignores `.env` and `.env.local`. Do not commit credentials. PostgreSQL uses the named `rental-radar-postgres-data` volume. `rental-radar-browser-profile` and the separate browser network are reserved for the future Groups runtime; the web service cannot mount that profile.
@@ -69,6 +71,9 @@ The repository ignores `.env` and `.env.local`. Do not commit credentials. Postg
 TEST_DATABASE_URL=postgres://localhost/postgres npm test
 npm run build
 docker compose config --quiet
+# Optional Docker lifecycle proof after building an image:
+docker build -t rental-radar-lifecycle .
+TEST_CONTAINER_IMAGE=rental-radar-lifecycle TEST_DATABASE_URL=postgres://localhost/postgres node --test scripts/inbox-container-lifecycle.mjs
 ```
 
 Database tests create isolated schemas and remove them afterward. The legacy fixture tests remain in the repository, but the old combined POC Compose service has been removed. The fixture proof commands require a separate development fixture runtime and do not apply to the production stack.

@@ -22,6 +22,7 @@ services:
   web:
     build: .
     init: true
+    stop_grace_period: 120s
     restart: unless-stopped
     depends_on:
       postgres:
@@ -51,6 +52,7 @@ services:
   worker:
     build: .
     init: true
+    stop_grace_period: 120s
     restart: unless-stopped
     command: ["node", "src/worker.mjs"]
     depends_on:
