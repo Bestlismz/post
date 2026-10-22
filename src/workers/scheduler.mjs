@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import {withTransaction,appendAudit} from '../db/transaction.mjs';
+import {appendAudit} from '../db/transaction.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 
 const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
@@ -63,15 +63,53 @@ function fromRow(row) {
   return {enabled:row.enabled,cadenceMinutes:row.cadence_minutes,timeZone:row.time_zone,days:row.days.map(Number),start:row.start_local,end:row.end_local,dailyLimit:row.daily_limit,maintenanceWindows:row.maintenance_windows};
 }
 
-export function createGroupScheduler({pool,supportedSelectorVersions=[]}) {
-  return {async tick() {
-    const {rows:[databaseClock]}=await pool.query('SELECT clock_timestamp() AS now');
+function abortError(signal) {return signal?.reason instanceof Error?signal.reason:Object.assign(Error('Scheduler aborted'),{name:'AbortError'});}
+function timeoutError() {return Object.assign(Error('Scheduler tick timed out'),{code:'SCHEDULER_TICK_TIMEOUT'});}
+function checkDeadline(signal,deadline) {
+  if(signal?.aborted)throw abortError(signal);
+  const remaining=deadline-performance.now();if(remaining<=0)throw timeoutError();
+  return remaining;
+}
+async function acquireClient(pool,deadline,signal) {
+  const pending=pool.connect(),remaining=checkDeadline(signal,deadline);let timer,onAbort;
+  const boundary=new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(timeoutError()),remaining);
+    if(signal) {onAbort=()=>reject(abortError(signal));signal.addEventListener('abort',onAbort,{once:true});}
+  });
+  try {return await Promise.race([pending,boundary]);}
+  catch(error) {pending.then(client=>client.release(),()=>{});throw error;}
+  finally {clearTimeout(timer);if(onAbort)signal.removeEventListener('abort',onAbort);}
+}
+async function boundedTransaction(pool,deadline,signal,fn) {
+  const tx=await acquireClient(pool,deadline,signal);let releaseError;
+  try {
+    checkDeadline(signal,deadline);await tx.query('BEGIN');
+    await tx.query("SELECT set_config('statement_timeout',$1,true)",[`${Math.max(1,Math.ceil(checkDeadline(signal,deadline)))}ms`]);
+    const result=await fn(tx);checkDeadline(signal,deadline);await tx.query('COMMIT');return result;
+  } catch(error) {
+    try {await tx.query('ROLLBACK');} catch(rollbackError) {releaseError=rollbackError;}
+    throw error;
+  } finally {tx.release(releaseError);}
+}
+
+export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSize=50,tickTimeoutMs=30000}) {
+  if(!Number.isSafeInteger(batchSize)||batchSize<1||batchSize>500||!Number.isSafeInteger(tickTimeoutMs)||tickTimeoutMs<10||tickTimeoutMs>60000)throw Error('Invalid scheduler bounds');
+  let cursor=null;
+  return {async tick({signal}={}) {
+    const deadline=performance.now()+tickTimeoutMs;
+    const {databaseClock,sources}=await boundedTransaction(pool,deadline,signal,async tx=>{
+      const {rows:[databaseClock]}=await tx.query('SELECT clock_timestamp() AS now');
+      const {rows:sources}=await tx.query(`SELECT s.organization_id,s.source_id FROM group_source_schedules s
+        JOIN group_sources g ON g.organization_id=s.organization_id AND g.id=s.source_id
+        WHERE ($1::text IS NULL OR (s.organization_id,s.source_id)>($1,$2))
+        ORDER BY s.organization_id,s.source_id LIMIT $3`,[cursor?.organizationId??null,cursor?.sourceId??'',batchSize]);
+      return {databaseClock,sources};
+    });
     const now=databaseClock.now;
-    const {rows:sources}=await pool.query(`SELECT s.organization_id,s.source_id FROM group_source_schedules s
-      JOIN group_sources g ON g.organization_id=s.organization_id AND g.id=s.source_id ORDER BY s.organization_id,s.source_id`);
     const summary={considered:0,scheduled:0,skipped:0};
     for(const identity of sources) {
-      const result=await withTransaction(pool,async tx=>{
+      checkDeadline(signal,deadline);
+      const result=await boundedTransaction(pool,deadline,signal,async tx=>{
         const {rows:[org]}=await tx.query('SELECT group_automation_paused FROM organizations WHERE id=$1 FOR UPDATE',[identity.organization_id]);
         const {rows:[row]}=await tx.query(`SELECT s.*,g.group_id,g.canonical_url,g.kill_switch,g.archived,g.session_health,g.selector_health,g.session_circuit,g.selector_circuit,g.selector_version
           FROM group_source_schedules s JOIN group_sources g ON g.organization_id=s.organization_id AND g.id=s.source_id
@@ -104,6 +142,7 @@ export function createGroupScheduler({pool,supportedSelectorVersions=[]}) {
       if(!result?.deduplicated)summary.considered++;
       if(result?.scheduled)summary.scheduled++;else if(result&&!result.deduplicated)summary.skipped++;
     }
+    cursor=sources.length===batchSize?{organizationId:sources.at(-1).organization_id,sourceId:sources.at(-1).source_id}:null;
     return summary;
   }};
 }

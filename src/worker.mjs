@@ -5,8 +5,7 @@ import {createAutomationWorker} from './workers/automation-worker.mjs';
 import {createMetaDeliveryWorker} from './workers/meta-delivery-worker.mjs';
 import {createMetaCredentialRepository} from './channels/meta/credentials.mjs';
 import {metaConnectionConfig} from './channels/meta/oauth.mjs';
-import {runWorkers} from './workers/runner.mjs';
-import {runScheduler} from './workers/runner.mjs';
+import {runApplicationRuntimes} from './workers/runner.mjs';
 import {createGroupScheduler} from './workers/scheduler.mjs';
 
 const controller=new AbortController();
@@ -25,17 +24,14 @@ try {
   const automation=createAutomationWorker({pool,service,workerId:`messenger-${process.pid}`});
   const credentials=createMetaCredentialRepository({pool,keys:tokenConfig.keys,keyVersion:tokenConfig.keyVersion});
   const delivery=createMetaDeliveryWorker({pool,credentials});
+  const running=runApplicationRuntimes({automation,delivery,controller,env:process.env,createScheduler:config=>createGroupScheduler({pool,supportedSelectorVersions:config.supportedSelectorVersions,batchSize:config.schedulerBatchSize,tickTimeoutMs:config.schedulerTickTimeoutMs}),
+    onWorkerError:code=>process.stderr.write(code+'\n'),onSchedulerEvent:event=>{
+      const line=event.code==='SCHEDULER_TICK_COMPLETED'?{code:event.code,scheduled:event.scheduled,skipped:event.skipped,considered:event.considered}:event;
+      (event.code==='SCHEDULER_TICK_FAILED'?process.stderr:process.stdout).write(JSON.stringify(line)+'\n');
+    }});
   process.stdout.write('Messenger worker started.\n');
-  const supported=(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean);
-  if(!supported.length||supported.some(value=>value.length>200))throw Error('Group scheduler selector configuration required');
-  const scheduler=createGroupScheduler({pool,supportedSelectorVersions:supported});
-  const pollMs=Number(process.env.GROUP_SCHEDULER_POLL_MS??15000);
-  const processes=[runWorkers({automation,delivery,signal:controller.signal,onError:code=>process.stderr.write(code+'\n')}),runScheduler({scheduler,signal:controller.signal,pollMs,onEvent:event=>{
-    const line=event.code==='SCHEDULER_TICK_COMPLETED'?{code:event.code,scheduled:event.scheduled,skipped:event.skipped,considered:event.considered}:event;
-    (event.code==='SCHEDULER_TICK_FAILED'?process.stderr:process.stdout).write(JSON.stringify(line)+'\n');
-  }})];
   process.stdout.write('Group scheduler started.\n');
-  await Promise.all(processes);
+  await running;
 } catch {
   process.stderr.write('Application worker startup failed. Check runtime permissions and provider configuration.\n');
   process.exitCode=1;

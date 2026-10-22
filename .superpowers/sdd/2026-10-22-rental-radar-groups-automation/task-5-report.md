@@ -22,6 +22,10 @@ The schedule API creates or updates source schedules under optimistic revision c
 
 The production application worker now runs one bounded scheduler loop beside the existing Messenger workers. It polls sequentially, never overlaps its own ticks, isolates tick and observability failures, reports stable event codes, drains an active tick on SIGTERM/SIGINT, and stops polling after abort. Multiple application-worker replicas remain safe because the database receipt constraint is the idempotency authority.
 
+Runner configuration is parsed and range-checked synchronously before either sibling loop can start. The worker and scheduler loops are supervised as one process: an unexpected rejection or clean exit aborts their shared controller, waits for every sibling to settle, and rethrows the first failure so the process exits. Normal signal shutdown remains clean.
+
+Each scheduler tick has a monotonic deadline and an explicit source batch limit with a stable cursor. PostgreSQL `statement_timeout` is reduced to the remaining tick budget in every transaction, so blocked server work is cancelled rather than abandoned in the background. Abort is checked before acquisition, between sources, and before commit; a late connection acquired after timeout is released. The default 30-second tick deadline stays inside Compose's two-minute shutdown grace.
+
 The web role may manage mutable schedules and insert control receipts but cannot mutate schedule decision receipts. The worker role can read schedules, append schedule receipts, and append scan-dispatch lineage, but cannot administer schedules or read control receipts. The browser worker remains database-free.
 
 Scheduled jobs intentionally contain no pre-signed command. After a paused or unhealthy source recovers and the queue grants a valid lease, `prepareGroupScanDispatch` rechecks all source gates under locks and signs a fresh five-minute command. Its append-only dispatch receipt distinguishes `COMMAND_FRESH`, `COMMAND_CURRENT`, and `COMMAND_REFRESHED`, preserving the source/slot/job identity and predecessor lineage. Legacy scheduled commands delayed beyond expiry are replaced atomically; their original operation and schedule receipt are never rewritten.
@@ -35,8 +39,9 @@ Scheduled jobs intentionally contain no pre-signed command. After a paused or un
 - Runtime RED/GREEN: a restricted worker initially failed on a row lock; serialization now uses the source row so schedules remain read-only to the worker.
 - Review RED/GREEN: the production worker previously never invoked the scheduler; the new runtime regression proves stored schedule state creates a job and that shutdown prevents another poll. Failure isolation and overlap prevention have direct runner regressions.
 - Expiry RED/GREEN: scheduler-created commands could expire during a pause. Scheduling now stores only durable parameters, and a six-minute delayed legacy command is verified expired then atomically replaced with one valid signed command at dispatch without changing its slot receipt.
+- Re-review RED/GREEN: invalid runner settings start zero iterations; unexpected loop rejection and clean exit both abort and drain siblings while preserving the primary error. A server-blocked scheduler transaction is cancelled inside the tick deadline during SIGTERM-like abort, late connection acquisition is released, and five sources advance through two-row batches without duplicate jobs.
 - Focused scheduler/policy/foundation/delivery tests passed.
-- `TEST_DATABASE_URL=postgres://localhost/postgres npm test`: 336 passed, zero failures/skips.
+- `TEST_DATABASE_URL=postgres://localhost/postgres npm test`: 342 passed, zero failures/skips.
 - `npm run build`: passed.
 - `git diff --check`: passed.
 

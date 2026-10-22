@@ -40,6 +40,14 @@ test('schedule decisions use IANA local time across DST and reject maintenance w
   assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:00Z'),{completedToday:8}).reasons,['DAILY_LIMIT_REACHED']);
 });
 
+test('scheduler deadline releases a database client acquired after the tick already timed out',async()=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');let released=0;
+  const pool={connect:()=>new Promise(resolve=>setTimeout(()=>resolve({release(){released++;}}),30))};
+  const scheduler=createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],tickTimeoutMs:10});
+  await assert.rejects(scheduler.tick(),error=>error.code==='SCHEDULER_TICK_TIMEOUT');
+  await new Promise(resolve=>setTimeout(resolve,40));assert.equal(released,1);
+});
+
 integration('concurrent scheduler ticks create one durable unsigned job per source slot',async({pool})=>{
   await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
     VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
@@ -154,6 +162,33 @@ integration('production scheduler loop turns stored API schedule state into a jo
   await runScheduler({scheduler:{async tick(){ticks++;const result=await scheduler.tick();if(result.scheduled)controller.abort();return result;}},signal:controller.signal,pollMs:1});
   assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan'")).rows[0].n,1);const stopped=ticks;
   await new Promise(resolve=>setTimeout(resolve,5));assert.equal(ticks,stopped);
+});
+
+integration('large source sets are processed in bounded batches without duplicate jobs',async({pool})=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  for(let index=2;index<=5;index++)await pool.query(`INSERT INTO group_sources(id,organization_id,group_id,canonical_url,mode,allow_listed,session_health,selector_health,selector_version)
+    VALUES($1,'org_default',$2,$3,'approval',true,'healthy','healthy','facebook-dom-v2')`,[`source-${index}`,String(200+index),`https://www.facebook.com/groups/${200+index}`]);
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    SELECT organization_id,id,true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20 FROM group_sources`);
+  const scheduler=createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],batchSize:2,tickTimeoutMs:1000});
+  assert.deepEqual((await scheduler.tick()).scheduled,2);assert.deepEqual((await scheduler.tick()).scheduled,2);assert.deepEqual((await scheduler.tick()).scheduled,1);
+  await scheduler.tick();
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan'")).rows[0].n,5);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM group_schedule_receipts WHERE state='scheduled'")).rows[0].n,5);
+});
+
+integration('a blocked scheduler query is server-cancelled and SIGTERM-like abort drains the active tick',async({pool})=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');const {runScheduler}=await import('../src/workers/runner.mjs');
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
+  const blocker=await pool.connect(),controller=new AbortController(),events=[];await blocker.query('BEGIN');await blocker.query("SELECT id FROM organizations WHERE id='org_default' FOR UPDATE");
+  const scheduler=createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],batchSize:5,tickTimeoutMs:100});const started=Date.now();
+  const running=runScheduler({scheduler,signal:controller.signal,pollMs:1,onEvent:event=>events.push(event)});setTimeout(()=>controller.abort(),20);
+  try {await running;} finally {await blocker.query('ROLLBACK');blocker.release();}
+  assert.ok(Date.now()-started<1000,'server statement timeout must bound the active query inside shutdown grace');
+  assert.deepEqual(events,[],'shutdown cancellation is not reported as an operational tick failure');
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_schedule_receipts')).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM jobs')).rows[0].n,0);
 });
 
 integration('a source paused after claim is released without signing or dispatching a scan',async({pool})=>{
