@@ -10,8 +10,19 @@ import {
   readFacebookFeedCards,
   clickFacebookTimestamp,
   matchFacebookFeedCard,
+  createSiteBrowser,
 } from "../src/browser.mjs";
 import { preserveSubmittedTargetKeys } from "../src/state.mjs";
+
+test('legacy fixture browser owns its page instead of selecting an unrelated open tab',async()=>{
+  let created=0;
+  const own={isClosed:()=>false,context:()=>({cookies:async()=>[{name:'fixture_session',value:'connected'}]})};
+  const browser={isConnected:()=>true,contexts:()=>[{pages:()=>[{context:()=>assert.fail('Unrelated tab selected')}],newPage:async()=>{created++;return own;}}]};
+  const site=createSiteBrowser({mode:'fixture',connect:async()=>browser});
+  assert.equal((await site.inspectSession()).state,'connected');
+  assert.equal((await site.inspectSession()).state,'connected');
+  assert.equal(created,1);
+});
 
 test("removes Facebook notification counts from the captured group name", () => {
   assert.equal(normalizeFacebookGroupName("(2) autopost | Facebook"), "autopost");

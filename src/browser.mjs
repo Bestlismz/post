@@ -1,13 +1,15 @@
 import { chromium } from "playwright-core";
 import { digest } from "./state.mjs";
 
-export function createSiteBrowser({ cdpUrl, mode, liveSubmissionEnabled, evidencePath }) {
+export function createSiteBrowser({ cdpUrl, mode, liveSubmissionEnabled, evidencePath, connect = (url) => chromium.connectOverCDP(url) }) {
   let browser;
+  let ownedPage;
 
   async function page() {
-    if (!browser?.isConnected()) browser = await chromium.connectOverCDP(cdpUrl);
+    if (!browser?.isConnected()) { browser = await connect(cdpUrl); ownedPage = undefined; }
     const context = browser.contexts()[0];
-    return context.pages()[0] ?? context.newPage();
+    if (!ownedPage || ownedPage.isClosed()) ownedPage = await context.newPage();
+    return ownedPage;
   }
 
   return {

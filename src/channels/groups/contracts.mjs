@@ -11,7 +11,7 @@ export const ScanCommand=scan, GroupReplyCommand=reply, ReconcileCommand=reconci
 export const commandSchema=z.discriminatedUnion('kind',[scan,reply,reconcile]);
 const evidence={targetId:id,senderId:id,textHash:hash,attemptStartedAt:timestamp,attemptFinishedAt:timestamp,evidenceHash:hash,remoteId:id.nullable()};
 export const resultSchema=z.discriminatedUnion('kind',[
-  z.strictObject({...common,kind:z.literal('ScanResult'),selectorVersion:id,coverage:z.enum(['complete','partial','none']),health:z.enum(['healthy','auth_required','selector_failure','failed']),observations:z.array(z.strictObject({targetId:id,text:z.string().max(20000),observedAt:timestamp,evidenceHash:hash})).max(1000)}),
+  z.strictObject({...common,kind:z.literal('ScanResult'),selectorVersion:id,coverage:z.enum(['complete','partial','none']),health:z.enum(['healthy','auth_required','checkpoint','expired','selector_failure','failed']),reason:z.enum(['selector_changed','scan_limit','page_changed','session_unavailable','scan_failed']).nullable().optional(),cursor:id.nullable().optional(),observations:z.array(z.strictObject({targetId:id,text:z.string().max(20000),observedAt:timestamp,evidenceHash:hash,kind:z.enum(['post','comment']).optional(),postId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).optional(),commentId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).nullable().optional(),authorLabel:z.string().max(300).optional(),providerTimestamp:timestamp.nullable().optional()})).max(1000)}),
   z.strictObject({...common,...evidence,kind:z.literal('GroupReplyResult'),state:z.enum(['sent','failed','unknown'])}),
   z.strictObject({...common,...evidence,kind:z.literal('ReconcileResult'),state:z.enum(['sent','not_found','unknown'])}),
 ]);
