@@ -4,7 +4,7 @@ Implemented durable Facebook Group scan scheduling, policy preview, and organiza
 
 ## Scheduling and durable decisions
 
-`createGroupScheduler` reads its tick instant from PostgreSQL, evaluates each configured source under organization/source locks, and produces at most one signed scan operation and one durable job for each `(organization, source, UTC schedule slot)`. The unique receipt constraint and lock order make concurrent scheduler processes idempotent. Every due decision is append-only: scheduled receipts bind the operation and job IDs, while skipped receipts retain stable reason codes and the exact schedule snapshot used.
+`createGroupScheduler` reads its tick instant from PostgreSQL, evaluates each configured source under organization/source locks, and produces at most one durable job for each `(organization, source, UTC schedule slot)`. The unique receipt constraint and lock order make concurrent scheduler processes idempotent. Every due decision is append-only: scheduled receipts bind the job and durable source/slot parameters, while skipped receipts retain stable reason codes and the exact schedule snapshot used.
 
 The pure schedule evaluator uses IANA local time, including DST transitions, supports weekday windows (including overnight windows), UTC maintenance intervals, per-local-day scan limits, cadence slots, global/source pauses, archive state, session and selector health/circuits, and supported selector versions. Scheduled jobs carry their slot, so the generic queue claim boundary rechecks pause, archive, health, and circuit gates before issuing a lease. Manual scans remain distinguishable and explicit recovery behavior is preserved.
 
@@ -20,17 +20,23 @@ The schedule API creates or updates source schedules under optimistic revision c
 
 ## Runtime boundary
 
-The web role may manage mutable schedules and insert control receipts but cannot mutate schedule decision receipts. The worker role can read schedules and append schedule receipts, but cannot administer schedules or read control receipts. It retains only the existing command/job/audit capabilities required to produce a scheduled scan. The browser worker remains database-free.
+The production application worker now runs one bounded scheduler loop beside the existing Messenger workers. It polls sequentially, never overlaps its own ticks, isolates tick and observability failures, reports stable event codes, drains an active tick on SIGTERM/SIGINT, and stops polling after abort. Multiple application-worker replicas remain safe because the database receipt constraint is the idempotency authority.
+
+The web role may manage mutable schedules and insert control receipts but cannot mutate schedule decision receipts. The worker role can read schedules, append schedule receipts, and append scan-dispatch lineage, but cannot administer schedules or read control receipts. The browser worker remains database-free.
+
+Scheduled jobs intentionally contain no pre-signed command. After a paused or unhealthy source recovers and the queue grants a valid lease, `prepareGroupScanDispatch` rechecks all source gates under locks and signs a fresh five-minute command. Its append-only dispatch receipt distinguishes `COMMAND_FRESH`, `COMMAND_CURRENT`, and `COMMAND_REFRESHED`, preserving the source/slot/job identity and predecessor lineage. Legacy scheduled commands delayed beyond expiry are replaced atomically; their original operation and schedule receipt are never rewritten.
 
 ## TDD and verification
 
 - Initial RED: missing scheduler/preview/routes/schema and delivery claim ignoring pauses.
-- GREEN: concurrent slot dedupe, database time, signed scan operations, DST-safe local windows, maintenance windows, daily limits, explicit refusal reasons, global/source pause, and policy evaluator parity.
+- GREEN: concurrent slot dedupe, database time, durable scan parameters, DST-safe local windows, maintenance windows, daily limits, explicit refusal reasons, global/source pause, and policy evaluator parity.
 - API RED/GREEN: schedule create/update revision handling, IANA validation, idempotent controls, immutable receipts, and preservation of running jobs.
 - Claim RED/GREEN: queued scheduled scans and Group deliveries remain pending while paused or unhealthy and become claimable only after gates recover.
 - Runtime RED/GREEN: a restricted worker initially failed on a row lock; serialization now uses the source row so schedules remain read-only to the worker.
+- Review RED/GREEN: the production worker previously never invoked the scheduler; the new runtime regression proves stored schedule state creates a job and that shutdown prevents another poll. Failure isolation and overlap prevention have direct runner regressions.
+- Expiry RED/GREEN: scheduler-created commands could expire during a pause. Scheduling now stores only durable parameters, and a six-minute delayed legacy command is verified expired then atomically replaced with one valid signed command at dispatch without changing its slot receipt.
 - Focused scheduler/policy/foundation/delivery tests passed.
-- `TEST_DATABASE_URL=postgres://localhost/postgres npm test`: 331 passed, zero failures/skips.
+- `TEST_DATABASE_URL=postgres://localhost/postgres npm test`: 336 passed, zero failures/skips.
 - `npm run build`: passed.
 - `git diff --check`: passed.
 

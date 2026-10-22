@@ -32,7 +32,7 @@ CREATE TABLE group_schedule_receipts (
   FOREIGN KEY (organization_id,source_id) REFERENCES group_sources(organization_id,id),
   FOREIGN KEY (organization_id,operation_id) REFERENCES group_operations(organization_id,id),
   UNIQUE (organization_id,source_id,schedule_slot),
-  CHECK ((state='scheduled' AND cardinality(reason_codes)=0 AND operation_id IS NOT NULL AND job_id IS NOT NULL)
+  CHECK ((state='scheduled' AND cardinality(reason_codes)=0 AND job_id IS NOT NULL)
       OR (state='skipped' AND cardinality(reason_codes)>0 AND operation_id IS NULL AND job_id IS NULL))
 );
 CREATE INDEX group_schedule_daily_idx ON group_schedule_receipts(organization_id,source_id,local_day,state);
@@ -51,7 +51,25 @@ CREATE TABLE automation_control_receipts (
   CHECK ((scope='organization' AND source_id IS NULL) OR (scope='source' AND source_id IS NOT NULL))
 );
 
+CREATE TABLE group_scan_dispatches (
+  id text PRIMARY KEY,
+  organization_id text NOT NULL,
+  job_id text NOT NULL REFERENCES jobs(id),
+  schedule_receipt_id text NOT NULL REFERENCES group_schedule_receipts(id),
+  operation_id text NOT NULL,
+  predecessor_operation_id text,
+  dispatch_sequence integer NOT NULL CHECK (dispatch_sequence>0),
+  reason_code text NOT NULL CHECK (reason_code IN ('COMMAND_FRESH','COMMAND_CURRENT','COMMAND_REFRESHED')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  FOREIGN KEY (organization_id,operation_id) REFERENCES group_operations(organization_id,id),
+  FOREIGN KEY (organization_id,predecessor_operation_id) REFERENCES group_operations(organization_id,id),
+  UNIQUE (organization_id,job_id,dispatch_sequence),
+  UNIQUE (organization_id,operation_id)
+);
+
 CREATE TRIGGER group_schedule_receipts_immutable BEFORE UPDATE OR DELETE OR TRUNCATE ON group_schedule_receipts
   FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_mutation();
 CREATE TRIGGER automation_control_receipts_immutable BEFORE UPDATE OR DELETE OR TRUNCATE ON automation_control_receipts
+  FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_mutation();
+CREATE TRIGGER group_scan_dispatches_immutable BEFORE UPDATE OR DELETE OR TRUNCATE ON group_scan_dispatches
   FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_mutation();

@@ -1,10 +1,25 @@
 import {randomUUID} from 'node:crypto';
-import {signCommand} from '../channels/groups/contracts.mjs';
 import {withTransaction,appendAudit} from '../db/transaction.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 
 const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const timePattern=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+export function groupSchedulerConfig(env=process.env) {
+  const keyId=env.GROUP_COMMAND_KEY_ID,raw=env.GROUP_COMMAND_KEYS;
+  if(!keyId&&!raw)return null;
+  try {
+    if(typeof keyId!=='string'||!keyId||keyId.length>100||typeof raw!=='string')throw new Error();
+    const encoded=JSON.parse(raw);
+    if(!encoded||typeof encoded!=='object'||Array.isArray(encoded)||!Object.hasOwn(encoded,keyId))throw new Error();
+    const keys={};
+    for(const [id,value] of Object.entries(encoded)) {
+      if(!id||id.length>100||typeof value!=='string'||!/^[A-Za-z0-9+/]{43}=$/u.test(value))throw new Error();
+      const decoded=Buffer.from(value,'base64');if(decoded.length!==32||decoded.toString('base64')!==value)throw new Error();keys[id]=decoded;
+    }
+    return {keyId,key:keys[keyId],keys};
+  } catch {throw new Error('Invalid group scheduler signing configuration');}
+}
 
 function localParts(instant,timeZone) {
   const parts=Object.fromEntries(new Intl.DateTimeFormat('en-CA',{timeZone,weekday:'short',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(instant).map(part=>[part.type,part.value]));
@@ -48,8 +63,7 @@ function fromRow(row) {
   return {enabled:row.enabled,cadenceMinutes:row.cadence_minutes,timeZone:row.time_zone,days:row.days.map(Number),start:row.start_local,end:row.end_local,dailyLimit:row.daily_limit,maintenanceWindows:row.maintenance_windows};
 }
 
-export function createGroupScheduler({pool,signingKey,keyId,supportedSelectorVersions=[]}) {
-  if(!signingKey||!keyId)throw new Error('Scheduler signing configuration required');
+export function createGroupScheduler({pool,supportedSelectorVersions=[]}) {
   return {async tick() {
     const {rows:[databaseClock]}=await pool.query('SELECT clock_timestamp() AS now');
     const now=databaseClock.now;
@@ -81,12 +95,10 @@ export function createGroupScheduler({pool,signingKey,keyId,supportedSelectorVer
           await appendAudit(tx,{organizationId:row.organization_id,action:'group.scan_skipped',entityType:'group_source',entityId:row.source_id,details:{receiptId,slot:decision.slot,reasons:decision.reasons}});
           return {scheduled:false};
         }
-        const operationId=randomUUID(),command=signCommand({version:1,kind:'ScanCommand',operationId,sourceId:row.source_id,groupId:row.group_id,canonicalTarget:row.canonical_url,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
-        await tx.query("INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,'ScanCommand',$4)",[operationId,row.organization_id,row.source_id,JSON.stringify(command)]);
-        const job=await enqueueJob(tx,{organizationId:row.organization_id,kind:'group.scan',payload:{operationId,sourceId:row.source_id,scheduleSlot:decision.slot},retrySafe:true});
+        const job=await enqueueJob(tx,{organizationId:row.organization_id,kind:'group.scan',payload:{sourceId:row.source_id,scheduleSlot:decision.slot,scheduleReceiptId:receiptId},retrySafe:true});
         await tx.query(`INSERT INTO group_schedule_receipts(id,organization_id,source_id,schedule_slot,local_day,state,reason_codes,operation_id,job_id,schedule_snapshot)
-          VALUES($1,$2,$3,$4,$5,'scheduled','{}',$6,$7,$8)`,[receiptId,row.organization_id,row.source_id,decision.slot,decision.localDay,operationId,job.id,JSON.stringify(snapshot)]);
-        await appendAudit(tx,{organizationId:row.organization_id,action:'group.scan_scheduled',entityType:'group_operation',entityId:operationId,details:{receiptId,sourceId:row.source_id,slot:decision.slot}});
+          VALUES($1,$2,$3,$4,$5,'scheduled','{}',NULL,$6,$7)`,[receiptId,row.organization_id,row.source_id,decision.slot,decision.localDay,job.id,JSON.stringify(snapshot)]);
+        await appendAudit(tx,{organizationId:row.organization_id,action:'group.scan_scheduled',entityType:'group_schedule_receipt',entityId:receiptId,details:{jobId:job.id,sourceId:row.source_id,slot:decision.slot}});
         return {scheduled:true};
       });
       if(!result?.deduplicated)summary.considered++;

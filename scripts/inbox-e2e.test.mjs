@@ -38,12 +38,12 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
     await assert.rejects(workerPool.query('CREATE TABLE forbidden(id int)'),error=>error.code==='42501');
     await t.test('production worker entrypoint starts with restricted credentials and exits on SIGTERM',async()=>{
       const child=spawn(process.execPath,['src/worker.mjs'],{cwd:new URL('..',import.meta.url),env:{PATH:process.env.PATH,
-        DATABASE_URL:workerUrl.href,OPENAI_API_KEY:'fake-test-only',META_TOKEN_KEY_VERSION:'one',META_TOKEN_KEYS:JSON.stringify({one:Buffer.alloc(32,1).toString('base64')})},stdio:['ignore','pipe','pipe']});
+        DATABASE_URL:workerUrl.href,OPENAI_API_KEY:'fake-test-only',META_TOKEN_KEY_VERSION:'one',META_TOKEN_KEYS:JSON.stringify({one:Buffer.alloc(32,1).toString('base64')}),GROUP_COMMAND_KEY_ID:'group',GROUP_COMMAND_KEYS:JSON.stringify({group:Buffer.alloc(32,2).toString('base64')})},stdio:['ignore','pipe','pipe']});
       let output='',errors='';child.stderr.on('data',chunk=>errors+=chunk);
       const exit=new Promise(resolve=>child.once('exit',code=>resolve(code)));
       let timer;
       try {
-        await Promise.race([new Promise((resolve,reject)=>{child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('Messenger worker started.'))resolve();});child.once('exit',code=>reject(Error('Worker exited before startup: '+code)));}),
+        await Promise.race([new Promise((resolve,reject)=>{child.stdout.on('data',chunk=>{output+=chunk;if(output.includes('Messenger worker started.')&&output.includes('Group scheduler started.'))resolve();});child.once('exit',code=>reject(Error('Worker exited before startup: '+code)));}),
           new Promise((_,reject)=>timer=setTimeout(()=>reject(Error('Worker startup timed out')),3000))]);
         child.kill('SIGTERM');assert.equal(await exit,0);assert.equal(errors,'');
       } finally {clearTimeout(timer);if(child.exitCode===null)child.kill('SIGKILL');}

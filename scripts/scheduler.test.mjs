@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import test from 'node:test';
 import {createPool} from '../src/db/pool.mjs';
 import {migrate} from '../src/db/migrate.mjs';
+import {signCommand,verifyCommand} from '../src/channels/groups/contracts.mjs';
 
 const key='s'.repeat(32),keyId='schedule-test';
 
@@ -22,6 +23,14 @@ async function fixture(fn) {
 }
 const integration=(name,fn)=>test(name,{skip:!process.env.TEST_DATABASE_URL},()=>fixture(fn));
 
+test('group scheduler signing configuration is explicit bounded and supports key rotation',async()=>{
+  const {groupSchedulerConfig}=await import('../src/workers/scheduler.mjs');
+  assert.equal(groupSchedulerConfig({}),null);
+  const encoded=Buffer.alloc(32,7).toString('base64'),config=groupSchedulerConfig({GROUP_COMMAND_KEY_ID:'current',GROUP_COMMAND_KEYS:JSON.stringify({old:Buffer.alloc(32,6).toString('base64'),current:encoded})});
+  assert.equal(config.keyId,'current');assert.deepEqual(config.key,Buffer.alloc(32,7));assert.deepEqual(config.keys.old,Buffer.alloc(32,6));
+  for(const env of [{GROUP_COMMAND_KEY_ID:'current'},{GROUP_COMMAND_KEYS:'{}'},{GROUP_COMMAND_KEY_ID:'current',GROUP_COMMAND_KEYS:'bad'},{GROUP_COMMAND_KEY_ID:'current',GROUP_COMMAND_KEYS:JSON.stringify({current:'c2hvcnQ='})}])assert.throws(()=>groupSchedulerConfig(env),/scheduler signing/i);
+});
+
 test('schedule decisions use IANA local time across DST and reject maintenance windows and daily limits',async()=>{
   const {evaluateSchedule}=await import('../src/workers/scheduler.mjs');
   const schedule={enabled:true,cadenceMinutes:15,timeZone:'America/New_York',days:[0],start:'01:00',end:'04:00',dailyLimit:8,maintenanceWindows:[]};
@@ -31,7 +40,7 @@ test('schedule decisions use IANA local time across DST and reject maintenance w
   assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:00Z'),{completedToday:8}).reasons,['DAILY_LIMIT_REACHED']);
 });
 
-integration('concurrent scheduler ticks create one signed scan operation and one job per source slot',async({pool})=>{
+integration('concurrent scheduler ticks create one durable unsigned job per source slot',async({pool})=>{
   await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
     VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
   const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
@@ -39,9 +48,11 @@ integration('concurrent scheduler ticks create one signed scan operation and one
   const [a,b]=await Promise.all([scheduler.tick(),scheduler.tick()]);
   assert.equal(a.scheduled+b.scheduled,1);
   assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan'")).rows[0].n,1);
-  assert.equal((await pool.query("SELECT count(*)::int n FROM group_operations WHERE kind='ScanCommand'")).rows[0].n,1);
-  const {rows:[receipt]}=await pool.query('SELECT state,reason_codes,operation_id,job_id FROM group_schedule_receipts');
-  assert.equal(receipt.state,'scheduled');assert.deepEqual(receipt.reason_codes,[]);assert.ok(receipt.operation_id);assert.ok(receipt.job_id);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM group_operations WHERE kind='ScanCommand'")).rows[0].n,0,'commands are signed only at dispatch');
+  const {rows:[receipt]}=await pool.query('SELECT id,state,reason_codes,operation_id,job_id FROM group_schedule_receipts');
+  assert.equal(receipt.state,'scheduled');assert.deepEqual(receipt.reason_codes,[]);assert.equal(receipt.operation_id,null);assert.ok(receipt.job_id);
+  const payload=(await pool.query('SELECT payload FROM jobs WHERE id=$1',[receipt.job_id])).rows[0].payload;
+  assert.deepEqual(Object.keys(payload).sort(),['scheduleReceiptId','scheduleSlot','sourceId']);assert.equal(payload.sourceId,'source-1');assert.equal(payload.scheduleReceiptId,receipt.id);assert.match(payload.scheduleSlot,/Z$/);assert.equal(Object.hasOwn(payload,'operationId'),false);
   await assert.rejects(pool.query("UPDATE group_schedule_receipts SET state='skipped'"),/append-only/i);
 });
 
@@ -108,9 +119,15 @@ integration('restricted worker can schedule but cannot administer schedules cont
     await provisionRuntime(pool,{role,password,profile:'worker'});
     const url=new URL(process.env.TEST_DATABASE_URL);url.username=role;url.password=password;url.searchParams.set('options',`-c search_path=${schema}`);runtime=createPool({databaseUrl:url.href});
     assert.equal((await createGroupScheduler({pool:runtime,signingKey:key,keyId,supportedSelectorVersions:['facebook-dom-v2']}).tick()).scheduled,1);
+    const {claimJobs}=await import('../src/jobs/queue.mjs');const [job]=await claimJobs(runtime,'restricted-scan',1);
+    const {prepareGroupScanDispatch}=await import('../src/workers/group-scan-dispatch.mjs');
+    const dispatched=await prepareGroupScanDispatch({pool:runtime,jobId:job.id,leaseOwner:job.lease_owner,signingKey:key,keyId,keys:{[keyId]:key}});
+    assert.ok(dispatched.operationId);assert.equal((await pool.query("SELECT operation_id FROM group_schedule_receipts")).rows[0].operation_id,null);
+    assert.deepEqual((await pool.query('SELECT operation_id,reason_code FROM group_scan_dispatches')).rows,[{operation_id:dispatched.operationId,reason_code:'COMMAND_FRESH'}]);
     await assert.rejects(runtime.query("UPDATE group_source_schedules SET enabled=false"),error=>error.code==='42501');
     await assert.rejects(runtime.query("UPDATE group_schedule_receipts SET state='skipped'"),error=>error.code==='42501');
     await assert.rejects(runtime.query('SELECT * FROM automation_control_receipts'),error=>error.code==='42501');
+    await assert.rejects(runtime.query("UPDATE group_scan_dispatches SET reason_code='COMMAND_REFRESHED'"),error=>error.code==='42501');
   } finally {
     await runtime?.end();const client=await admin.connect();try {await client.query(`DROP OWNED BY "${role}"`);await client.query(`DROP ROLE "${role}"`);}finally{client.release();}
   }
@@ -127,4 +144,47 @@ integration('one invalid persisted timezone fails closed with a receipt and does
   assert.deepEqual(result,{considered:2,scheduled:1,skipped:1});
   assert.deepEqual((await pool.query("SELECT state,reason_codes FROM group_schedule_receipts WHERE source_id='source-1'")).rows[0],{state:'skipped',reason_codes:['INVALID_SCHEDULE']});
   assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan' AND payload->>'sourceId'='source-2'")).rows[0].n,1);
+});
+
+integration('production scheduler loop turns stored API schedule state into a job and shutdown stops polling',async({pool})=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');const {runScheduler}=await import('../src/workers/runner.mjs');
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
+  const scheduler=createGroupScheduler({pool,signingKey:key,keyId,supportedSelectorVersions:['facebook-dom-v2']}),controller=new AbortController();let ticks=0;
+  await runScheduler({scheduler:{async tick(){ticks++;const result=await scheduler.tick();if(result.scheduled)controller.abort();return result;}},signal:controller.signal,pollMs:1});
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan'")).rows[0].n,1);const stopped=ticks;
+  await new Promise(resolve=>setTimeout(resolve,5));assert.equal(ticks,stopped);
+});
+
+integration('a source paused after claim is released without signing or dispatching a scan',async({pool})=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
+  await createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2']}).tick();
+  const {claimJobs}=await import('../src/jobs/queue.mjs');const [job]=await claimJobs(pool,'scan-runtime',1);
+  await pool.query("UPDATE group_sources SET kill_switch=true WHERE id='source-1'");
+  const {prepareGroupScanDispatch}=await import('../src/workers/group-scan-dispatch.mjs');
+  await assert.rejects(prepareGroupScanDispatch({pool,jobId:job.id,leaseOwner:job.lease_owner,signingKey:key,keyId,keys:{[keyId]:key}}),error=>error.code==='SOURCE_UNAVAILABLE');
+  assert.deepEqual((await pool.query('SELECT status,lease_owner,attempts FROM jobs WHERE id=$1',[job.id])).rows[0],{status:'pending',lease_owner:null,attempts:1});
+  assert.equal((await pool.query("SELECT count(*)::int n FROM group_operations WHERE kind='ScanCommand'")).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_scan_dispatches')).rows[0].n,0);
+});
+
+integration('a scheduled scan delayed beyond signature expiry gets one fresh dispatch command without changing slot identity',async({pool})=>{
+  const old=new Date('2026-10-22T12:00:00.000Z'),now=new Date('2026-10-22T12:06:00.000Z');
+  const original=signCommand({version:1,kind:'ScanCommand',operationId:'scheduled-op',sourceId:'source-1',groupId:'123',canonicalTarget:'https://www.facebook.com/groups/123',issuedAt:old.toISOString(),expiresAt:new Date(+old+300000).toISOString(),keyId},{key,keyId,now:old});
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit) VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
+  await pool.query("INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES('scheduled-op','org_default','source-1','ScanCommand',$1)",[original]);
+  await pool.query("INSERT INTO jobs(id,organization_id,kind,payload,retry_safe,available_at) VALUES('scheduled-job','org_default','group.scan','{\"operationId\":\"scheduled-op\",\"sourceId\":\"source-1\",\"scheduleSlot\":\"2026-10-22T12:00:00.000Z\",\"scheduleReceiptId\":\"schedule-receipt\"}',true,$1)",[old]);
+  await pool.query("INSERT INTO group_schedule_receipts(id,organization_id,source_id,schedule_slot,local_day,state,reason_codes,operation_id,job_id,schedule_snapshot) VALUES('schedule-receipt','org_default','source-1',$1,'2026-10-22','scheduled','{}','scheduled-op','scheduled-job','{}')",[old]);
+  await pool.query("UPDATE group_sources SET kill_switch=true WHERE id='source-1'");
+  const {claimJobs}=await import('../src/jobs/queue.mjs');assert.deepEqual(await claimJobs(pool,'scan-runtime',1),[]);
+  await pool.query("UPDATE group_sources SET kill_switch=false WHERE id='source-1'");
+  const [job]=await claimJobs(pool,'scan-runtime',1);assert.equal(job.id,'scheduled-job');
+  const {prepareGroupScanDispatch}=await import('../src/workers/group-scan-dispatch.mjs');
+  const [first,second]=await Promise.all([prepareGroupScanDispatch({pool,jobId:job.id,leaseOwner:job.lease_owner,signingKey:key,keyId,keys:{[keyId]:key},clock:()=>now}),prepareGroupScanDispatch({pool,jobId:job.id,leaseOwner:job.lease_owner,signingKey:key,keyId,keys:{[keyId]:key},clock:()=>now})]);
+  assert.deepEqual(first,second);assert.notEqual(first.operationId,'scheduled-op');assert.doesNotThrow(()=>verifyCommand(first,{keys:{[keyId]:key},now}));
+  assert.throws(()=>verifyCommand(original,{keys:{[keyId]:key},now}),/expired/i);
+  assert.deepEqual((await pool.query("SELECT operation_id,job_id FROM group_schedule_receipts WHERE id='schedule-receipt'")).rows[0],{operation_id:'scheduled-op',job_id:'scheduled-job'});
+  assert.deepEqual((await pool.query("SELECT predecessor_operation_id,operation_id,reason_code FROM group_scan_dispatches")).rows,[{predecessor_operation_id:'scheduled-op',operation_id:first.operationId,reason_code:'COMMAND_REFRESHED'}]);
 });
