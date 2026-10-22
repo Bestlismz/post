@@ -169,7 +169,7 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
       assert.ok(text.includes('event: inbox'));assert.ok(text.includes('id: '));
       for(const secret of ['Life Asoke','Hello','secret-page-token','private-psid','psid','providerMessageId']) assert.ok(!text.includes(secret));
       const frames=text.split('\n\n').filter(frame=>frame.includes('data: '));
-      for(const frame of frames) {const value=JSON.parse(frame.split('data: ')[1]);assert.deepEqual(Object.keys(value).sort(),['receiptId','resourceId','resourceType','state']);}
+      for(const frame of frames) {const value=JSON.parse(frame.split('data: ')[1]);assert.deepEqual(Object.keys(value).sort(),['receiptId','resourceId','resourceType','state','workItemId']);assert.equal(typeof value.workItemId,'string');}
       assert.equal((await get('/api/inbox/events')).status,429);
       const last=frames.at(-1).split('\n').find(line=>line.startsWith('id: ')).slice(4);
       await reader.cancel();

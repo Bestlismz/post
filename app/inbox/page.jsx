@@ -2,7 +2,7 @@
 
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { PanelRightClose, PanelRightOpen } from "lucide-react";
+import { ArrowLeft, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
 import { ConversationPane } from "./conversation-pane";
 import { InboxQueue } from "./inbox-queue";
@@ -23,15 +23,17 @@ function InboxWorkspace() {
   const [selectedId, setSelectedId] = useState(requestedId), [detail, setDetail] = useState(null);
   const [detailState, setDetailState] = useState({ loading: false, error: null });
   const [inspectorOpen, setInspectorOpen] = useState(true), [receipt, setReceipt] = useState(null), [csrfToken, setCsrfToken] = useState("");
+  const [filter, setFilter] = useState("all"), [mobileQueueOpen, setMobileQueueOpen] = useState(!requestedId);
   const selectedRef = useRef(selectedId); selectedRef.current = selectedId;
   const detailRef = useRef(detail); detailRef.current = detail;
+  const filterRef = useRef(filter); filterRef.current = filter;
 
   const loadList = useCallback(async () => {
     setListState({ loading: true, error: null });
     try {
       const payload = await api.request("/api/inbox"), nextItems = Array.isArray(payload?.items) ? payload.items : [];
       setItems(nextItems);
-      setSelectedId((current) => current && nextItems.some((item) => item.id === current) ? current : nextItems[0]?.id ?? null);
+      setSelectedId((current) => { const visible = filterRef.current === "review" ? nextItems.filter((item) => item.status === "needs_review") : nextItems; return current && visible.some((item) => item.id === current) ? current : visible[0]?.id ?? null; });
       setListState({ loading: false, error: null });
     } catch (error) { setListState({ loading: false, error }); }
   }, []);
@@ -46,6 +48,10 @@ function InboxWorkspace() {
   }, []);
 
   useEffect(() => { void loadList(); void api.request("/api/auth/csrf", { method: "POST" }).then((value) => setCsrfToken(value?.csrfToken ?? "")).catch(() => undefined); }, [loadList]);
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 767px)"), sync = () => setInspectorOpen(!media.matches);
+    sync(); media.addEventListener("change", sync); return () => media.removeEventListener("change", sync);
+  }, []);
   useEffect(() => { if (requestedId) setSelectedId(requestedId); }, [requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
   useEffect(() => {
@@ -53,10 +59,12 @@ function InboxWorkspace() {
     const events = new EventSource("/api/inbox/events");
     const handleReceipt = (event) => {
       try {
-        const next = JSON.parse(event.data); setReceipt(next);
+        const next = JSON.parse(event.data);
         const current = detailRef.current;
         const resources = [selectedRef.current, current?.conversationId, ...(current?.replies ?? []).map((reply) => reply.id), ...(current?.deliveries ?? []).map((delivery) => delivery.id)];
-        if (next.resourceType === "inbox" || resources.includes(next.resourceId)) void loadDetail(selectedRef.current);
+        const selectedChanged = next.resourceType === "inbox" || next.workItemId === selectedRef.current || resources.includes(next.resourceId);
+        void loadList();
+        if (selectedChanged) { setReceipt(next); void loadDetail(selectedRef.current); }
       } catch { /* a later durable receipt reconciles malformed transport data */ }
     };
     events.addEventListener("inbox", handleReceipt);
@@ -66,9 +74,19 @@ function InboxWorkspace() {
 
   const selectedSummary = useMemo(() => items.find((item) => item.id === selectedId) ?? null, [items, selectedId]);
   const choose = useCallback((id) => {
-    setSelectedId(id); const params = new URLSearchParams(searchParams.toString()); params.set("item", id);
-    router.replace(`/inbox?${params.toString()}`, { scroll: false });
+    setSelectedId(id); setMobileQueueOpen(false); const params = new URLSearchParams(searchParams.toString());
+    if (id) params.set("item", id); else params.delete("item");
+    router.replace(`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
   }, [router, searchParams]);
+  const changeFilter = useCallback((nextFilter) => {
+    setFilter(nextFilter);
+    const visible = nextFilter === "review" ? items.filter((item) => item.status === "needs_review") : items;
+    if (!visible.some((item) => item.id === selectedRef.current)) {
+      const nextId = visible[0]?.id ?? null; setSelectedId(nextId);
+      const params = new URLSearchParams(searchParams.toString()); if (nextId) params.set("item", nextId); else params.delete("item");
+      router.replace(`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
+    }
+  }, [items, router, searchParams]);
 
   const runCommand = useCallback(async (action, input = {}) => {
     if (!detail) return null;
@@ -81,11 +99,11 @@ function InboxWorkspace() {
   }, [csrfToken, detail]);
 
   return (
-    <section className={`inbox-workspace${inspectorOpen ? "" : " is-inspector-collapsed"}`} aria-label="กล่องข้อความรวม">
-      <InboxQueue items={items} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} />
+    <section className={`inbox-workspace${inspectorOpen ? "" : " is-inspector-collapsed"}${mobileQueueOpen ? " is-mobile-queue-open" : ""}`} aria-label="กล่องข้อความรวม">
+      <InboxQueue items={items} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} filter={filter} onFilterChange={changeFilter} />
       <div className="inbox-focus">
         <header className="inbox-focus__toolbar">
-          <div className="inbox-focus__identity"><span className="inbox-avatar" aria-hidden="true">{(detail?.participant?.label ?? selectedSummary?.participant?.label ?? "R").slice(0, 1)}</span><div><strong>{detail?.participant?.label ?? selectedSummary?.participant?.label ?? "เลือกรายการสนทนา"}</strong><span>{detail?.channel === "facebook_group" ? detail?.source?.name : "Facebook Page Inbox"}</span></div></div>
+          <div className="inbox-focus__identity"><button type="button" className="inbox-mobile-back" aria-label="กลับไปคิวข้อความ" onClick={() => setMobileQueueOpen(true)}><ArrowLeft size={19} /></button><span className="inbox-avatar" aria-hidden="true">{(detail?.participant?.label ?? selectedSummary?.participant?.label ?? "R").slice(0, 1)}</span><div><strong>{detail?.participant?.label ?? selectedSummary?.participant?.label ?? "เลือกรายการสนทนา"}</strong><span>{detail?.channel === "facebook_group" ? detail?.source?.name : "Facebook Page Inbox"}</span></div></div>
           <div className="inbox-focus__status">{receipt ? <span className="inbox-updated" role="status"><i />อัปเดตแล้ว</span> : null}<button type="button" className="inbox-icon-button" aria-label={inspectorOpen ? "ซ่อนข้อมูลลีด" : "แสดงข้อมูลลีด"} onClick={() => setInspectorOpen((value) => !value)}>{inspectorOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div>
         </header>
         <div className="inbox-focus__scroll"><ConversationPane detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} /></div>

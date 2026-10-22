@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+test.beforeEach(async ({}, testInfo) => {
+  test.skip(testInfo.project.name === "mobile" && !testInfo.title.includes("[mobile]"), "desktop workspace regression");
+});
+
 const queue = [
   {
     id: "group_1",
@@ -49,10 +53,10 @@ const queue = [
 
 const groupDetail = {
   ...queue[0],
-  target: { kind: "post", author: "Mint Kanyarat", groupName: "คอนโดให้เช่า กรุงเทพฯ" },
+  target: { kind: "comment", uiId: "comment" },
   timeline: [
-    { id: "post", direction: "inbound", author: "Mint Kanyarat", text: queue[0].message.text, createdAt: queue[0].createdAt },
-    { id: "comment", direction: "inbound", author: "Beam S.", text: "ลองดูแถวอโศก-เพชรบุรีค่ะ มีเยอะเลย", createdAt: "2026-10-22T07:33:00.000000Z", kind: "comment" },
+    { id: "post", uiId: "post", direction: "inbound", author: "Mint Kanyarat", text: queue[0].message.text, createdAt: queue[0].createdAt, kind: "post", isTarget: false },
+    { id: "comment", uiId: "comment", direction: "inbound", author: "Beam S.", text: "ลองดูแถวอโศก-เพชรบุรีค่ะ มีเยอะเลย", createdAt: "2026-10-22T07:33:00.000000Z", kind: "comment", isTarget: true },
   ],
   requirements: { district: "อโศก", budgetMax: 20000, bedrooms: 1, requiredPetPolicy: "allowed", moveInDate: null },
   missingRequirements: ["moveInDate"],
@@ -76,15 +80,17 @@ const messengerDetail = {
   matches: [], replies: [], deliveries: [], events: [],
 };
 
-async function mockInbox(page) {
+async function mockInbox(page, { items = queue, failFirstApproval = false } = {}) {
   let partialAttempts = 0;
-  const commands = [];
+  let approvalAttempts = 0;
+  const commands = [], requests = { list: 0, detail: 0 };
   await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "ณัฐวุฒิ", role: "admin" }, csrfToken: "test-csrf" } }));
   await page.route("**/api/auth/csrf", (route) => route.fulfill({ json: { csrfToken: "test-csrf" } }));
   await page.route("**/api/inbox/events", (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: ": heartbeat\n\n" }));
-  await page.route("**/api/inbox", (route) => route.fulfill({ json: { items: queue, nextCursor: null } }));
+  await page.route("**/api/inbox", (route) => { requests.list++; return route.fulfill({ json: { items, nextCursor: null } }); });
   await page.route(/\/api\/inbox\/[^/]+$/, async (route) => {
+    requests.detail++;
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
     if (id === "partial_1" && partialAttempts++ === 0) return route.fulfill({ status: 503, json: { error: "upstream timeout" } });
     const detail = id === "messenger_1" ? messengerDetail : id === "stale_1" ? { ...groupDetail, ...queue[2], stale: true, staleReason: "มีข้อความหรือข้อมูลห้องที่ใหม่กว่า กรุณาโหลดข้อมูลล่าสุด" } : id === "partial_1" ? { ...messengerDetail, ...queue[3] } : groupDetail;
@@ -97,9 +103,10 @@ async function mockInbox(page) {
   await page.route(/\/api\/replies\/[^/]+\/(edit|approve)$/, async (route) => {
     commands.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
     const editing = new URL(route.request().url()).pathname.endsWith("/edit");
+    if (!editing && failFirstApproval && approvalAttempts++ === 0) return route.fulfill({ status: 503, json: { error: "temporary failure" } });
     await route.fulfill({ status: editing ? 200 : 202, json: editing ? { reply: { id: "reply-2", version: 2, text: route.request().postDataJSON().text } } : { operation: { receiptId: `receipt-${commands.length}`, resourceId: "delivery-1", resourceType: "delivery_intent", state: "queued" } } });
   });
-  return { commands };
+  return { commands, requests };
 }
 
 test("one workspace renders Group context, grounded facts, and one exact composer", async ({ page }) => {
@@ -108,6 +115,8 @@ test("one workspace renders Group context, grounded facts, and one exact compose
 
   await expect(page.getByText("โพสต์จากกลุ่ม")).toBeVisible();
   await expect(page.getByText("ความคิดเห็นทั้งหมด (1)")).toBeVisible();
+  await expect(page.getByText("เป้าหมายตอบกลับ")).toBeVisible();
+  await expect(page.locator(".facebook-comment.is-reply-target")).toContainText("Beam S.");
   await expect(page.getByRole("textbox", { name: "ข้อความตอบกลับ" })).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "ความต้องการ" })).toBeVisible();
   await expect(page.getByText("Life Asoke", { exact: true })).toBeVisible();
@@ -121,6 +130,35 @@ test("one workspace renders Group context, grounded facts, and one exact compose
   await expect.poll(() => fixture.commands.some((entry) => entry.path.endsWith("/approve"))).toBeTruthy();
   await expect(page.locator("body")).toHaveCSS("overflow-x", "clip");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
+});
+
+test("filter reconciles selection and explains an empty filtered queue", async ({ page }) => {
+  await mockInbox(page);
+  await page.goto("/inbox?item=messenger_1");
+  await page.getByRole("button", { name: "ต้องตรวจ 1" }).click();
+  await expect(page.getByRole("button", { name: /Mint Kanyarat/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("โพสต์จากกลุ่ม")).toBeVisible();
+
+  await page.unrouteAll({ behavior: "wait" });
+  await mockInbox(page, { items: queue.filter((item) => item.status !== "needs_review") });
+  await page.reload();
+  await page.getByRole("button", { name: "ต้องตรวจ 0" }).click();
+  await expect(page.getByText("ไม่มีรายการที่ต้องตรวจ")).toBeVisible();
+  await expect(page.getByText("เลือกตัวกรองทั้งหมดเพื่อดูรายการอื่น")).toBeVisible();
+});
+
+test("edited immutable reply is reused when approval fails and is retried", async ({ page }) => {
+  const fixture = await mockInbox(page, { failFirstApproval: true });
+  await page.goto("/inbox?item=group_1");
+  const exact = "สวัสดีค่ะ ขอยืนยันข้อความฉบับแก้ไขนี้เพียงครั้งเดียวค่ะ";
+  await page.getByRole("textbox", { name: "ข้อความตอบกลับ" }).fill(exact);
+  await page.getByRole("button", { name: "อนุมัติและส่ง" }).click();
+  await expect(page.getByText("ดำเนินการไม่สำเร็จ กรุณาลองอีกครั้ง")).toBeVisible();
+  await expect(page.getByText("ฉบับที่ 2")).toBeVisible();
+  await page.getByRole("button", { name: "อนุมัติและส่ง" }).click();
+  await expect(page.getByText("อนุมัติข้อความนี้แล้ว และส่งเข้าคิว")).toBeVisible();
+  expect(fixture.commands.filter((entry) => entry.path.endsWith("/edit"))).toHaveLength(1);
+  expect(fixture.commands.filter((entry) => entry.path.endsWith("/reply-2/approve"))).toHaveLength(2);
 });
 
 test("Messenger reuses the timeline, composer, and human handoff", async ({ page }) => {
@@ -148,18 +186,36 @@ test("stale work is blocked and a failed detail region retries without losing th
   await expect(page.getByText("สนใจห้องใกล้รถไฟฟ้าครับ")).toBeVisible();
 });
 
-test("SSE receipts refresh only the selected region", async ({ page }) => {
+test("SSE refreshes the queue and selected item without flagging unrelated work", async ({ page }) => {
   await page.addInitScript(() => {
     class FixtureEventSource {
-      constructor() {
-        setTimeout(() => this.onmessage?.({ data: JSON.stringify({ receiptId: "r-1", resourceId: "group_1", resourceType: "work_item", state: "ready" }), lastEventId: "12" }), 80);
-      }
+      constructor() { window.__inboxSource = this; }
       close() {}
       addEventListener(type, listener) { if (type === "inbox") this.onmessage = listener; }
     }
     window.EventSource = FixtureEventSource;
+    window.__emitInbox = (payload) => window.__inboxSource?.onmessage?.({ data: JSON.stringify(payload), lastEventId: "12" });
   });
-  await mockInbox(page);
+  const fixture = await mockInbox(page);
   await page.goto("/inbox?item=group_1");
+  await expect(page.getByText("โพสต์จากกลุ่ม")).toBeVisible();
+  const initialList = fixture.requests.list, initialDetail = fixture.requests.detail;
+  await page.evaluate(() => window.__emitInbox({ receiptId: "r-other", resourceId: "reply-other", resourceType: "reply_version", workItemId: "messenger_1", state: "prepared" }));
+  await expect.poll(() => fixture.requests.list).toBeGreaterThan(initialList);
+  await expect(page.getByText("อัปเดตแล้ว")).toHaveCount(0);
+  expect(fixture.requests.detail).toBe(initialDetail);
+  await page.evaluate(() => window.__emitInbox({ receiptId: "r-selected", resourceId: "delivery-1", resourceType: "delivery_intent", workItemId: "group_1", state: "queued" }));
   await expect(page.getByText("อัปเดตแล้ว")).toBeVisible();
+  await expect.poll(() => fixture.requests.detail).toBeGreaterThan(initialDetail);
+});
+
+test("[mobile] starts on the queue and provides a back-to-queue control", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile", "mobile-only regression");
+  await mockInbox(page);
+  await page.goto("/inbox");
+  await expect(page.getByRole("complementary", { name: "คิวข้อความ" })).toBeVisible();
+  await page.getByRole("button", { name: /Nattapong S\./ }).click();
+  await expect(page.getByText("ข้อความจากเพจ")).toBeVisible();
+  await page.getByRole("button", { name: "กลับไปคิวข้อความ" }).click();
+  await expect(page.getByRole("button", { name: /Nattapong S\./ })).toBeVisible();
 });

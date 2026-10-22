@@ -76,8 +76,14 @@ export function createReceiptStream({pool,pollMs=1000,heartbeatMs=15000,maxConne
     // Read the high watermark and bounded backlog in one statement snapshot.
     const replay=async cursor=>(await pool.query(`WITH watermark AS (SELECT coalesce(max(event_position),0)::text AS high FROM outbox WHERE organization_id=$1 AND kind IN ('inbox.operation','inbox.changed'))
       SELECT high,(SELECT coalesce(jsonb_agg(row_to_json(e) ORDER BY e.event_position),'[]') FROM
-        (SELECT event_position::text AS position,event_position,payload FROM outbox WHERE organization_id=$1
-         AND kind IN ('inbox.operation','inbox.changed') AND event_position>$2 ORDER BY event_position LIMIT $3) e) AS events FROM watermark`,[org,cursor,maxReplay+1])).rows[0];
+        (SELECT o.event_position::text AS position,o.event_position,
+          o.payload || jsonb_build_object('workItemId',CASE o.payload->>'resourceType'
+            WHEN 'work_item' THEN o.payload->>'resourceId'
+            WHEN 'reply_version' THEN (SELECT rv.work_item_id FROM reply_versions rv WHERE rv.organization_id=o.organization_id AND rv.id=o.payload->>'resourceId')
+            WHEN 'delivery_intent' THEN (SELECT rv.work_item_id FROM delivery_intents di JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id WHERE di.organization_id=o.organization_id AND di.id=o.payload->>'resourceId')
+            WHEN 'conversation' THEN (SELECT wi.id FROM work_items wi WHERE wi.organization_id=o.organization_id AND wi.conversation_id=o.payload->>'resourceId' ORDER BY wi.created_at DESC,wi.id DESC LIMIT 1)
+            ELSE NULL END) AS payload
+         FROM outbox o WHERE o.organization_id=$1 AND o.kind IN ('inbox.operation','inbox.changed') AND o.event_position>$2 ORDER BY o.event_position LIMIT $3) e) AS events FROM watermark`,[org,cursor,maxReplay+1])).rows[0];
     active++;sessions.set(key,(sessions.get(key)??0)+1);
     let closed=false,busy=false,cursor=raw,timer,heartbeat;
     const stop=()=>{cleanup();res.end();};
@@ -93,12 +99,12 @@ export function createReceiptStream({pool,pollMs=1000,heartbeatMs=15000,maxConne
     const emit=batch=>{
       if(batch.events.length>maxReplay || BigInt(cursor)>BigInt(batch.high)) {
         cursor=batch.high;
-        return send(`id: ${cursor}\nevent: reset\ndata: ${JSON.stringify({receiptId:null,resourceId:null,resourceType:'inbox',state:'refetch'})}\n\n`);
+        return send(`id: ${cursor}\nevent: reset\ndata: ${JSON.stringify({receiptId:null,resourceId:null,resourceType:'inbox',workItemId:null,state:'refetch'})}\n\n`);
       }
       for(const row of batch.events) {
         const p=row.payload;
         cursor=row.position;
-        if(!send(`id: ${cursor}\nevent: inbox\ndata: ${JSON.stringify({receiptId:p.receiptId,resourceId:p.resourceId,resourceType:p.resourceType,state:p.state})}\n\n`))return false;
+        if(!send(`id: ${cursor}\nevent: inbox\ndata: ${JSON.stringify({receiptId:p.receiptId,resourceId:p.resourceId,resourceType:p.resourceType,workItemId:p.workItemId,state:p.state})}\n\n`))return false;
       }
       return true;
     };

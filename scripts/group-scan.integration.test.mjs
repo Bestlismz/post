@@ -153,6 +153,8 @@ integration('group Inbox filters and DTOs keep provider identities and unrelated
   assert.equal(list.items[0].participant.label,'Group participant');
   assert.equal((await inbox.listInbox({sourceId:'collision'},actor)).items.length,0);
   const detail=await inbox.getInboxItem(list.items[0].id,actor);
+  assert.deepEqual(detail.target,{kind:'post',uiId:detail.message.id});
+  assert.equal(detail.timeline.find(message=>message.uiId===detail.target.uiId)?.isTarget,true);
   for(const forbidden of ['post:456','"page_id"','"psid"','raw_evidence','Unrelated Page']) assert.equal(JSON.stringify(detail).includes(forbidden),false,forbidden);
 });
 

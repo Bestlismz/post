@@ -4,19 +4,21 @@ import { AlertTriangle, Check, LoaderCircle, Send, UserRoundPlus } from "lucide-
 import { useEffect, useMemo, useState } from "react";
 
 export function ReplyComposer({ detail, runCommand, onRefresh, commandsReady }) {
-  const latest = detail.replies?.[0] ?? null;
-  const [text, setText] = useState(latest?.text ?? ""), [busy, setBusy] = useState(null), [notice, setNotice] = useState(null);
+  const serverLatest = detail.replies?.[0] ?? null;
+  const [activeReply, setActiveReply] = useState(serverLatest);
+  const latest = activeReply;
+  const [text, setText] = useState(serverLatest?.text ?? ""), [busy, setBusy] = useState(null), [notice, setNotice] = useState(null);
   const stale = detail.stale === true || detail.status === "superseded";
-  useEffect(() => { setText(latest?.text ?? ""); }, [latest?.id, latest?.text]);
+  useEffect(() => { setActiveReply(serverLatest); setText(serverLatest?.text ?? ""); }, [detail.id, serverLatest?.id, serverLatest?.text]);
   useEffect(() => { setNotice(null); }, [detail.id]);
   const changed = latest && text.trim() !== latest.text, canApprove = commandsReady && !stale && !busy && Boolean(latest) && text.trim().length > 0;
-  const label = detail.channel === "facebook_group" ? "ตอบกลับในความคิดเห็น" : "ตอบกลับใน Messenger", count = useMemo(() => [...text].length, [text]);
+  const label = detail.channel === "facebook_group" ? detail.target?.kind === "post" ? "แสดงความคิดเห็นใต้โพสต์" : "ตอบกลับความคิดเห็น" : "ตอบกลับใน Messenger", count = useMemo(() => [...text].length, [text]);
 
   async function approve() {
     if (!canApprove) return; setBusy("approve"); setNotice(null);
     try {
       let replyId = latest.id;
-      if (changed) { const edited = await runCommand("edit", { replyId, text: text.trim() }); replyId = edited?.reply?.id ?? edited?.id; if (!replyId) throw new Error("Missing edited reply ID"); }
+      if (changed) { const edited = await runCommand("edit", { replyId, text: text.trim() }); const adopted = edited?.reply ?? edited; replyId = adopted?.id; if (!replyId) throw new Error("Missing edited reply ID"); setActiveReply(adopted); setText(adopted.text); }
       await runCommand("approve", { replyId });
       setNotice({ kind: "success", text: changed ? "บันทึกข้อความฉบับนี้แล้ว และส่งเข้าคิวอนุมัติ" : "อนุมัติข้อความนี้แล้ว และส่งเข้าคิว" }); await onRefresh();
     } catch (error) { setNotice({ kind: "error", text: error?.status === 409 ? "ข้อมูลเปลี่ยนแล้ว กรุณาโหลดฉบับล่าสุดก่อนอนุมัติ" : "ดำเนินการไม่สำเร็จ กรุณาลองอีกครั้ง" }); }
