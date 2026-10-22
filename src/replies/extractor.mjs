@@ -16,16 +16,25 @@ function budgetSupported(field, value, text) {
   const maximum = "maximum|max|at most|up to|no more than|(?:งบ)?ไม่เกิน|(?:งบ)?สูงสุด".normalize("NFKC");
   const values = { budgetMin: new Set(), budgetMax: new Set() };
   const number = text => Number(text.replaceAll(",", ""));
-  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${minimum}|${maximum})(?:\\s+budget)?(?:\\s+is)?\\s*[:=]?\\s*(${amount})`, "giu");
+  // Accept only complete, unscaled amounts. Unknown suffixes require clarification.
+  const complete = end => {
+    let tail = text.slice(end).trimStart();
+    const currency = /^(?:THB|baht|บาท)(?![\p{L}\p{N}_])/iu.exec(tail);
+    if (currency) tail = tail.slice(currency[0].length).trimStart();
+    return !tail || /^[;!?]/u.test(tail) || /^per month(?:[;!?]|$)/iu.test(tail) || new RegExp(`^and\\s+(?:${minimum}|${maximum})(?![\\p{L}\\p{N}_])`, "iu").test(tail);
+  };
+  const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${minimum}|${maximum})(?:\\s+budget)?(?:\\s+is)?\\s*[:=]?\\s*(${amount})`, "dgiu");
   for (const match of text.matchAll(pattern)) {
+    if (!complete(match.indices[2][1])) continue;
     const key = new RegExp(`^(?:${minimum})$`, "iu").test(match[1]) ? "budgetMin" : "budgetMax";
     values[key].add(number(match[2]));
   }
   const ranges = [
-    new RegExp(`(?:\\bbudget\\s+(?:from\\s+)?|งบ\\s*)(${amount})\\s*(?:THB|บาท)?\\s*(?:-|–|to|ถึง)\\s*(${amount})`, "giu"),
-    new RegExp(`\\bbetween\\s+(${amount})\\s*(?:THB)?\\s+and\\s+(${amount})`, "giu"),
+    new RegExp(`(?:\\bbudget\\s+(?:from\\s+)?|งบ\\s*)(${amount})\\s*(?:THB|บาท)?\\s*(?:-|–|to|ถึง)\\s*(${amount})`, "dgiu"),
+    new RegExp(`\\bbetween\\s+(${amount})\\s*(?:THB)?\\s+and\\s+(${amount})`, "dgiu"),
   ];
   for (const range of ranges) for (const match of text.matchAll(range)) {
+    if (!complete(match.indices[2][1])) continue;
     if (number(match[1]) > number(match[2])) return false;
     values.budgetMin.add(number(match[1])); values.budgetMax.add(number(match[2]));
   }
@@ -67,6 +76,7 @@ export async function extractRequirements({ conversation, businessProfile = {}, 
       const message = source.messages.find(item => item.id === span.messageId && item.revision === span.messageRevision);
       if (!message || span.end <= span.start || span.end > message.text.length || message.text.slice(span.start, span.end) !== span.quote) throw new Error("Unsupported evidence span or message revision");
       if (entry.status === "known" && !supports(field, entry.value, span.quote)) throw new Error("Unsupported evidence value");
+      if (entry.status === "known" && (field === "budgetMin" || field === "budgetMax") && !supports(field, entry.value, message.text.slice(span.start))) throw new Error("Unsupported evidence amount boundary");
     }
     if (entry.status === "known") {
       if (field === "district") requirements.geography = { districts: [entry.value] };

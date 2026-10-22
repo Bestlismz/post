@@ -179,3 +179,30 @@ test("emoji policy applies to factual project, unit and transit names without re
     assert.match(renderReply(selections, source, { ...format, emojiPolicy: "friendly" }).text, /🙂|❤️|🚆/u);
   }
 });
+
+test("budget evidence never treats multiplier or malformed prefixes as complete amounts", async () => {
+  for (const [expression, value] of [["18k", 18], ["12K", 12], ["1.8 thousand", 1.8], ["1.8 หมื่นบาท", 1.8], ["๑๒ พัน", 12], ["1.5 แสน", 1.5], ["1 ล้าน", 1], ["18kk", 18], ["18 kfoo", 18], ["18_thousand", 18], ["18,00", 18], ["18.2.5", 18.2], ["18-k", 18], ["18 to k", 18]]) {
+    for (const [field, cue] of [["budgetMin", "Minimum"], ["budgetMax", "Maximum"]]) {
+      const text = `${cue} budget ${expression}`;
+      const source = { id: "scaled", revision: 1, messages: [{ id: "scaled", revision: 1, text }] };
+      for (const quote of [text, `${cue} budget ${expression.match(/^[\d๐-๙.,]+/u)[0]}`]) {
+        const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+        const span = { messageId: "scaled", messageRevision: 1, start: 0, end: quote.length, quote };
+        fields[field] = { status: "known", value, evidence: [span] };
+        await assert.rejects(extractRequirements({ conversation: source, client: fake(fields) }), /evidence/i, `${field}: ${text}; quote=${quote}`);
+        fields[field] = { status: "ambiguous", value: null, evidence: [span] };
+        assert.deepEqual((await extractRequirements({ conversation: source, client: fake(fields) })).requirements, {});
+      }
+    }
+  }
+});
+
+test("range endpoints require complete unscaled amounts while plain decimals remain exact", async () => {
+  for (const [text, minimum, maximum, valid] of [["Budget between 12k and 18k", 12, 18, false], ["งบ ๑๒ พัน ถึง ๑๘ พัน", 12, 18, false], ["Budget 12.5 to 18.75", 12.5, 18.75, true], ["Budget 12,500.25 to 18,750.5", 12500.25, 18750.5, true], ["งบ ๑๒,๕๐๐ ถึง ๑๘,๐๐๐ บาท", 12500, 18000, true]]) {
+    const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+    for (const [field, value] of [["budgetMin", minimum], ["budgetMax", maximum]]) fields[field] = { status: "known", value, evidence: [{ messageId: "range", messageRevision: 1, start: 0, end: text.length, quote: text }] };
+    const input = { conversation: { id: "range", revision: 1, messages: [{ id: "range", revision: 1, text }] }, client: fake(fields) };
+    if (valid) assert.deepEqual((await extractRequirements(input)).requirements, { budgetMin: minimum, budgetMax: maximum });
+    else await assert.rejects(extractRequirements(input), /evidence/i);
+  }
+});
