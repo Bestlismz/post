@@ -191,6 +191,22 @@ integration('a blocked scheduler query is server-cancelled and SIGTERM-like abor
   assert.equal((await pool.query('SELECT count(*)::int n FROM jobs')).rows[0].n,0);
 });
 
+integration('one tick deadline spans sequential statements and rolls back before any late write',async({pool})=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);
+  const organizationBlocker=await pool.connect(),sourceBlocker=await pool.connect();
+  await organizationBlocker.query('BEGIN');await organizationBlocker.query("SELECT id FROM organizations WHERE id='org_default' FOR UPDATE");
+  await sourceBlocker.query('BEGIN');await sourceBlocker.query("SELECT id FROM group_sources WHERE id='source-1' FOR UPDATE");
+  const started=performance.now(),scheduler=createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],batchSize:5,tickTimeoutMs:100});let elapsed;
+  const releaseOrganization=setTimeout(()=>organizationBlocker.query('ROLLBACK'),75),releaseSource=setTimeout(()=>sourceBlocker.query('ROLLBACK'),150);
+  try {await assert.rejects(scheduler.tick(),error=>error.code==='57014'||error.code==='SCHEDULER_TICK_TIMEOUT');elapsed=performance.now()-started;}
+  finally {clearTimeout(releaseOrganization);clearTimeout(releaseSource);await organizationBlocker.query('ROLLBACK').catch(()=>{});await sourceBlocker.query('ROLLBACK').catch(()=>{});organizationBlocker.release();sourceBlocker.release();}
+  assert.ok(elapsed<135,`two individually sub-budget waits must not reset the total tick deadline (${elapsed}ms)`);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_schedule_receipts')).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM jobs')).rows[0].n,0);
+});
+
 integration('a source paused after claim is released without signing or dispatching a scan',async({pool})=>{
   const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
   await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
