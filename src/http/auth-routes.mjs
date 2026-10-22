@@ -23,6 +23,7 @@ export function createApplicationRouter({ pool, config, env = process.env }) {
     if (!row || !valid) throw httpError(401, "Invalid email or password");
     const actor = { id: row.id, organizationId: row.organization_id, role: row.role, email: row.email, displayName: row.display_name };
     const session = await withTransaction(pool, async (tx) => {
+      await tx.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE", [actor.organizationId]);
       await resetAccountAttempts(tx, input.email);
       return createSession(tx, actor, readSessionToken(request));
     });

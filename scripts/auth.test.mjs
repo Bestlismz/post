@@ -6,6 +6,8 @@ import { cp, mkdtemp, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomInt } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 test("production starts without importing JSON state, browser or fixture modules", { skip: !databaseUrl }, async () => {
   const root = fileURLToPath(new URL("../", import.meta.url));
@@ -150,4 +152,43 @@ test("login throttle storage is bounded and expired rows can be reused without d
   await pool.query("UPDATE login_attempts SET expires_at=now()-interval '1 second' WHERE key_hash IN (SELECT key_hash FROM login_attempts ORDER BY key_hash LIMIT 2)");
   assert.equal((await attempt()).status, 401);
   assert.equal((await pool.query("SELECT count(*)::int AS count FROM login_attempts")).rows[0].count, 10000);
+}));
+
+test("successful login and same-account reservation share an organization-first lock order", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, request }) => {
+  await bootstrap();
+  const { reserveLoginAttempt } = await import("../src/auth/login-throttle.mjs");
+  const barrier = randomInt(1, 2147483647);
+  const controller = await pool.connect();
+  const waitFor = async (query, values) => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const result = await pool.query(query, values);
+      if (result.rows.length) return result.rows[0];
+      await delay(10);
+    }
+    assert.fail("Expected PostgreSQL lock wait did not occur");
+  };
+  let successfulLogin, reservation;
+  try {
+    // Pause the real successful-login transaction after its account UPDATE locks
+    // the row, then run a competing reservation before session insertion.
+    await pool.query(`CREATE FUNCTION pause_account_reset() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.attempts=0 THEN PERFORM pg_advisory_xact_lock(${barrier}); END IF; RETURN NEW; END $$`);
+    await pool.query("CREATE TRIGGER pause_account_reset BEFORE UPDATE ON login_attempts FOR EACH ROW EXECUTE FUNCTION pause_account_reset()");
+    await controller.query("SELECT pg_advisory_lock($1)", [barrier]);
+    successfulLogin = request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "long-password-123" } });
+    const { pid } = await waitFor("SELECT pid FROM pg_locks WHERE locktype='advisory' AND objid=$1::oid AND NOT granted", [barrier]);
+    reservation = reserveLoginAttempt(pool, { email: "admin@example.com", ip: "127.0.0.1" }).then((value) => ({ value }), (error) => ({ error }));
+    await waitFor("SELECT pid FROM pg_stat_activity WHERE $1::int=ANY(pg_blocking_pids(pid)) AND wait_event_type='Lock'", [pid]);
+    await controller.query("SELECT pg_advisory_unlock($1)", [barrier]);
+    const [loginResult, reserved] = await Promise.all([successfulLogin, reservation]);
+    assert.equal(loginResult.status, 200);
+    assert.equal(reserved.error, undefined);
+    assert.equal(reserved.value.retryAfter, 0);
+    assert.equal((await pool.query("SELECT count(*)::int AS count FROM sessions WHERE expires_at>now()")).rows[0].count, 1);
+    assert.equal((await pool.query("SELECT attempts FROM login_attempts WHERE kind='account'")).rows[0].attempts, 1);
+  } finally {
+    await controller.query("SELECT pg_advisory_unlock($1)", [barrier]);
+    controller.release();
+    await Promise.allSettled([successfulLogin, reservation].filter(Boolean));
+  }
 }));
