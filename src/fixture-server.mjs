@@ -97,7 +97,7 @@ app.use(express.json({ limit: "32kb" }));
 app.use("/fixture/assets", express.static(path.join(root, "fixture"), { index: false }));
 
 app.get("/health", (_request, response) => response.json({ ok: true, mode }));
-app.get("/api/me", (_request, response) => response.json({ user: { id: "fixture-admin", displayName: "ณัฐวุฒิ", role: "admin" }, csrfToken: "fixture-csrf" }));
+app.get("/api/me", (_request, response) => response.json({ user: { id: "fixture-admin", displayName: "ณัฐวุฒิ", role: "admin" } }));
 app.post("/api/auth/csrf", (_request, response) => response.json({ csrfToken: "fixture-csrf" }));
 app.get("/api/inbox/events", (_request, response) => {
   response.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });

@@ -59,6 +59,8 @@
   background: #fff4f2;
 }
 .regional-error button { display: inline-flex; min-height: 40px; align-items: center; gap: 7px; border: 0; color: #8e332e; background: transparent; font-weight: 700; }
+.properties-readonly { display: flex; align-items: center; gap: 10px; padding: 11px clamp(24px, 3vw, 44px); border-bottom: 1px solid #d9dce6; color: var(--rr-text-soft); background: #f7f7fa; font-size: 12px; }
+.properties-readonly b { color: var(--rr-text); }
 
 .properties-layout {
   display: grid;
@@ -95,6 +97,10 @@
 .project-row__content small { display: flex; min-width: 0; align-items: center; gap: 3px; margin-top: 3px; overflow: hidden; color: var(--rr-text-soft); font-size: 11px; font-weight: 450; text-overflow: ellipsis; white-space: nowrap; }
 .project-row > em, .project-row__tail em { min-width: 24px; color: var(--rr-text-soft); font-size: 11px; font-style: normal; text-align: center; }
 .project-row__tail { display: flex; align-items: center; color: var(--rr-text-faint); }
+.project-row--project { display: flex; gap: 2px; padding: 0 6px 0 0; }
+.project-row__select { display: grid; min-width: 0; min-height: 60px; flex: 1; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 8px 4px 8px 10px; border: 0; color: inherit; background: transparent; text-align: left; }
+.project-row__edit { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 7px; color: var(--rr-text-faint); background: transparent; }
+.project-row__edit:hover, .project-row__edit:focus-visible { color: var(--rr-indigo-strong); background: rgb(255 255 255 / 76%); }
 .project-list__loading { padding: 18px 10px; color: var(--rr-text-soft); font-size: 12px; }
 
 .unit-workspace { min-width: 0; background: var(--rr-surface); }
@@ -193,13 +199,15 @@
 .confirm-dialog h2 { margin: 12px 0 5px; font-size: 18px; }
 .confirm-dialog p { margin: 0; color: var(--rr-text-soft); font-size: 12px; line-height: 1.65; overflow-wrap: anywhere; }
 .confirm-dialog > div { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.confirm-dialog .confirm-dialog__conflict { display: grid; justify-content: stretch; gap: 3px; padding: 11px 12px; border: 1px solid #efd397; border-radius: 8px; color: #815205; background: #fff9eb; font-size: 11px; }
+.confirm-dialog__conflict b { color: #6f4705; }
 .properties-toast { position: fixed; z-index: 150; right: 24px; bottom: 24px; max-width: min(380px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid #bae4d4; border-radius: 9px; color: #087552; background: #effaf6; box-shadow: var(--rr-shadow-float); font-size: 12px; font-weight: 680; animation: toast-enter var(--rr-motion-base) var(--rr-ease); }
 @keyframes toast-enter { from { opacity: 0; transform: translateY(8px); } }
 
 @media (max-width: 1023px) {
   .properties-heading { padding-inline: 24px; }
   .properties-layout { grid-template-columns: 220px minmax(0, 1fr); }
-  .project-row { grid-template-columns: 32px minmax(0, 1fr) auto; padding-inline: 8px; }
+  .project-row:not(.project-row--project) { grid-template-columns: 32px minmax(0, 1fr) auto; padding-inline: 8px; }
   .unit-table th:first-child { width: 27%; }
 }
 
@@ -217,6 +225,9 @@
   .project-list { flex-direction: row; gap: 7px; overflow-x: auto; padding: 10px 16px; scrollbar-width: none; }
   .project-list::-webkit-scrollbar { display: none; }
   .project-row { display: flex; width: max-content; min-width: max-content; min-height: 42px; gap: 6px; padding: 4px 10px 4px 5px; border: 1px solid var(--rr-line); border-radius: 9px; }
+  .project-row--project { padding: 0 3px 0 0; }
+  .project-row__select { min-height: 40px; grid-template-columns: 32px minmax(0, 1fr) auto; gap: 6px; padding: 4px 3px 4px 5px; }
+  .project-row__edit { width: 34px; height: 34px; align-self: center; }
   .project-row__icon { width: 32px; height: 32px; }
   .project-row__content b { max-width: 130px; font-size: 11px; }
   .project-row__content small, .project-row__tail svg, .project-row > em, .project-row__tail em { display: none; }
