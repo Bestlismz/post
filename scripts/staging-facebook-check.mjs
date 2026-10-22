@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {signCommand} from '../src/channels/groups/contracts.mjs';
 import {createGroupWorkerClient} from '../src/channels/groups/client.mjs';
 import {MAX_GROUP_ID_LENGTH} from '../src/channels/groups/target.mjs';
+import {groupCommandKeyConfig} from '../src/channels/groups/keys.mjs';
 
 function parseArgs(args) {
   let mode='no-send',source=null;
@@ -29,9 +30,9 @@ export async function runStagingCheck({args=[],env=process.env,fetchImpl=fetch,s
     if(source) {
       const allowed=new Set((env.GROUP_SOURCE_ALLOWLIST??'').split(',').map(value=>value.trim()).filter(Boolean));
       if(!allowed.has(source))throw new Error('Read-only source is not allow-listed');
-      let parsed;try{parsed=JSON.parse(env.GROUP_COMMAND_KEYS??'{}');}catch{throw new Error('Invalid Group command keys');}
-      const keyId=env.GROUP_COMMAND_KEY_ID??'',key=parsed?.[keyId];if(typeof key!=='string'||Buffer.byteLength(key)<32)throw new Error('Invalid Group command keys');
-      const client=scanClient??createGroupWorkerClient({baseUrl:base.href,keys:parsed,keyId,key,fetchImpl});
+      let signing;try{signing=groupCommandKeyConfig(env);}catch{throw new Error('Invalid Group command keys');}
+      const {keyId,key,keys}=signing;
+      const client=scanClient??createGroupWorkerClient({baseUrl:base.href,keys,keyId,key,fetchImpl});
       const now=new Date(),command=signCommand({version:1,kind:'ScanCommand',operationId:randomUUID(),sourceId:`staging:${source}`,groupId:source,canonicalTarget:`https://www.facebook.com/groups/${source}`,issuedAt:now.toISOString(),expiresAt:new Date(+now+300_000).toISOString(),keyId},{key,keyId,now});
       const result=await client.scan(command),hashes=result.observations?.map(item=>item.evidenceHash)??[];
       if(!['complete','partial','none'].includes(result.coverage)||!Array.isArray(result.observations)||hashes.some(value=>!/^[a-f0-9]{64}$/.test(value)))throw new Error('Invalid scan evidence');

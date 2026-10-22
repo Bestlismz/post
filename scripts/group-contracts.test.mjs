@@ -15,6 +15,13 @@ test('command group IDs preserve leading zeros and accept at most 100 digits',()
     assert.throws(()=>signCommand({...base,groupId,canonicalTarget:`https://www.facebook.com/groups/${groupId}`},options));
   }
 });
+test('base64 Group command keys decode once into exact canonical 32-byte keys',async()=>{
+  const {groupCommandKeyConfig}=await import('../src/channels/groups/keys.mjs');
+  const encoded=Buffer.alloc(32,7).toString('base64'),config=groupCommandKeyConfig({GROUP_COMMAND_KEY_ID:'current',GROUP_COMMAND_KEYS:JSON.stringify({old:Buffer.alloc(32,6).toString('base64'),current:encoded})});
+  assert.equal(config.keyId,'current');assert.deepEqual(config.key,Buffer.alloc(32,7));assert.deepEqual(config.keys.old,Buffer.alloc(32,6));
+  for(const value of ['not-base64',encoded.replace(/=$/,'=='),Buffer.alloc(31).toString('base64'),Buffer.alloc(33).toString('base64'),' '+encoded])
+    assert.throws(()=>groupCommandKeyConfig({GROUP_COMMAND_KEY_ID:'current',GROUP_COMMAND_KEYS:JSON.stringify({current:value})}),/command signing/i);
+});
 test('signed commands authenticate strict versioned canonical payloads',()=>{
   const signed=signCommand(base,options); assert.deepEqual(verifyCommand(JSON.stringify(signed),verify),signed);
   assert.equal(canonicalSerialize({z:1,a:{y:2,b:3}}),'{"a":{"b":3,"y":2},"z":1}');
@@ -27,6 +34,7 @@ test('signed commands authenticate strict versioned canonical payloads',()=>{
   assert.throws(()=>verifyCommand(signed,{...verify,keys:{}}),/Unknown/);
   assert.throws(()=>signCommand({...base,expiresAt:base.issuedAt},options),/time|lifetime/i);
   assert.throws(()=>signCommand({...base,version:2},options));
+  assert.throws(()=>signCommand(base,{...options,key:'x'.repeat(33)}),/32 bytes/i);
 });
 test('reply command preserves exact text and verifies its hash without admitting private data',()=>{
   const text='ห้องว่าง\nExact text';

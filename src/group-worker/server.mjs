@@ -13,9 +13,10 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
     try {
       if(req.method==='GET'&&req.url==='/health') {
         const recovery=recoveryGate?.status?.()??{state:'available'};
-        const raw=sessionHealth?.(),allowedState=new Set(['healthy','busy','quarantined']);
-        const session=raw?{state:allowedState.has(raw.state)?raw.state:'unavailable'}:undefined;
-        res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify({ok:true,recovery,...(session?{session}:{})}));return;
+        let raw;try{raw=await sessionHealth?.();}catch{raw={state:'unavailable'};}
+        const allowedState=new Set(['healthy','busy','quarantined','auth_required','checkpoint','expired','unavailable']);
+        const session=raw?{state:allowedState.has(raw.state)?raw.state:'unavailable'}:undefined,ready=!session||['healthy','busy'].includes(session.state);
+        res.writeHead(ready?200:503,{'content-type':'application/json'}).end(JSON.stringify({ok:ready,recovery,...(session?{session}:{})}));return;
       }
       if(req.method==='POST'&&['/recovery/start','/recovery/stop'].includes(req.url)) {
         if(!recoveryGate){res.writeHead(404).end();return;}

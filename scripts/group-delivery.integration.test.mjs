@@ -166,6 +166,18 @@ dbtest('possible group send is terminal unknown, not_found stays unknown, and re
   assert.equal((await pool.query('SELECT provider_message_id FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].provider_message_id,'remote-verified');
 });
 
+dbtest('production Group reconciliation stage consumes each unresolved attempt once without resending',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let replies=0,reconciles=0;
+  const client={reply:async command=>{replies++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'e'.repeat(64),remoteId:null},{key,keyId,now:instant});},
+    reconcile:async command=>{reconciles++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature')),kind:'ReconcileResult',state:'sent',remoteId:'remote-reconciled',evidenceHash:'f'.repeat(64)},{key,keyId,now:instant});}};
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  assert.equal((await worker.runOnce()).state,'unknown');assert.equal(replies,1);
+  assert.equal((await worker.runReconcileOnce()).state,'sent');assert.equal(reconciles,1);assert.equal(replies,1);
+  assert.equal(await worker.runReconcileOnce(),null);assert.equal(reconciles,1);
+  assert.equal((await pool.query('SELECT provider_message_id FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].provider_message_id,'remote-reconciled');
+});
+
 dbtest('source health, target revision, and exact immutable content are rechecked before group dispatch',async({pool,actor,workItemId,observationId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
@@ -173,6 +185,17 @@ dbtest('source health, target revision, and exact immutable content are rechecke
   await pool.query("UPDATE group_sources SET kill_switch=true WHERE id='group-source'");
   assert.equal((await worker.deliverGroupIntent(intent.id)).state,'cancelled');assert.equal(calls,0);
   assert.equal((await pool.query('SELECT count(*)::int n FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0);
+});
+
+dbtest('production delivery leaves queued work untouched until staging and exact source gates are enabled',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);await service.approveAndQueue(reply.id,1,actor);let calls=0;
+  for(const options of [{stagingSendEnabled:false,stagingAllowedGroups:['123']},{stagingSendEnabled:true,stagingAllowedGroups:['other']}]) {
+    const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,...options});
+    assert.equal(await worker.runOnce(),null);
+  }
+  assert.equal(calls,0);
+  assert.deepEqual((await pool.query("SELECT status,attempts FROM jobs WHERE kind='deliver_group_reply'")).rows[0],{status:'pending',attempts:0});
 });
 
 dbtest('group delivery re-evaluates DB policy at the final dispatch instant',async({pool,actor,workItemId})=>{

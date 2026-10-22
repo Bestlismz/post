@@ -19,11 +19,13 @@ export function applicationRuntimeConfig(env=process.env) {
   };
 }
 
-export async function runWorkers({automation,delivery,signal,pollMs=1000,onError=()=>{}}) {
+export async function runWorkers({automation,delivery,workers=null,signal,pollMs=1000,onError=()=>{}}) {
   if(!Number.isSafeInteger(pollMs) || pollMs<1 || pollMs>60000)throw Error('Invalid poll interval');
+  const stages=workers??[automation,delivery];
+  if(!Array.isArray(stages)||!stages.length||stages.some(worker=>!worker||typeof worker.runOnce!=='function'))throw Error('Invalid application workers');
   while(!signal.aborted) {
     let worked=false;
-    for(const worker of [automation,delivery]) {
+    for(const worker of stages) {
       if(signal.aborted)break;
       try {worked=Boolean(await worker.runOnce()) || worked;}
       catch {onError('WORKER_POLL_FAILED');}
@@ -59,12 +61,12 @@ export async function superviseRuntimes({controller,factories}) {
   const rejected=settled.find(result=>result.status==='rejected');if(rejected)throw rejected.reason;
 }
 
-export function runApplicationRuntimes({automation,delivery,createScheduler,controller,env=process.env,onWorkerError=()=>{},onSchedulerEvent=()=>{}}) {
+export function runApplicationRuntimes({automation,delivery,workers=null,createScheduler,controller,env=process.env,onWorkerError=()=>{},onSchedulerEvent=()=>{}}) {
   const config=applicationRuntimeConfig(env);
   if(typeof createScheduler!=='function')throw Error('Invalid application runtime configuration');
   const scheduler=createScheduler(config);
   return superviseRuntimes({controller,factories:[
-    ()=>runWorkers({automation,delivery,signal:controller.signal,pollMs:config.workerPollMs,onError:onWorkerError}),
+    ()=>runWorkers({automation,delivery,workers,signal:controller.signal,pollMs:config.workerPollMs,onError:onWorkerError}),
     ()=>runScheduler({scheduler,signal:controller.signal,pollMs:config.schedulerPollMs,onEvent:onSchedulerEvent})
   ]});
 }

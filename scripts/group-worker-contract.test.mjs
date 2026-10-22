@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { signCommand, signResult, verifyResult } from '../src/channels/groups/contracts.mjs';
 
-const key = 'a'.repeat(32), keys = { current: key };
+const key = Buffer.alloc(32,97), keys = { current: key };
 const command = () => signCommand({ version: 1, kind: 'ScanCommand', operationId: 'op-1', sourceId: 'source-1', groupId: '100', canonicalTarget: 'https://www.facebook.com/groups/100', keyId: 'current', issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now()+60000).toISOString() }, { key, keyId: 'current' });
 const load = (path) => import(`../src/${path}.mjs`);
 async function fixturePage(t,html) {
@@ -96,6 +96,15 @@ test('page selection ignores unrelated pages and closes duplicate exact pages',a
   assert.equal((await inspectSession({...exact,isClosed:()=>true})).state,'expired');
 });
 
+test('active CDP health probe distinguishes ready login checkpoint and restart gaps',async()=>{
+  const {probeBrowserHealth}=await load('group-worker/session');
+  const reply=pages=>async()=>Response.json(pages.map(page=>({type:'page',...page}))),inspectPage=async page=>({state:page.session});
+  assert.deepEqual(await probeBrowserHealth({cdpUrl:'http://127.0.0.1:9222',ownership:{state:'healthy'},fetchImpl:reply([{url:'https://www.facebook.com/groups/100',session:'healthy'}]),inspectPage}),{state:'healthy'});
+  assert.deepEqual(await probeBrowserHealth({cdpUrl:'http://127.0.0.1:9222',ownership:{state:'healthy'},fetchImpl:reply([{url:'https://www.facebook.com/',session:'auth_required'}]),inspectPage}),{state:'auth_required'});
+  assert.deepEqual(await probeBrowserHealth({cdpUrl:'http://127.0.0.1:9222',ownership:{state:'healthy'},fetchImpl:reply([{url:'https://www.facebook.com/checkpoint/',session:'checkpoint'}]),inspectPage}),{state:'checkpoint'});
+  assert.deepEqual(await probeBrowserHealth({cdpUrl:'http://127.0.0.1:9222',ownership:{state:'healthy'},fetchImpl:async()=>{throw Error('restart');}}),{state:'unavailable'});
+});
+
 test('profile lease excludes processes and recovers after holder death with a new fence',async t=>{
   const {acquireProfileLease}=await load('group-worker/session');
   const dir=await mkdtemp(`${tmpdir()}/group-lease-`); t.after(()=>rm(dir,{recursive:true,force:true}));
@@ -131,6 +140,19 @@ test('recorded Facebook DOM extracts posts and comments without claiming complet
   assert.deepEqual(result.observations.map(item=>item.targetId),['post:900','comment:900:901']);
   assert.deepEqual(result.observations.map(item=>item.text),['Room near BTS','Interested']);
   assert.equal(result.observations[1].authorLabel,'Ann');
+});
+
+test('recorded Facebook DOM driver locates an exact target sends once and reconciles bound evidence',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<a aria-label="Your profile" href="/profile.php?id=42">Me</a><div role="feed"><div role="article"><h3>Poster</h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
+    <div role="article"><h3>Ann</h3><a href="/groups/100/posts/900/?comment_id=901"><time datetime="2026-10-22T11:59:00.000Z">1m</time></a><div data-ad-preview="message">Interested</div><button>Reply</button><div contenteditable="true" role="textbox" aria-label="Reply to Ann"></div></div>
+    </div></div><script>document.querySelector('[contenteditable]').addEventListener('keydown',event=>{if(event.key!=='Enter')return;event.preventDefault();const text=event.currentTarget.textContent;const item=document.createElement('div');item.setAttribute('role','article');item.innerHTML='<h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message"></div>';item.querySelector('[data-ad-preview]').textContent=text;event.currentTarget.closest('[role=article]').append(item);});</script>`);
+  const driver=createFacebookGroupDriver(page,{clock:()=>new Date('2026-10-22T12:00:00.000Z')}),replyCommand={...command(),targetId:'comment:900:901'};
+  const target=await driver.locateExactTarget(replyCommand);assert.equal(target.targetId,replyCommand.targetId);
+  const sender=await driver.identifySender();assert.match(sender,/^facebook-actor:[a-f0-9]{64}$/);
+  assert.deepEqual(await driver.sendExact(target,'Exact reply'),{state:'sent',visible:true,remoteId:'902'});
+  const evidence=await driver.findReplyEvidence({...replyCommand,textHash:createHash('sha256').update('Exact reply').digest('hex')});
+  assert.equal(evidence.length,1);assert.equal(evidence[0].text,'Exact reply');assert.equal(evidence[0].senderId,sender);assert.equal(evidence[0].remoteId,'902');
 });
 
 test('card identity ignores hostile body permalinks and nested shared-post headers',async t=>{

@@ -15,6 +15,7 @@ import { createInboxRouter } from './http/inbox-routes.mjs';
 import { createAutomationRouter } from './http/automation-routes.mjs';
 import { createSourceRouter,createRecoveryRegistry,authorizeRecoveryUpgrade } from './http/source-routes.mjs';
 import { createGroupRecoveryClient } from './channels/groups/recovery-client.mjs';
+import { groupCommandKeyConfig } from './channels/groups/keys.mjs';
 import { httpError } from './auth/authorize.mjs';
 
 const config = loadConfig();
@@ -26,8 +27,8 @@ let frontendReady;
 const app = express();
 const shutdown=new AbortController();
 const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env });
-let groupKeys={};try{groupKeys=JSON.parse(process.env.GROUP_COMMAND_KEYS??'{}');}catch{}
-const groupKeyId=process.env.GROUP_COMMAND_KEY_ID??'',groupKey=groupKeys[groupKeyId];
+const groupSigning=groupCommandKeyConfig(process.env,{optional:true});
+const groupKeys=groupSigning?.keys??{},groupKeyId=groupSigning?.keyId??'',groupKey=groupSigning?.key;
 const recoveryClient=groupKey?createGroupRecoveryClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',keys:groupKeys,keyId:groupKeyId,key:groupKey}):null;
 const recovery={
   start:input=>recoveryClient?recoveryClient.start(input):Promise.reject(httpError(503,'Group worker unavailable')),
@@ -59,7 +60,8 @@ app.use(async (request, response) => {
 app.use(errorHandler);
 const server = http.createServer(app);
 server.on('upgrade',(request,socket,head)=>{
-  authorizeRecoveryUpgrade({pool,registry:recoveryRegistry,request}).then(({targetPath})=>{
+  authorizeRecoveryUpgrade({pool,registry:recoveryRegistry,request}).then(({targetPath,identity})=>{
+    if(!recoveryRegistry.attachSocket(identity,socket))throw httpError(404,'Recovery session not found');
     request.url=targetPath;recoveryProxy.ws(request,socket,head);
   }).catch(error=>{
     const status=Number.isInteger(error.status)?error.status:404;
@@ -71,6 +73,7 @@ server.listen(Number(process.env.PORT ?? 3000), "0.0.0.0", () => {
 });
 for (const signal of ["SIGTERM", "SIGINT"]) process.once(signal, () => {
   shutdown.abort();
+  recoveryRegistry.closeAll();
   server.close(() => { void pool.end().then(() => frontendReady ? frontend.close() : undefined); });
   server.closeIdleConnections();
 });
