@@ -1,15 +1,7 @@
 #!/bin/sh
 set -eu
 
-until curl -fsS http://127.0.0.1:3000/health >/dev/null; do
-  sleep 1
-done
-
-if [ "${POC_MODE:-fixture}" = "live" ]; then
-  START_URL="https://www.facebook.com/"
-else
-  START_URL="http://127.0.0.1:3000/fixture/login"
-fi
+START_URL="${CHROME_START_URL:-https://www.facebook.com/}"
 
 # The browser profile lives in a named volume so login cookies survive container
 # replacement. Chromium's singleton files contain the previous container's host

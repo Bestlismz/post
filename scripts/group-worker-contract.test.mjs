@@ -75,7 +75,7 @@ test('private server and client carry only signed exact group reply and reconcil
   const now=new Date(),base={version:1,operationId:'reply-op',sourceId:'source-1',groupId:'100',canonicalTarget:'https://www.facebook.com/groups/100',targetId:'comment:900:901',textHash:createHash('sha256').update('Exact reply').digest('hex'),keyId:'current',issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString()};
   const reply=signCommand({...base,kind:'GroupReplyCommand',text:'Exact reply'},{key,keyId:'current'});
   const reconcile=signCommand({...base,operationId:'reconcile-op',kind:'ReconcileCommand',attemptOperationId:'reply-op',senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString()},{key,keyId:'current'});
-  const server=createGroupWorkerServer({keys,keyId:'current',key,allowedGroups:['100'],scan:async()=>assert.fail('scan ran'),
+  const server=createGroupWorkerServer({keys,keyId:'current',key,allowedGroups:['100'],stagingSendEnabled:true,stagingAllowedGroups:['100'],scan:async()=>assert.fail('scan ran'),
     reply:async command=>({state:'sent',targetId:command.targetId,textHash:command.textHash,senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString(),evidenceHash:'b'.repeat(64),remoteId:'remote-1'}),
     reconcile:async command=>({state:'not_found',targetId:command.targetId,textHash:command.textHash,senderId:command.senderId,attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'c'.repeat(64),remoteId:null})});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
