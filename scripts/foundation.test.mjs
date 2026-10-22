@@ -8,7 +8,7 @@ import { appendAudit, runIdempotent, withTransaction } from "../src/db/transacti
 import { claimJobs, enqueueJob } from "../src/jobs/queue.mjs";
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
-const tables = ["audit_entries", "conversations", "idempotency_keys", "jobs", "legacy_state_imports", "login_attempts", "match_snapshots", "memberships", "messages", "meta_credentials", "meta_oauth_states", "meta_page_sources", "organizations", "outbox", "project_amenities", "project_transit", "projects", "sessions", "unit_fact_revisions", "units", "users", "work_items"];
+const tables = ["audit_entries", "conversations", "delivery_cancellations", "delivery_intents", "idempotency_keys", "jobs", "legacy_state_imports", "login_attempts", "match_snapshots", "memberships", "messages", "meta_credentials", "meta_oauth_states", "meta_page_sources", "organizations", "outbox", "project_amenities", "project_transit", "projects", "reply_authorizations", "reply_supersessions", "reply_versions", "sessions", "unit_fact_revisions", "units", "users", "work_items"];
 
 async function withDatabase(fn) {
   const admin = createPool({ databaseUrl });
