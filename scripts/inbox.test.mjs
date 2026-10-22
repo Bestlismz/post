@@ -80,6 +80,25 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       assert.equal((await inbox.listInbox({ sourceId: "other-source" }, actor)).items.length, 0);
       await assert.rejects(inbox.listInbox({ cursor: first.nextCursor }, { ...actor, organizationId: "other" }), { status: 400 });
     });
+    await t.test("query text rejects controls before SQL and preserves Thai and Unicode", async () => {
+      for (const control of ["\u0000", "\n", "\u001f", "\u007f", "\u0085", "\ud800"]) {
+        for (const filter of ["search", "sourceId", "channel"]) await assert.rejects(inbox.listInbox({ [filter]: `room${control}` }, actor), { status: 400 });
+        await assert.rejects(inbox.getInboxItem(`item${control}`, actor), { status: 400 });
+        const invalidActor = { ...actor, organizationId: `org${control}` };
+        await assert.rejects(inbox.listInbox({}, invalidActor), { status: 400 });
+        await assert.rejects(inbox.getInboxItem(first.items[0].id, invalidActor), { status: 400 });
+        await assert.rejects(withTransaction(pool, (tx) => repository.claimConversationRevision(tx, `conversation${control}`, 1, actor)), { status: 400 });
+        const position = JSON.parse(Buffer.from(first.nextCursor, "base64url"));
+        for (const field of ["at", "id", "scope"]) {
+          const cursor = Buffer.from(JSON.stringify({ ...position, [field]: `invalid${control}` })).toString("base64url");
+          await assert.rejects(inbox.listInbox({ cursor }, actor), { status: 400 });
+        }
+      }
+      await pool.query("UPDATE messages SET text='ห้องใกล้รถไฟฟ้า 🏠' WHERE mid='first'");
+      assert.equal((await inbox.listInbox({ search: "ห้องใกล้รถไฟฟ้า 🏠" }, actor)).items.length, 1);
+      assert.equal((await inbox.listInbox({ sourceId: "แหล่งข้อมูล 🏠" }, actor)).items.length, 0);
+      assert.equal(await inbox.getInboxItem("รายการ 🏠", actor), null);
+    });
     await t.test("new inbound supersedes a generation claim and stale commits and claims reject", async () => {
       const { rows: [conversation] } = await pool.query("SELECT id FROM conversations WHERE page_id='page-secret' AND psid='private-psid'");
       const old = await withTransaction(pool, (tx) => repository.claimConversationRevision(tx, conversation.id, 2, actor));

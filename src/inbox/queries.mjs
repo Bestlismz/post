@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { httpError } from "../auth/authorize.mjs";
 import { authorizeInboxActor } from "./repository.mjs";
+import { validateInboxText } from "./validation.mjs";
 
 const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   to_char(w.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
@@ -30,8 +31,8 @@ function parseQuery(query, organizationId) {
   const { limit = 25, channel = null, sourceId = null, search = "", cursor = null } = query;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw httpError(400, "Page size must be between 1 and 100");
   if (channel !== null && channel !== "messenger") throw httpError(400, "Invalid channel");
-  if (sourceId !== null && (typeof sourceId !== "string" || !sourceId.trim() || sourceId.length > 200)) throw httpError(400, "Invalid source");
-  if (typeof search !== "string" || search.length > 500) throw httpError(400, "Invalid search");
+  if (sourceId !== null) validateInboxText(sourceId, "source");
+  validateInboxText(search, "search", { maxLength: 500, allowEmpty: true });
   const normalizedSearch = search.trim();
   const scope = createHash("sha256").update(JSON.stringify([organizationId, channel, sourceId, normalizedSearch])).digest("hex");
   let position = null;
@@ -41,6 +42,9 @@ function parseQuery(query, organizationId) {
       const decoded = Buffer.from(cursor, "base64url");
       if (decoded.toString("base64url") !== cursor) throw new Error();
       position = JSON.parse(decoded.toString("utf8"));
+      validateInboxText(position.id, "cursor ID");
+      validateInboxText(position.at, "cursor timestamp");
+      validateInboxText(position.scope, "cursor scope");
       const validShape = JSON.stringify(position) === decoded.toString("utf8")
         && Object.keys(position).sort().join(",") === "at,id,scope,v"
         && position.v === 1 && position.scope === scope;
@@ -81,7 +85,7 @@ export async function listInbox(pool, query = {}, actor) {
 
 export async function getInboxItem(pool, id, actor) {
   const organizationId = authorizeInboxActor(actor);
-  if (typeof id !== "string" || !id || id.length > 200) throw httpError(400, "Invalid Inbox item ID");
+  validateInboxText(id, "Inbox item ID");
   // The timeline and item share one statement snapshot, including during ingress.
   const { rows: [row] } = await pool.query(`SELECT ${columns},
     (SELECT coalesce(jsonb_agg(jsonb_build_object('id',tm.id,'text',tm.text,
