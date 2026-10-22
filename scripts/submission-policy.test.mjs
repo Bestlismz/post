@@ -11,3 +11,10 @@ test("real live targets remain locked unless explicitly enabled", () => {
   assert.equal(submissionPolicy({ mode: "live", liveSubmissionEnabled: true }, {}), "remote");
   assert.equal(submissionPolicy({ mode: "fixture", liveSubmissionEnabled: false }, {}), "remote");
 });
+
+test("Facebook Group submission requires the global gate plus an allow-listed healthy source", () => {
+  const runtime = { mode: "live", liveSubmissionEnabled: true };
+  assert.equal(submissionPolicy(runtime, { channel: "facebook_group", allowListed: false, sourceHealth: "connected" }), "blocked");
+  assert.equal(submissionPolicy(runtime, { channel: "facebook_group", allowListed: true, sourceHealth: "auth_required" }), "blocked");
+  assert.equal(submissionPolicy(runtime, { channel: "facebook_group", allowListed: true, sourceHealth: "connected" }), "remote");
+});

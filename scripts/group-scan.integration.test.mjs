@@ -203,12 +203,13 @@ integration('failed Inbox job rolls back the entire receipt observations and sou
   assert.equal((await pool.query('SELECT session_health FROM group_sources')).rows[0].session_health,'unknown');
 });
 
-integration('Messenger automation never claims durable group analysis jobs',async({pool,scan,result,accept,observation})=>{
+integration('automation claims the distinct durable group analysis job through trusted preparation',async({pool,scan,result,accept,observation})=>{
   await accept(result(await scan(),{observations:[observation('456')]}));
   const {createAutomationWorker}=await import('../src/workers/automation-worker.mjs');
-  const worker=createAutomationWorker({pool,service:{prepareReply:()=>{throw new Error('Group work reached Messenger preparation');}},workerId:'messenger'});
-  assert.equal(await worker.runOnce(),null);
-  assert.deepEqual((await pool.query("SELECT status,attempts FROM jobs WHERE kind='analyze_group_work_item'")).rows[0],{status:'pending',attempts:0});
+  let prepared=0;
+  const worker=createAutomationWorker({pool,service:{prepareReply:async()=>{prepared++;}},workerId:'analysis'});
+  assert.equal(typeof await worker.runOnce(),'string');assert.equal(prepared,1);
+  assert.deepEqual((await pool.query("SELECT status,attempts FROM jobs WHERE kind='analyze_group_work_item'")).rows[0],{status:'completed',attempts:1});
 });
 
 integration('source request waits for the organization before locking source rows',async({pool,source,scan})=>{
