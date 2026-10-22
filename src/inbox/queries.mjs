@@ -6,6 +6,7 @@ import { validateInboxText } from "./validation.mjs";
 const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   to_char(w.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
   c.channel,m.id AS message_id,m.text AS message_text,
+  CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS author_label,
   coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE s.name END AS source_name,
   CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health`;
 const relations = `FROM work_items w
@@ -22,7 +23,7 @@ function itemDto(row) {
     processingRevision: row.processing_revision,
     status: row.status,
     createdAt: row.created_at,
-    participant: { id: row.conversation_id, label: row.channel==='facebook_group'?'Group participant':'Messenger customer' },
+    participant: { id: row.conversation_id, label: row.author_label || (row.channel === "facebook_group" ? "Group participant" : "Messenger customer") },
     source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable" },
     message: { id: row.message_id, text: row.message_text },
   };
@@ -92,11 +93,13 @@ export async function getInboxItem(pool, id, actor) {
   const { rows: [row] } = await pool.query(`SELECT ${columns},
     (SELECT coalesce(jsonb_agg(jsonb_build_object('id',tm.id,'text',tm.text,
       'direction',tm.direction,'processingRevision',tm.processing_revision,
+      'author',CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
       'createdAt',to_char(tm.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
       ORDER BY tm.processing_revision,tm.id),'[]'::jsonb)
       FROM (SELECT * FROM messages WHERE organization_id=w.organization_id AND conversation_id=w.conversation_id ORDER BY processing_revision DESC LIMIT 100) tm) AS timeline,
     (SELECT coalesce(jsonb_agg(r),'[]') FROM (SELECT id,version,conversation_revision AS "processingRevision",content->>'text' AS text
       FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 20) r) AS replies,
+    (SELECT context FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 1) AS latest_reply_context,
     (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",
       CASE WHEN a.state='attempting' THEN 'unknown' ELSE coalesce(a.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
       a.provider_message_id AS "providerMessageId"
@@ -113,8 +116,24 @@ export async function getInboxItem(pool, id, actor) {
       ORDER BY event_position DESC LIMIT 100) e) AS events
     ${relations} WHERE w.organization_id=$1 AND w.id=$2`, [organizationId, id]);
   if (!row) return null;
-  return { ...itemDto(row), timeline: row.timeline.map((message) => ({
-    id: message.id, text: message.text, direction: message.direction,
+  const context=row.latest_reply_context ?? {};
+  const fields=context.extraction?.fields ?? {};
+  const rawRequirements=context.snapshot?.requirements ?? context.extraction?.requirements ?? {};
+  const requirements={
+    district:rawRequirements.geography?.districts?.[0] ?? rawRequirements.district ?? null,
+    budgetMax:rawRequirements.budgetMax ?? null,
+    bedrooms:rawRequirements.bedrooms ?? null,
+    requiredPetPolicy:rawRequirements.requiredPetPolicy ?? null,
+    moveInDate:rawRequirements.moveInDate ?? null,
+  };
+  const requirementFields=["district","budgetMax","bedrooms","requiredPetPolicy","moveInDate"];
+  const candidates=new Map((context.snapshot?.candidates ?? []).map(candidate=>[candidate.unitId,candidate]));
+  const matches=(context.snapshot?.factSnapshot ?? []).map(fact=>({...fact,score:candidates.get(fact.unitId)?.score ?? null}));
+  return { ...itemDto(row), stale:row.status==='superseded',
+    staleReason:row.status==='superseded'?'มีข้อความหรือข้อมูลห้องที่ใหม่กว่า กรุณาโหลดข้อมูลล่าสุด':null,
+    requirements,missingRequirements:requirementFields.filter(name=>fields[name]?.status !== 'known'),matches,
+    timeline: row.timeline.map((message) => ({
+    id: message.id, text: message.text, direction: message.direction, author: message.author,
     processingRevision: message.processingRevision, createdAt: message.createdAt,
   })), replies:row.replies,deliveries:row.deliveries,events:row.events };
 }

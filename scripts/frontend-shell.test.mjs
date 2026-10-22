@@ -72,7 +72,8 @@ test("every navigation destination is backed by a real App Router page", async (
       new URL(`app/${route.id}/page.jsx`, projectRoot),
       "utf8",
     );
-    assert.match(page, /RoutePlaceholder/);
+    if (route.id === "inbox") assert.match(page, /InboxQueue/);
+    else assert.match(page, /RoutePlaceholder/);
   }
 
   const rootPage = await readFile(new URL("app/page.jsx", projectRoot), "utf8");

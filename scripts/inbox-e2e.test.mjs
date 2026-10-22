@@ -66,6 +66,7 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
     const login=await fetch(`${base}/api/auth/login`,{method:'POST',headers:{Origin:config.appOrigin,'Content-Type':'application/json'},body:JSON.stringify({email:'inbox@example.com',password:'inbox-password-123'})});
     assert.equal(login.status,200);const session=await login.json();
     const cookie=login.headers.get('set-cookie').split(';')[0];
+    const csrf=await fetch(`${base}/api/auth/csrf`,{method:'POST',headers:{Cookie:cookie,Origin:config.appOrigin}});assert.equal(csrf.status,200);session.csrfToken=(await csrf.json()).csrfToken;
     const headers={Cookie:cookie,Origin:config.appOrigin,'X-CSRF-Token':session.csrfToken,'Content-Type':'application/json'};
     const get=(path,extra={})=>fetch(base+path,{headers:{Cookie:cookie,...extra},signal:AbortSignal.timeout(3000)});
     const post=(path,key,revision,body={},extra={})=>fetch(base+path,{method:'POST',headers:{...headers,'Idempotency-Key':key,'If-Match':`"${revision}"`,...extra},body:JSON.stringify(body)});
@@ -115,7 +116,11 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
     let detail=await (await get(path)).json();
     assert.equal(detail.status,'needs_review');
     assert.equal(detail.replies.length,1);assert.match(detail.replies[0].text,/Life Asoke · A1\nRent: 18,000 THB\/month\n1 bedroom\nAvailable from: 2026-10-01\nPets allowed/);
-    const approvalPath=`/api/replies/${detail.replies[0].id}/approve`;
+    const exactText=detail.replies[0].text+'\nExact operator note.';
+    const edited=await post(`/api/replies/${detail.replies[0].id}/edit`,'edit-1',1,{text:exactText});assert.equal(edited.status,200);
+    const editedReply=(await edited.json()).reply;assert.notEqual(editedReply.id,detail.replies[0].id);assert.equal(editedReply.text,exactText);
+    detail=await (await get(path)).json();assert.equal(detail.replies[0].text,exactText);
+    const approvalPath=`/api/replies/${editedReply.id}/approve`;
     const approved=await post(approvalPath,'approve-1',1);assert.equal(approved.status,202);
     const approval=await approved.json();assert.equal(approval.operation.state,'queued');
     assert.deepEqual(await (await post(approvalPath,'approve-1',1)).json(),approval);

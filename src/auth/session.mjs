@@ -17,6 +17,12 @@ export async function createSession(tx, actor, previousToken) {
   await tx.query("INSERT INTO sessions (id,organization_id,user_id,token_hash,csrf_token_hash,expires_at) VALUES ($1,$2,$3,$4,$5,now()+interval '12 hours')", [randomUUID(), actor.organizationId, actor.id, tokenHash(token), tokenHash(csrfToken)]);
   return { token, csrfToken };
 }
+export async function rotateCsrfToken(pool, sessionId, organizationId) {
+  const csrfToken = randomBytes(32).toString("base64url");
+  const updated = await pool.query("UPDATE sessions SET csrf_token_hash=$3 WHERE id=$1 AND organization_id=$2 AND expires_at>now()", [sessionId, organizationId, tokenHash(csrfToken)]);
+  if (updated.rowCount !== 1) throw httpError(401, "Authentication required");
+  return csrfToken;
+}
 export function authenticate(pool) {
   return async (request, _response, next) => {
     try {

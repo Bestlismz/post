@@ -20,6 +20,7 @@ import { normalizePageEvents, verifyChallenge, verifySignature } from "./meta-we
 import { createRelevanceAnalyzer } from "./relevance.mjs";
 import { decideReplyAction, renderReplyProfile, validateReplyProfile } from "./reply-policy.mjs";
 import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } from "./state.mjs";
+import { createInboxWorkspaceFixture } from "../fixture/inbox-workspace.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const port = Number(process.env.PORT ?? 3000);
@@ -28,6 +29,7 @@ const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 const liveSubmissionEnabled = process.env.POC_LIVE_SUBMISSION === "true";
 const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
+const inboxWorkspace = createInboxWorkspaceFixture();
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {
@@ -93,6 +95,18 @@ app.use(express.json({ limit: "32kb" }));
 app.use("/fixture/assets", express.static(path.join(root, "fixture"), { index: false }));
 
 app.get("/health", (_request, response) => response.json({ ok: true, mode }));
+app.get("/api/me", (_request, response) => response.json({ user: { id: "fixture-admin", displayName: "ณัฐวุฒิ", role: "admin" }, csrfToken: "fixture-csrf" }));
+app.post("/api/auth/csrf", (_request, response) => response.json({ csrfToken: "fixture-csrf" }));
+app.get("/api/inbox/events", (_request, response) => {
+  response.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
+  response.flushHeaders(); inboxWorkspace.stream(response);
+});
+app.get("/api/inbox", (_request, response) => response.json(inboxWorkspace.list()));
+app.get("/api/inbox/:id", (request, response) => { const item=inboxWorkspace.get(request.params.id);if(!item)return response.status(404).json({error:"Inbox item not found"});response.json(item); });
+app.post("/api/inbox/:id/prepare", (request, response) => { const operation=inboxWorkspace.prepare(request.params.id);if(!operation)return response.status(404).json({error:"Inbox item not found"});response.status(202).json({operation}); });
+app.post("/api/inbox/:id/handoff", (request, response) => { const operation=inboxWorkspace.handoff(request.params.id);if(!operation)return response.status(404).json({error:"Inbox item not found"});response.status(202).json({operation}); });
+app.post("/api/replies/:id/edit", (request, response) => { const reply=inboxWorkspace.edit(request.params.id,requiredText(request.body?.text,"Reply text"));if(!reply)return response.status(404).json({error:"Reply not found"});response.json({reply}); });
+app.post("/api/replies/:id/approve", (request, response) => { const operation=inboxWorkspace.approve(request.params.id);if(!operation)return response.status(404).json({error:"Reply not found"});response.status(202).json({operation}); });
 
 app.get("/novnc/package.json", (_request, response) => response.json({ name: "novnc", version: "system" }));
 app.use("/novnc", (request, response) => {

@@ -10,9 +10,10 @@ import {enqueueJob} from '../jobs/queue.mjs';
 import {operationReceipt} from '../inbox/receipts.mjs';
 
 const querySchema=z.strictObject({limit:z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(100)).optional(),
-  channel:z.literal('messenger').optional(),sourceId:z.string().min(1).max(200).optional(),
+  channel:z.enum(['messenger','facebook_group']).optional(),sourceId:z.string().min(1).max(200).optional(),
   search:z.string().max(500).optional(),cursor:z.string().min(1).max(2048).optional()});
 const empty=z.strictObject({});
+const edit=z.strictObject({text:z.string().trim().min(1).max(4000)});
 const receiptResponse=result=>({operation:result.operation});
 
 export function createInboxRouter({pool,config,events={}}) {
@@ -45,6 +46,11 @@ export function createInboxRouter({pool,config,events={}}) {
     const command=commandFor(req,empty.parse(req.body));
     const result=await service.approveAndQueue(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
     res.status(202).json(receiptResponse(result));
+  });
+  router.post('/api/replies/:id/edit',...write,async(req,res)=>{
+    const body=edit.parse(req.body),command=commandFor(req,body);
+    const reply=await service.editReply(req.params.id,command.expectedRevision,body.text,req.actor,{idempotencyKey:command.idempotencyKey});
+    res.json({reply:{id:reply.id,version:reply.version,processingRevision:reply.conversation_revision,text:reply.content.text}});
   });
   router.post('/api/inbox/:id/handoff',...write,async(req,res)=>{
     const {reason}=z.strictObject({reason:z.string().trim().min(1).max(200)}).parse(req.body);

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { verifyPassword, hashPassword } from "../auth/password.mjs";
-import { authenticate, checkCsrf, checkOrigin, createSession, readSessionToken, sessionCookie } from "../auth/session.mjs";
+import { authenticate, checkCsrf, checkOrigin, createSession, readSessionToken, rotateCsrfToken, sessionCookie } from "../auth/session.mjs";
 import { reserveLoginAttempt, resetAccountAttempts } from "../auth/login-throttle.mjs";
 import { httpError } from "../auth/authorize.mjs";
 import { withTransaction } from "../db/transaction.mjs";
@@ -32,6 +32,7 @@ export function createApplicationRouter({ pool, config, env = process.env }) {
   // Only these namespaces belong to the PostgreSQL application boundary.
   router.use(["/api/auth", "/api/me", "/api/projects", "/api/units", "/api/settings"], authenticate(pool));
   router.get("/api/me", (request, response) => response.json({ user: request.actor }));
+  router.post("/api/auth/csrf", origin, async (request, response) => response.json({ csrfToken: await rotateCsrfToken(pool, request.session.id, request.actor.organizationId) }));
   router.post("/api/auth/logout", ...write, async (request, response) => {
     await pool.query("UPDATE sessions SET expires_at=now() WHERE id=$1 AND organization_id=$2", [request.session.id, request.actor.organizationId]);
     response.set("Set-Cookie", sessionCookie("", config, true)).json({ ok: true });
