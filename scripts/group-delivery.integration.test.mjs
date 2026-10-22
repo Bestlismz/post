@@ -16,13 +16,13 @@ test('browser delivery revalidates exact destination and content, then visible e
   const {createGroupDeliveryBoundary}=await import('../src/group-worker/delivery.mjs');
   const directory=await mkdtemp(join(tmpdir(),'group-delivery-'));
   try {
-    let sends=0;
+    let sends=0;const controller=new AbortController();
     const boundary=createGroupDeliveryBoundary({ledgerPath:directory,clock:()=>instant,driver:{
       locateExactTarget:async command=>({canonicalTarget:command.canonicalTarget,targetId:'comment:456:789'}),
       identifySender:async()=> 'sender-1',
-      sendExact:async(target,text)=>{sends++;assert.equal(target.targetId,'comment:456:789');assert.equal(text,'Exact reply\nบรรทัดสอง');return {state:'sent',visible:true,remoteId:'remote-1'};},
+      sendExact:async(target,text,options)=>{sends++;assert.equal(target.targetId,'comment:456:789');assert.equal(text,'Exact reply\nบรรทัดสอง');assert.equal(options.signal,controller.signal);assert.equal(options.deadline,Date.parse(baseCommand().expiresAt));return {state:'sent',visible:true,remoteId:'remote-1'};},
     }});
-    const first=await boundary.deliver(baseCommand());
+    const first=await boundary.deliver(baseCommand(),{signal:controller.signal});
     assert.equal(first.state,'sent');assert.equal(first.remoteId,'remote-1');assert.equal(first.senderId,'sender-1');
     assert.equal(first.textHash,baseCommand().textHash);assert.equal(first.targetId,baseCommand().targetId);
     assert.equal((await boundary.deliver(baseCommand())).state,'sent');assert.equal(sends,1,'durable local ledger prevents a second click');

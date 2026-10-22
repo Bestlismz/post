@@ -20,7 +20,7 @@ const session=createGroupSession({profilePath:process.env.BROWSER_PROFILE_PATH??
   return {pages:()=>context.pages(),newPage:()=>context.newPage(),close:()=>browser.close(),browser:()=>browser};
 }});
 const ledgerPath=process.env.GROUP_OPERATION_LEDGER_PATH??'/data/group-operations';
-const deliver=(method)=>(command,options)=>session.withGroup(command,(page)=>createGroupDeliveryBoundary({ledgerPath,driver:createFacebookGroupDriver(page)})[method](command),options);
+const deliver=(method)=>(command,options)=>session.withGroup(command,(page)=>createGroupDeliveryBoundary({ledgerPath,driver:createFacebookGroupDriver(page)})[method](command,options),options);
 const cdpUrl=process.env.CHROME_CDP_URL??'http://127.0.0.1:9222';
 const server=createGroupWorkerServer({keys:allKeys,keyId,key,allowedGroups,recoveryGate,sessionHealth:()=>probeBrowserHealth({cdpUrl,ownership:session.getHealth()}),stagingSendEnabled:process.env.STAGING_FACEBOOK_SEND==='true',stagingAllowedGroups,
   scan:(command,options)=>session.withGroup(command,observeGroupPage,options),reply:deliver('deliver'),reconcile:deliver('reconcile')});

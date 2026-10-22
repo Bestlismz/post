@@ -15,7 +15,15 @@ function normalizeActorHref(raw) {
   return `${url.origin}${url.pathname.replace(/\/$/,'')}`;
 }
 
-export function createFacebookGroupDriver(page,{clock=()=>new Date()}={}) {
+export async function resolveFacebookSessionIdentity(page) {
+  return page.locator('[data-session-owned-identity="true"][href], [role="banner"] a[href][aria-label], [role="menu"][aria-label*="account" i] a[href], [role="menu"][aria-label*="บัญชี"] a[href], form a[href][aria-label]').evaluateAll(links=>links.flatMap(link=>{
+    const label=link.getAttribute('aria-label')??'';
+    const explicit=link.getAttribute('data-session-owned-identity')==='true'||/profile|account|โปรไฟล์|บัญชี/i.test(label);
+    return explicit?[link.href]:[];
+  }));
+}
+
+export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSessionIdentity=resolveFacebookSessionIdentity}={}) {
   let senderId=null;
   async function locateExactTarget(command) {
     const identity=targetIdentity(command.targetId);
@@ -25,10 +33,10 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date()}={}) {
       return matches.length===1?[index]:[];
     }),{groupId:command.groupId,postId:identity.postId,commentId:identity.commentId});
     if(indexes.length!==1)throw Error('Exact Facebook target unavailable');
-    return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,scope:page.locator('[role="article"]').nth(indexes[0]),identity};
+    return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,groupId:command.groupId,scope:page.locator('[role="article"]').nth(indexes[0]),identity};
   }
   async function identifySender() {
-    const hrefs=await page.locator('a[href][aria-label*="profile" i], a[href^="/profile.php?id="], a[href*="facebook.com/profile.php?id="]').evaluateAll(links=>[...new Set(links.map(link=>link.href))]);
+    const hrefs=await resolveSessionIdentity(page);
     const normalized=[];for(const href of hrefs){try{normalized.push(normalizeActorHref(href));}catch{}}
     if(new Set(normalized).size!==1)throw Error('Facebook sender unavailable');
     senderId=actor(normalized[0]);return senderId;
@@ -48,14 +56,43 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date()}={}) {
       evidence.push({canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:candidate,text:row.text,observedAt:new Date(row.observedAt).toISOString(),remoteId:row.remoteId});}
     return evidence;
   }
-  async function sendExact(target,text) {
+  function assertActive({signal,deadline}) {
+    if(signal?.aborted)throw Object.assign(new Error('Facebook reply cancelled'),{name:'AbortError'});
+    if(Number.isFinite(deadline)&&Date.now()>=deadline)throw Error('Facebook reply deadline exceeded');
+  }
+  async function directOwned(target,selector,kind) {
+    const locator=target.scope.locator(selector),indexes=await target.scope.evaluate((article,{selector,kind})=>Array.from(article.querySelectorAll(selector)).flatMap((node,index)=>{
+      if(node.closest('[role="article"]')!==article)return [];
+      if(kind==='reply')return /^(reply(?:\s+to\b.*)?|ตอบกลับ(?:\s+.*)?|ตอบ(?:\s+.*)?)$/i.test((node.getAttribute('aria-label')||node.textContent||'').trim())?[index]:[];
+      const style=getComputedStyle(node);return !node.hidden&&node.getAttribute('aria-hidden')!=='true'&&style.display!=='none'&&style.visibility!=='hidden'?[index]:[];
+    }),{selector,kind});
+    return indexes.map(index=>locator.nth(index));
+  }
+  async function ownedReplyControls(target) {
+    return directOwned(target,'button, [role="button"]','reply');
+  }
+  async function ownedEditors(target) {
+    return directOwned(target,'[contenteditable="true"][role="textbox"]','editor');
+  }
+  async function sendExact(target,text,{signal,deadline=Date.now()+10000}={}) {
     if(!target?.scope||typeof text!=='string'||!text)throw Error('Exact Facebook send unavailable');
+    assertActive({signal,deadline});
     senderId??=await identifySender();
-    const editors=target.scope.locator('[contenteditable="true"][role="textbox"]:visible');
-    if(await editors.count()!==1)throw Error('Exact Facebook composer unavailable');
-    const editor=editors.first();await editor.fill(text);await editor.press('Enter');
-    const deadline=Date.now()+10000;
-    do {const matches=(await findReplyEvidence({groupId:new URL(target.canonicalTarget).pathname.split('/')[2],canonicalTarget:target.canonicalTarget,targetId:target.targetId})).filter(item=>item.text===text);if(matches.length===1)return {state:'sent',visible:true,remoteId:matches[0].remoteId};await page.waitForTimeout(250);} while(Date.now()<deadline);
+    let activeTarget=await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId});
+    if(activeTarget.identity?.kind==='comment') {
+      const controls=await ownedReplyControls(activeTarget);if(controls.length!==1)throw Error('Exact Facebook Reply control unavailable');
+      assertActive({signal,deadline});await controls[0].click();
+    }
+    let editors=[];
+    do {assertActive({signal,deadline});editors=await ownedEditors(activeTarget);if(editors.length===1)break;if(editors.length>1)throw Error('Exact Facebook composer ambiguous');await page.waitForTimeout(25);} while(Date.now()<deadline);
+    if(editors.length!==1)throw Error('Exact Facebook composer unavailable');
+    const editor=editors[0];await editor.fill(text);assertActive({signal,deadline});
+    activeTarget=await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId});
+    const stillOwned=(await ownedEditors(activeTarget));
+    if(stillOwned.length!==1||await stillOwned[0].textContent()!==text)throw Error('Exact Facebook composer changed');
+    await stillOwned[0].press('Enter');
+    try {do {assertActive({signal,deadline});const matches=(await findReplyEvidence({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId})).filter(item=>item.text===text);if(matches.length===1)return {state:'sent',visible:true,remoteId:matches[0].remoteId};await page.waitForTimeout(250);} while(Date.now()<deadline);}
+    catch(error) {error.possibleClick=true;throw error;}
     return {state:'unknown',visible:false,remoteId:null,possibleClick:true,observedAt:clock().toISOString()};
   }
   return {locateExactTarget,identifySender,sendExact,findReplyEvidence};

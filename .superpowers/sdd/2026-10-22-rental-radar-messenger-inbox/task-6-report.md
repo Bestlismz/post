@@ -77,3 +77,11 @@ The application, scheduler, transport, staging tool, and private browser worker 
 Compose keeps the browser service private and credential-minimal, persists `/data/group-operations` on a protected named volume independent of the browser profile, validates health response state, and provides a private-network, no-send-by-default `staging-check` tools profile. The runbook documents manual Facebook login/recovery only.
 
 Final verification: PostgreSQL-backed suite 363/363, production build, Compose tools-profile config, both Docker image builds, diff check, and a real two-container replacement test proving the operation ledger prevents a second send all passed. No external Facebook action or credential automation was used.
+
+## Real Facebook DOM review follow-up
+
+The comment reply driver now re-locates the exact stable comment card, requires one card-owned localized Reply control, activates it, and accepts only one editor owned by that same card. It revalidates the target and exact editor text immediately before Enter. Cancellation and command expiry are checked before interaction and throughout bounded waits; interruption after Enter is classified as a possible send.
+
+Authenticated sender identity now comes only from explicit session-owned account surfaces (banner, account menu, or composer-owned identity hook), normalized and deduplicated through a replaceable driver boundary. Feed authors and unrelated global profile links are ignored; missing or conflicting account identities fail closed.
+
+RED fixtures demonstrated that the old driver failed a collapsed composer and mixed the logged-in identity with numeric post authors. GREEN isolated-Chromium fixtures cover collapsed composers, multiple comment cards/editors, missing and ambiguous Reply controls, ambiguous card-owned editors, cancellation/deadline, numeric user and Page identities, author-link exclusion, and an ambiguous account menu. Final verification: focused browser contracts 29/29, PostgreSQL-backed suite 365/365, production build, Compose config, group-worker image build, real container replacement dedupe test, and diff check passed. No external Facebook action was performed.

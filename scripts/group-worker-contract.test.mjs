@@ -144,15 +144,49 @@ test('recorded Facebook DOM extracts posts and comments without claiming complet
 
 test('recorded Facebook DOM driver locates an exact target sends once and reconciles bound evidence',async t=>{
   const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
-  const page=await fixturePage(t,`<a aria-label="Your profile" href="/profile.php?id=42">Me</a><div role="feed"><div role="article"><h3>Poster</h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
-    <div role="article"><h3>Ann</h3><a href="/groups/100/posts/900/?comment_id=901"><time datetime="2026-10-22T11:59:00.000Z">1m</time></a><div data-ad-preview="message">Interested</div><button>Reply</button><div contenteditable="true" role="textbox" aria-label="Reply to Ann"></div></div>
-    </div></div><script>document.querySelector('[contenteditable]').addEventListener('keydown',event=>{if(event.key!=='Enter')return;event.preventDefault();const text=event.currentTarget.textContent;const item=document.createElement('div');item.setAttribute('role','article');item.innerHTML='<h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message"></div>';item.querySelector('[data-ad-preview]').textContent=text;event.currentTarget.closest('[role=article]').append(item);});</script>`);
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/profile.php?id=42">Me</a></header><div role="feed"><div role="article"><h3><a href="/profile.php?id=777">Poster</a></h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
+    <div role="article" id="other"><h3><a href="/profile.php?id=778">Other</a></h3><a href="/groups/100/posts/900/?comment_id=899"><time datetime="2026-10-22T11:58:30.000Z">1m</time></a><div data-ad-preview="message">Other</div><button>Reply</button><div contenteditable="true" role="textbox">wrong editor</div></div>
+    <div role="article" id="target"><h3><a href="/profile.php?id=779">Ann</a></h3><a href="/groups/100/posts/900/?comment_id=901"><time datetime="2026-10-22T11:59:00.000Z">1m</time></a><div data-ad-preview="message">Interested</div><button aria-label="Reply to Ann">Reply</button></div>
+    </div></div><script>document.querySelector('#target button').addEventListener('click',event=>{window.clicked=event.currentTarget.closest('[role=article]').id;const editor=document.createElement('div');editor.contentEditable='true';editor.setAttribute('role','textbox');editor.setAttribute('aria-label','Reply to Ann');event.currentTarget.closest('[role=article]').append(editor);editor.addEventListener('keydown',event=>{if(event.key!=='Enter')return;event.preventDefault();const text=event.currentTarget.textContent;const item=document.createElement('div');item.setAttribute('role','article');item.innerHTML='<h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message"></div>';item.querySelector('[data-ad-preview]').textContent=text;event.currentTarget.closest('[role=article]').append(item);});});</script>`);
   const driver=createFacebookGroupDriver(page,{clock:()=>new Date('2026-10-22T12:00:00.000Z')}),replyCommand={...command(),targetId:'comment:900:901'};
   const target=await driver.locateExactTarget(replyCommand);assert.equal(target.targetId,replyCommand.targetId);
   const sender=await driver.identifySender();assert.match(sender,/^facebook-actor:[a-f0-9]{64}$/);
   assert.deepEqual(await driver.sendExact(target,'Exact reply'),{state:'sent',visible:true,remoteId:'902'});
+  assert.equal(await page.evaluate(()=>window.clicked),'target');
   const evidence=await driver.findReplyEvidence({...replyCommand,textHash:createHash('sha256').update('Exact reply').digest('hex')});
   assert.equal(evidence.length,1);assert.equal(evidence[0].text,'Exact reply');assert.equal(evidence[0].senderId,sender);assert.equal(evidence[0].remoteId,'902');
+});
+
+test('comment reply fails closed for missing or ambiguous owned Reply controls and cancellation/deadline',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const html=buttons=>`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><div data-ad-preview="message">Interested</div>${buttons}</div></div>`;
+  for(const buttons of ['', '<button>Reply</button><button aria-label="Reply to Ann">Reply</button>']) {
+    const page=await fixturePage(t,html(buttons)),driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'comment:900:901'});
+    await assert.rejects(driver.sendExact(target,'No send',{deadline:Date.now()+250}),/Reply control/);
+  }
+  const page=await fixturePage(t,html('<button>Reply</button>')),driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  const controller=new AbortController();controller.abort();
+  await assert.rejects(driver.sendExact(target,'No send',{signal:controller.signal,deadline:Date.now()+250}),/cancel/i);
+  await assert.rejects(driver.sendExact(target,'No send',{deadline:Date.now()-1}),/deadline/i);
+  const ambiguousEditor=await fixturePage(t,html('<button onclick="this.insertAdjacentHTML(\'afterend\',\'<div contenteditable=true role=textbox></div><div contenteditable=true role=textbox></div>\')">Reply</button>'));
+  const ambiguousDriver=createFacebookGroupDriver(ambiguousEditor),ambiguousTarget=await ambiguousDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  await assert.rejects(ambiguousDriver.sendExact(ambiguousTarget,'No send',{deadline:Date.now()+250}),/composer ambiguous/);
+  const cancelledPage=await fixturePage(t,html('<button>Reply</button>')),cancelledDriver=createFacebookGroupDriver(cancelledPage),cancelledTarget=await cancelledDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  const waiting=new AbortController();setTimeout(()=>waiting.abort(),30);
+  await assert.rejects(cancelledDriver.sendExact(cancelledTarget,'No send',{signal:waiting.signal,deadline:Date.now()+500}),/cancel/i);
+});
+
+test('sender identity comes only from an unambiguous session-owned account surface',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const numeric=await fixturePage(t,'<header role="banner"><a aria-label="Your profile" href="/profile.php?id=42">Me</a></header><div role="article"><h3><a href="/profile.php?id=777">Author</a></h3></div>');
+  const expected=await createFacebookGroupDriver(numeric).identifySender();
+  assert.notEqual(expected,`facebook-actor:${createHash('sha256').update('https://www.facebook.com/profile.php?id=777').digest('hex')}`);
+  const pageIdentity=await fixturePage(t,'<header role="banner"><a aria-label="Page profile" href="/AcmeRentals">Acme Rentals</a></header><a href="/profile.php?id=777">Author</a>');
+  assert.match(await createFacebookGroupDriver(pageIdentity).identifySender(),/^facebook-actor:[a-f0-9]{64}$/);
+  const ambiguous=await fixturePage(t,'<div role="menu" aria-label="Account menu"><a href="/me">Me</a><a href="/AcmeRentals">Page</a></div>');
+  await assert.rejects(createFacebookGroupDriver(ambiguous).identifySender(),/sender unavailable/);
+  const authorOnly=await fixturePage(t,'<div role="article"><a aria-label="profile" href="/profile.php?id=777">Author</a></div>');
+  await assert.rejects(createFacebookGroupDriver(authorOnly).identifySender(),/sender unavailable/);
 });
 
 test('card identity ignores hostile body permalinks and nested shared-post headers',async t=>{
