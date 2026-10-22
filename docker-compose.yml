@@ -26,10 +26,9 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    command: ["sh", "-c", "npm run migrate && exec npm start"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:?Set COMPOSE_DATABASE_URL using host postgres}
+      DATABASE_URL: ${RUNTIME_DATABASE_URL:?Set RUNTIME_DATABASE_URL using rental_radar_web and host postgres}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to at least 32 characters}
     ports:

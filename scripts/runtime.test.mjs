@@ -20,6 +20,9 @@ test("Compose declares only postgres and web with health checks and separated fu
   assert.doesNotMatch(services, /\n  (?:worker|group-worker|browser):/);
   assert.equal((compose.match(/healthcheck:/g) ?? []).length, 2);
   assert.match(compose, /condition: service_healthy/);
+  const web = services.slice(services.indexOf("\n  web:"));
+  assert.match(web, /DATABASE_URL: \$\{RUNTIME_DATABASE_URL:/);
+  assert.doesNotMatch(web, /COMPOSE_DATABASE_URL|MIGRATION_DATABASE_URL|POSTGRES_PASSWORD|npm run migrate/);
   assert.match(compose, /name: rental-radar-postgres-data/);
   assert.match(compose, /name: rental-radar-browser-profile/);
   assert.doesNotMatch(compose.slice(compose.indexOf("services:"), compose.indexOf("volumes:\n  postgres-data:")), /browser-profile:/);

@@ -89,7 +89,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (files.length !== 1 || args.some((arg) => arg.startsWith("--") && arg !== "--dry-run")) {
       throw new Error("Usage: npm run import:legacy -- <state.json> [--dry-run]");
     }
-    pool = createPool({ databaseUrl: process.env.DATABASE_URL });
+    pool = createPool({ databaseUrl: process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL });
     process.stdout.write(`${JSON.stringify(await importLegacy(files[0], { pool, dryRun: args.includes("--dry-run") }))}\n`);
   } catch {
     process.stderr.write("Legacy import failed. Check the input, migrations, and an empty PostgreSQL database. No source values are logged.\n");

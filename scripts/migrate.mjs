@@ -3,7 +3,7 @@ import { migrate } from "../src/db/migrate.mjs";
 
 let pool;
 try {
-  pool = createPool({ databaseUrl: process.env.DATABASE_URL });
+  pool = createPool({ databaseUrl: process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL });
   await migrate(pool);
   process.stdout.write("Database migrations applied.\n");
 } catch {
