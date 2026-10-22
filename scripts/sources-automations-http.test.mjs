@@ -95,6 +95,12 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   assert.equal(added.body.canonicalUrl, "https://www.facebook.com/groups/1742522453522327");
   assert.equal(added.body.groupId, undefined, "provider ids stay server-side");
 
+  const publicArchive = await request(`/api/sources/groups/${added.body.id}`, { method: "PATCH", revision: 1, body: { archived: true } });
+  assert.equal(publicArchive.status, 422, "public PATCH cannot expose the internal archive command");
+  const { rows: [afterRejectedArchive] } = await pool.query("SELECT archived,revision FROM group_sources WHERE id=$1", [added.body.id]);
+  assert.equal(afterRejectedArchive.archived, false);
+  assert.equal(afterRejectedArchive.revision, 1, "rejected public archive cannot mutate the source");
+
   const mode = await request(`/api/sources/groups/${added.body.id}`, { method: "PATCH", revision: 1, body: { mode: "approval" } });
   assert.equal(mode.status, 200);
   assert.equal(mode.body.mode, "approval");

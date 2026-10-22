@@ -30,11 +30,13 @@ export const sourcePolicy = z.strictObject({
   businessHours: automationBusinessHours,
 });
 export const sourceMode = z.enum(["observe", "approval", "automatic"]);
-export const sourceUpdatePatch = z.strictObject({
+export const publicSourceUpdatePatch = z.strictObject({
   mode: sourceMode.optional(),
   allowListed: z.boolean().optional(),
   policy: sourcePolicy.optional(),
   killSwitch: z.boolean().optional(),
+});
+export const internalSourceUpdatePatch = publicSourceUpdatePatch.extend({
   archived: z.literal(true).optional(),
 });
 export const policyPreviewSample = z.strictObject({

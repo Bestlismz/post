@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { automationPauseInput, automationPolicy as automationPolicySchema, automationSchedule, policyPreviewInput, sourceUpdatePatch } from "../src/automation/contracts.mjs";
+import { automationPauseInput, automationPolicy as automationPolicySchema, automationSchedule, policyPreviewInput, publicSourceUpdatePatch } from "../src/automation/contracts.mjs";
 import { evaluatePolicy } from "../src/policy/evaluator.mjs";
 import { evaluateSourceDecision } from "../src/policy/source-decision.mjs";
 import { readFormat } from "../src/replies/contracts.mjs";
@@ -203,7 +203,7 @@ export function createSourcesAutomationWorkspaceFixture({
       sourceHealth: "connected",
       replyWindowOpen: true,
       counts: { organization: 0, source: 0, conversation: 0 },
-    }, operationalNow());
+    }, policyEvaluationClock());
     if (decision.action !== "authorize") failure(409, "Automatic mode is not ready", decision.reasons[0]?.toUpperCase() ?? "AUTOMATIC_NOT_READY");
   };
 
@@ -244,16 +244,15 @@ export function createSourcesAutomationWorkspaceFixture({
       return once(`sources.update.${id}`, key, { patch, revision }, () => {
         const entry = find(id);
         expectRevision(entry, revision);
-        const parsed = parse(sourceUpdatePatch, patch, "Invalid source update");
+        const parsed = parse(publicSourceUpdatePatch, patch, "Invalid source update");
         const candidate = {
           ...entry,
           ...(Object.hasOwn(parsed, "mode") ? { mode: parsed.mode } : {}),
           ...(Object.hasOwn(parsed, "allowListed") ? { allowListed: parsed.allowListed } : {}),
           ...(Object.hasOwn(parsed, "killSwitch") ? { paused: parsed.killSwitch } : {}),
           ...(Object.hasOwn(parsed, "policy") ? { policy: parsed.policy } : {}),
-          ...(Object.hasOwn(parsed, "archived") ? { archived: parsed.archived } : {}),
         };
-        const stopping = parsed.mode !== "automatic" && (parsed.killSwitch === true || parsed.archived === true);
+        const stopping = parsed.mode !== "automatic" && parsed.killSwitch === true;
         const editingPausedAutomatic = entry.mode === "automatic" && candidate.mode === "automatic" && candidate.paused && parsed.killSwitch !== false;
         if (candidate.mode === "automatic" && !editingPausedAutomatic && !stopping) {
           if (globalPaused) failure(409, "Automatic mode is not ready", "GLOBAL_PAUSED");
@@ -266,7 +265,6 @@ export function createSourcesAutomationWorkspaceFixture({
         entry.allowListed = candidate.allowListed;
         entry.paused = candidate.paused;
         entry.policy = structuredClone(candidate.policy);
-        entry.archived = candidate.archived;
         entry.revision += 1;
         return publicSource(entry);
       });
@@ -386,7 +384,7 @@ export function createSourcesAutomationWorkspaceFixture({
     },
     savePolicy(input, revision, key) {
       const parsed = parse(automationPolicySchema, input);
-      try { evaluatePolicy(parsed, { grounded: true, automaticEligible: true, confidence: 1, sourceHealth: "connected", replyWindowOpen: true, counts: { organization: 0, source: 0, conversation: 0 } }, operationalNow()); } catch { failure(422, "Invalid automation configuration"); }
+      try { evaluatePolicy(parsed, { grounded: true, automaticEligible: true, confidence: 1, sourceHealth: "connected", replyWindowOpen: true, counts: { organization: 0, source: 0, conversation: 0 } }, policyEvaluationClock()); } catch { failure(422, "Invalid automation configuration"); }
       return once("automation.policy", key, { input: parsed, revision }, () => {
         if (revision !== policyRevision) failure(409, "Revision conflict");
         automationPolicy = structuredClone(parsed);
@@ -417,7 +415,7 @@ export function createSourcesAutomationWorkspaceFixture({
     },
     saveSchedule(id, input, revision, key) {
       const parsed = parse(automationSchedule, input, "Invalid schedule");
-      try { evaluateSchedule(parsed, operationalNow(), { completedToday: 0 }); } catch { failure(422, "Invalid schedule"); }
+      try { evaluateSchedule(parsed, policyEvaluationClock(), { completedToday: 0 }); } catch { failure(422, "Invalid schedule"); }
       return once(`automation.schedule.${id}`, key, { input: parsed, revision }, () => {
         const entry = find(id);
         if (entry.schedule.revision !== revision) failure(409, "Revision conflict");

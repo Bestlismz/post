@@ -6,10 +6,10 @@ import { evaluatePolicy } from '../policy/evaluator.mjs';
 import { signCommand } from '../channels/groups/contracts.mjs';
 import { canonicalizeGroupUrl } from '../channels/groups/target.mjs';
 import { getGroupSource,insertGroupSource,saveGroupSource,insertGroupOperation } from './repository.mjs';
-import { sourceUpdatePatch } from '../automation/contracts.mjs';
+import { internalSourceUpdatePatch } from '../automation/contracts.mjs';
 export { canonicalizeGroupUrl };
 const id=z.string().min(1).max(200);
-const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:sourceUpdatePatch.extend({id}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
+const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:internalSourceUpdatePatch.extend({id}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
 function fail(status,message){throw Object.assign(new Error(message),{status});}
 export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),supportedSelectorVersions=[]}={}) {
   async function requireAutomaticReadiness(tx,source,now) {

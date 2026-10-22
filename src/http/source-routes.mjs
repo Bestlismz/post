@@ -4,7 +4,7 @@ import {z} from 'zod';
 import {authenticate,checkCsrf,checkOrigin,readSessionToken,tokenHash} from '../auth/session.mjs';
 import {httpError,requireRole} from '../auth/authorize.mjs';
 import {appendAudit,withTransaction} from '../db/transaction.mjs';
-import {sourceUpdatePatch} from '../automation/contracts.mjs';
+import {publicSourceUpdatePatch} from '../automation/contracts.mjs';
 import {errorHandler} from './boundary.mjs';
 
 const recoveryInput=z.strictObject({ttlSeconds:z.number().int().min(30).max(600)});
@@ -133,7 +133,7 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
       if(!sourceService)throw httpError(503,'Group source service unavailable');
       const match=/^"?(0|[1-9]\d*)"?$/.exec(request.get('If-Match')??'');
       if(!match)throw httpError(409,'Current If-Match revision is required');
-      const patch=sourceUpdatePatch.parse(request.body);
+      const patch=publicSourceUpdatePatch.parse(request.body);
       const entity=await sourceService.updateGroupSource({organizationId:request.actor.organizationId,actorId:request.actor.id,idempotencyKey:request.get('Idempotency-Key'),expectedRevision:Number(match[1]),input:{id:request.params.id,...patch}});
       response.json(publicSource(entity));
     } catch(error){next(error);}
