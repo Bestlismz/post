@@ -99,7 +99,10 @@ app.use(express.json({ limit: "32kb" }));
 app.use("/fixture/assets", express.static(path.join(root, "fixture"), { index: false }));
 
 app.get("/health", (_request, response) => response.json({ ok: true, mode }));
-app.get("/api/me", (_request, response) => response.json({ user: { id: "fixture-admin", displayName: "ณัฐวุฒิ", role: "admin" } }));
+app.get("/api/me", (request, response) => {
+  const actor = fixtureActor(request);
+  response.json({ user: { id: actor.id, displayName: actor.displayName, role: actor.role } });
+});
 app.post("/api/auth/csrf", (_request, response) => response.json({ csrfToken: "fixture-csrf" }));
 app.get("/api/inbox/events", (_request, response) => {
   response.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
@@ -125,56 +128,70 @@ app.post("/api/units/:id/publish", asyncRoute(async (request, response) => sendF
 app.post("/api/units/:id/archive", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.archiveUnit(request.params.id, fixtureRevision(request)))));
 
 if (mode === "fixture") {
-  app.get("/api/sources", (_request, response) => response.json(sourcesAutomationWorkspace.listSources()));
+  app.get("/api/sources", (request, response) => response.json(sourcesAutomationWorkspace.listSources(fixtureActor(request).role)));
   app.post("/api/sources/groups", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     response.status(201).json(sourcesAutomationWorkspace.addGroup(request.body, fixtureIdempotencyKey(request)));
   }));
   app.patch("/api/sources/groups/:id", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     response.json(sourcesAutomationWorkspace.updateGroup(request.params.id, request.body, fixtureRevision(request), fixtureIdempotencyKey(request)));
   }));
   app.post("/api/sources/groups/:id/scans", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin", "operator");
     requireFixtureCsrf(request);
     response.status(202).json(sourcesAutomationWorkspace.scan(request.params.id, request.body ?? {}, fixtureRevision(request), fixtureIdempotencyKey(request)));
   }));
   app.get("/api/sources/:id/browser-health", asyncRoute(async (request, response) => response.json(sourcesAutomationWorkspace.browserHealth(request.params.id))));
   app.post("/api/sources/:id/recovery", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     response.status(201).json(sourcesAutomationWorkspace.beginRecovery(request.params.id, request.body, fixtureIdempotencyKey(request)));
   }));
   app.delete("/api/sources/:id/recovery/:sessionId", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     fixtureIdempotencyKey(request);
     sourcesAutomationWorkspace.closeRecovery(request.params.id, request.params.sessionId);
     response.status(204).end();
   }));
   app.get("/api/sources/:id/recovery/:sessionId/novnc/vnc.html", (request, response) => {
+    if (fixtureActor(request).role !== "admin") return response.status(403).send("Role does not permit this action");
     if (!sourcesAutomationWorkspace.hasRecovery(request.params.id, request.params.sessionId)) return response.status(404).send("Recovery session not found");
     response.type("html").send(fixtureRecoveryPage());
   });
 
-  app.get("/api/automation", (_request, response) => response.json(sourcesAutomationWorkspace.getAutomation()));
-  app.post("/api/automation/policy-preview", asyncRoute(async (request, response) => response.json(sourcesAutomationWorkspace.preview(request.body))));
+  app.get("/api/automation", (request, response) => response.json(sourcesAutomationWorkspace.getAutomation(fixtureActor(request).role)));
+  app.post("/api/automation/policy-preview", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin", "operator");
+    response.json(sourcesAutomationWorkspace.preview(request.body));
+  }));
   app.post("/api/automation/pause", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     response.json(sourcesAutomationWorkspace.setGlobalPause(request.body, fixtureIdempotencyKey(request)));
   }));
   app.put("/api/automation/policy", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     const saved = sourcesAutomationWorkspace.savePolicy(request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
     response.set("ETag", `"${saved.revision}"`).json(saved);
   }));
   app.put("/api/automation/reply-format", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     const saved = sourcesAutomationWorkspace.saveReplyFormat(request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
     response.set("ETag", `"${saved.revision}"`).json(saved);
   }));
   app.post("/api/automation/sources/:id/pause", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     response.json(sourcesAutomationWorkspace.setSourcePause(request.params.id, request.body, fixtureIdempotencyKey(request)));
   }));
   app.put("/api/automation/sources/:id/schedule", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
     const saved = sourcesAutomationWorkspace.saveSchedule(request.params.id, request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
     response.set("ETag", `"${saved.revision}"`).json(saved);
@@ -551,7 +568,7 @@ app.use((request, response, nextError) => {
 
 app.use((error, _request, response, _next) => {
   const status = Number(error?.status) || 500;
-  response.status(status).json({ error: safeMessage(error) });
+  response.status(status).json({ error: safeMessage(error), ...(error?.reasonCode ? { reasonCode: error.reasonCode } : {}) });
 });
 
 server.on("upgrade", (request, socket, head) => {
@@ -626,6 +643,16 @@ function fixtureRevision(request) {
 
 function requireFixtureCsrf(request) {
   if (request.get("X-CSRF-Token") !== "fixture-csrf") throw httpError(403, "Invalid CSRF token");
+}
+
+function fixtureActor(request) {
+  const role = request.get("X-Fixture-Role") || "admin";
+  if (!["admin", "operator", "viewer"].includes(role)) throw httpError(401, "Invalid fixture identity");
+  return { id: `fixture-${role}`, displayName: role === "admin" ? "ณัฐวุฒิ" : `Fixture ${role}`, role };
+}
+
+function requireFixtureRole(request, ...roles) {
+  if (!roles.includes(fixtureActor(request).role)) throw httpError(403, "Role does not permit this action");
 }
 
 function fixtureIdempotencyKey(request) {

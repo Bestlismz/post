@@ -6,12 +6,10 @@ import { evaluatePolicy } from '../policy/evaluator.mjs';
 import { signCommand } from '../channels/groups/contracts.mjs';
 import { canonicalizeGroupUrl } from '../channels/groups/target.mjs';
 import { getGroupSource,insertGroupSource,saveGroupSource,insertGroupOperation } from './repository.mjs';
+import { sourcePolicy } from '../automation/contracts.mjs';
 export { canonicalizeGroupUrl };
 const id=z.string().min(1).max(200),mode=z.enum(['observe','approval','automatic']);
-const limits=z.strictObject({organization:z.number().int().positive(),source:z.number().int().positive(),conversation:z.number().int().positive()});
-const hours=z.strictObject({timeZone:id,days:z.array(z.number().int().min(0).max(6)).min(1),start:z.string(),end:z.string()});
-const policy=z.strictObject({rateLimits:limits,businessHours:hours});
-const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:z.strictObject({id,mode:mode.optional(),allowListed:z.boolean().optional(),policy:policy.optional(),killSwitch:z.boolean().optional(),archived:z.literal(true).optional()}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
+const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:z.strictObject({id,mode:mode.optional(),allowListed:z.boolean().optional(),policy:sourcePolicy.optional(),killSwitch:z.boolean().optional(),archived:z.literal(true).optional()}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
 function fail(status,message){throw Object.assign(new Error(message),{status});}
 export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),supportedSelectorVersions=[]}={}) {
   async function requireAutomaticReadiness(tx,source,now) {

@@ -1,4 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { automationPauseInput, automationPolicy as automationPolicySchema, automationSchedule, policyPreviewInput, sourcePolicy as sourcePolicySchema } from "../src/automation/contracts.mjs";
+import { evaluatePolicy } from "../src/policy/evaluator.mjs";
+import { evaluateSourceDecision } from "../src/policy/source-decision.mjs";
+import { readFormat } from "../src/replies/contracts.mjs";
+import { evaluateSchedule } from "../src/workers/scheduler.mjs";
 
 const policy = {
   mode: "automatic",
@@ -21,7 +26,7 @@ const replyFormat = {
   forbiddenPhrases: [],
 };
 
-const sourcePolicy = () => ({
+const defaultSourcePolicy = () => ({
   rateLimits: structuredClone(policy.rateLimits),
   businessHours: structuredClone(policy.businessHours),
 });
@@ -43,7 +48,7 @@ const seededSources = [
   source({
     id: "fixture-group-on-nut",
     groupId: "1742522453522327",
-    mode: "approval",
+    mode: "automatic",
     session: "healthy",
     selector: "healthy",
     coverage: "complete",
@@ -71,7 +76,7 @@ function source({ id, groupId, mode, session, selector, sessionCircuit = false, 
     canonicalUrl: `https://www.facebook.com/groups/${groupId}`,
     mode,
     allowListed: true,
-    policy: sourcePolicy(),
+    policy: defaultSourcePolicy(),
     health: { session, selector, sessionCircuit, selectorCircuit: false },
     paused: false,
     revision: 1,
@@ -83,8 +88,8 @@ function source({ id, groupId, mode, session, selector, sessionCircuit = false, 
   };
 }
 
-function failure(status, message) {
-  throw Object.assign(new Error(message), { status });
+function failure(status, message, reasonCode) {
+  throw Object.assign(new Error(message), { status, reasonCode });
 }
 
 function canonicalGroupUrl(value) {
@@ -98,7 +103,7 @@ function bodyDigest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date() } = {}) {
+export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date("2026-10-22T03:00:00.000Z") } = {}) {
   let groups = structuredClone(seededSources);
   let globalPaused = false;
   let automationPolicy = structuredClone(policy);
@@ -135,6 +140,21 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
     const { groupId: _groupId, schedule: _schedule, ...value } = entry;
     return structuredClone(value);
   };
+  const previewRecords = (entry) => {
+    const base = {
+      id: `fixture-conversation-${entry.groupId}`,
+      label: "บทสนทนา revision 1",
+      updatedAt: entry.latestReceipt?.createdAt ?? seededAt,
+      counts: { organization: 3, source: 0, conversation: 0 },
+    };
+    if (entry.mode !== "automatic") return [base];
+    return [base, {
+      id: `${base.id}-busy`,
+      label: "บทสนทนาใกล้ rate limit",
+      updatedAt: base.updatedAt,
+      counts: { organization: 3, source: entry.policy.rateLimits.source, conversation: entry.policy.rateLimits.conversation },
+    }];
+  };
   const automationSource = (entry) => ({
     id: entry.id,
     label: entry.canonicalUrl,
@@ -143,18 +163,42 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
     revision: entry.revision,
     paused: entry.paused,
     health: structuredClone(entry.health),
-    previewContexts: [{
-      id: `fixture-conversation-${entry.groupId}`,
-      label: "บทสนทนา revision 1",
-      updatedAt: entry.latestReceipt?.createdAt ?? seededAt,
-    }],
+    previewContexts: previewRecords(entry).map(({ counts: _counts, ...context }) => context),
     schedule: structuredClone(entry.schedule),
   });
+  const parse = (schema, value, message = "Invalid automation configuration") => {
+    try { return schema.parse(value); } catch { failure(422, message); }
+  };
+  const productionSource = (entry) => ({
+    mode: entry.mode,
+    policy: entry.policy,
+    kill_switch: entry.paused,
+    archived: false,
+    allow_listed: entry.allowListed,
+    session_health: entry.health.session,
+    selector_health: entry.health.selector,
+    session_circuit: entry.health.sessionCircuit,
+    selector_circuit: entry.health.selectorCircuit,
+  });
+  const requireAutomaticReadiness = (entry) => {
+    if (!entry.allowListed) failure(409, "Automatic mode is not ready", "SOURCE_NOT_ALLOWLISTED");
+    if (entry.health.session !== "healthy") failure(409, "Automatic mode is not ready", "SESSION_UNHEALTHY");
+    if (entry.health.selector !== "healthy") failure(409, "Automatic mode is not ready", "SELECTOR_UNHEALTHY");
+    const decision = evaluatePolicy({ ...entry.policy, mode: "automatic" }, {
+      grounded: true,
+      automaticEligible: true,
+      confidence: 1,
+      sourceHealth: "connected",
+      replyWindowOpen: true,
+      counts: { organization: 0, source: 0, conversation: 0 },
+    }, clock());
+    if (decision.action !== "authorize") failure(409, "Automatic mode is not ready", decision.reasons[0]?.toUpperCase() ?? "AUTOMATIC_NOT_READY");
+  };
 
   return {
-    listSources() {
+    listSources(actorRole = "admin") {
       return {
-        actorRole: "admin",
+        actorRole,
         pages: [{ id: "fixture-page", name: "Rental Radar Thailand", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }],
         groups: groups.map(publicSource),
       };
@@ -169,7 +213,7 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
           ...identity,
           mode: "observe",
           allowListed: false,
-          policy: sourcePolicy(),
+          policy: defaultSourcePolicy(),
           health: { session: "healthy", selector: "healthy", sessionCircuit: false, selectorCircuit: false },
           paused: false,
           revision: 1,
@@ -189,11 +233,26 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
         expectRevision(entry, revision);
         if (!patch || Object.keys(patch).some((name) => !["mode", "allowListed", "policy", "killSwitch"].includes(name))) failure(422, "Invalid source update");
         if (patch.mode && !["observe", "approval", "automatic"].includes(patch.mode)) failure(422, "Invalid source mode");
-        if (patch.mode === "automatic" && (entry.health.session !== "healthy" || entry.health.selector !== "healthy" || entry.health.sessionCircuit || entry.health.selectorCircuit || !entry.allowListed || entry.paused || globalPaused)) failure(409, "Automatic mode is not ready");
-        if (patch.mode) entry.mode = patch.mode;
-        if (typeof patch.allowListed === "boolean") entry.allowListed = patch.allowListed;
-        if (patch.policy) entry.policy = structuredClone(patch.policy);
-        if (typeof patch.killSwitch === "boolean") entry.paused = patch.killSwitch;
+        if (patch.allowListed !== undefined && typeof patch.allowListed !== "boolean") failure(422, "Invalid source update");
+        if (patch.killSwitch !== undefined && typeof patch.killSwitch !== "boolean") failure(422, "Invalid source update");
+        const candidate = {
+          ...entry,
+          ...(patch.mode ? { mode: patch.mode } : {}),
+          ...(patch.allowListed !== undefined ? { allowListed: patch.allowListed } : {}),
+          ...(patch.killSwitch !== undefined ? { paused: patch.killSwitch } : {}),
+          ...(patch.policy ? { policy: parse(sourcePolicySchema, patch.policy) } : {}),
+        };
+        if (candidate.mode === "automatic") {
+          if (globalPaused) failure(409, "Automatic mode is not ready", "GLOBAL_PAUSED");
+          if (candidate.paused) failure(409, "Automatic mode is not ready", "SOURCE_PAUSED");
+          if (candidate.health.sessionCircuit) failure(409, "Automatic mode is not ready", "SESSION_CIRCUIT_OPEN");
+          if (candidate.health.selectorCircuit) failure(409, "Automatic mode is not ready", "SELECTOR_CIRCUIT_OPEN");
+          requireAutomaticReadiness(candidate);
+        }
+        entry.mode = candidate.mode;
+        entry.allowListed = candidate.allowListed;
+        entry.paused = candidate.paused;
+        entry.policy = structuredClone(candidate.policy);
         entry.revision += 1;
         return publicSource(entry);
       });
@@ -202,6 +261,12 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
       return once(`sources.scan.${id}`, key, { input, revision }, () => {
         const entry = find(id);
         expectRevision(entry, revision);
+        if (!input || Object.keys(input).some((name) => name !== "recovery") || (input.recovery !== undefined && typeof input.recovery !== "boolean")) failure(422, "Invalid scan request");
+        if (globalPaused) failure(409, "Source automation is paused", "GLOBAL_PAUSED");
+        if (entry.paused) failure(409, "Source automation is paused", "SOURCE_PAUSED");
+        if (!input.recovery && entry.health.sessionCircuit) failure(409, "Source circuit requires explicit recovery", "SESSION_CIRCUIT_OPEN");
+        if (!input.recovery && entry.health.selectorCircuit) failure(409, "Source circuit requires explicit recovery", "SELECTOR_CIRCUIT_OPEN");
+        if (entry.mode === "automatic" && !input.recovery) requireAutomaticReadiness(entry);
         const operationId = randomUUID();
         entry.latestOperation = { operationId, state: "queued", createdAt: now() };
         const finish = () => {
@@ -253,9 +318,9 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
       find(id);
       if (!recoveries.delete(`${id}:${sessionId}`)) failure(404, "Recovery session not found");
     },
-    getAutomation() {
+    getAutomation(actorRole = "admin") {
       return {
-        actorRole: "admin",
+        actorRole,
         paused: globalPaused,
         policy: { value: structuredClone(automationPolicy), revision: policyRevision },
         replyFormat: { value: structuredClone(format), revision: formatRevision },
@@ -264,61 +329,58 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
       };
     },
     preview(input) {
-      const entry = find(input?.sourceId);
-      const conversation = automationSource(entry).previewContexts.find((candidate) => candidate.id === input?.conversationId);
+      const parsed = parse(policyPreviewInput, input, "Invalid policy preview");
+      const entry = find(parsed.sourceId);
+      const conversation = previewRecords(entry).find((candidate) => candidate.id === parsed.conversationId);
       if (!conversation) failure(404, "Conversation context not found");
-      const sample = input?.sample ?? {};
-      const reasons = [];
-      if (globalPaused) reasons.push("global_pause");
-      if (entry.paused) reasons.push("source_pause");
-      if (entry.mode === "observe") reasons.push("observe_mode");
-      if (entry.mode === "approval") reasons.push("approval_required");
-      if (!sample.grounded || !sample.automaticEligible) reasons.push("ungrounded");
-      if (Number(sample.confidence) < automationPolicy.minimumConfidence) reasons.push("confidence");
-      if (!sample.replyWindowOpen) reasons.push("reply_window");
-      if (entry.health.session !== "healthy") reasons.push("source_session_unhealthy");
-      if (entry.health.selector !== "healthy") reasons.push("source_selector_unhealthy");
-      if (entry.health.sessionCircuit) reasons.push("session_circuit_open");
-      if (entry.health.selectorCircuit) reasons.push("selector_circuit_open");
+      const decision = evaluateSourceDecision({
+        organizationPaused: globalPaused,
+        organizationPolicy: automationPolicy,
+        source: productionSource(entry),
+        context: { ...parsed.sample, counts: conversation.counts },
+        now: clock(),
+      });
       return {
         source: { id: entry.id, label: entry.canonicalUrl },
         conversation: { id: conversation.id },
-        effectivePolicy: { ...structuredClone(automationPolicy), mode: entry.mode },
-        action: reasons.length ? (entry.mode === "observe" ? "observe" : "review") : "authorize",
-        reasons,
+        ...decision,
         evaluatedAt: now(),
       };
     },
     setGlobalPause(input, key) {
-      return once("automation.pause", key, input, () => {
-        if (typeof input?.paused !== "boolean") failure(422, "Invalid pause state");
-        globalPaused = input.paused;
+      const parsed = parse(automationPauseInput, input, "Invalid pause state");
+      return once("automation.pause", key, parsed, () => {
+        globalPaused = parsed.paused;
         const receipt = { id: randomUUID(), scope: "organization", sourceId: null, paused: globalPaused, reasonCode: globalPaused ? "GLOBAL_PAUSED" : "GLOBAL_RESUMED", createdAt: now() };
         receipts.unshift(receipt);
         return { paused: globalPaused, receiptId: receipt.id, reasonCode: receipt.reasonCode };
       });
     },
     savePolicy(input, revision, key) {
-      return once("automation.policy", key, { input, revision }, () => {
+      const parsed = parse(automationPolicySchema, input);
+      try { evaluatePolicy(parsed, { grounded: true, automaticEligible: true, confidence: 1, sourceHealth: "connected", replyWindowOpen: true, counts: { organization: 0, source: 0, conversation: 0 } }, clock()); } catch { failure(422, "Invalid automation configuration"); }
+      return once("automation.policy", key, { input: parsed, revision }, () => {
         if (revision !== policyRevision) failure(409, "Revision conflict");
-        automationPolicy = structuredClone(input);
+        automationPolicy = structuredClone(parsed);
         policyRevision += 1;
         return { value: structuredClone(automationPolicy), revision: policyRevision };
       });
     },
     saveReplyFormat(input, revision, key) {
-      return once("automation.reply-format", key, { input, revision }, () => {
+      let parsed;
+      try { parsed = readFormat(input); } catch { failure(422, "Invalid automation configuration"); }
+      return once("automation.reply-format", key, { input: parsed, revision }, () => {
         if (revision !== formatRevision) failure(409, "Revision conflict");
-        format = structuredClone(input);
+        format = structuredClone(parsed);
         formatRevision += 1;
         return { value: structuredClone(format), revision: formatRevision };
       });
     },
     setSourcePause(id, input, key) {
-      return once(`automation.source-pause.${id}`, key, input, () => {
+      const parsed = parse(automationPauseInput, input, "Invalid pause state");
+      return once(`automation.source-pause.${id}`, key, parsed, () => {
         const entry = find(id);
-        if (typeof input?.paused !== "boolean") failure(422, "Invalid pause state");
-        entry.paused = input.paused;
+        entry.paused = parsed.paused;
         entry.revision += 1;
         const receipt = { id: randomUUID(), scope: "source", sourceId: id, paused: entry.paused, reasonCode: entry.paused ? "SOURCE_PAUSED" : "SOURCE_RESUMED", createdAt: now() };
         receipts.unshift(receipt);
@@ -326,11 +388,13 @@ export function createSourcesAutomationWorkspaceFixture({ clock = () => new Date
       });
     },
     saveSchedule(id, input, revision, key) {
-      return once(`automation.schedule.${id}`, key, { input, revision }, () => {
+      const parsed = parse(automationSchedule, input, "Invalid schedule");
+      try { evaluateSchedule(parsed, clock(), { completedToday: 0 }); } catch { failure(422, "Invalid schedule"); }
+      return once(`automation.schedule.${id}`, key, { input: parsed, revision }, () => {
         const entry = find(id);
         if (entry.schedule.revision !== revision) failure(409, "Revision conflict");
-        entry.schedule = { ...structuredClone(input), revision: revision + 1 };
-        return { sourceId: id, schedule: structuredClone(input), revision: entry.schedule.revision };
+        entry.schedule = { ...structuredClone(parsed), revision: revision + 1 };
+        return { sourceId: id, schedule: structuredClone(parsed), revision: entry.schedule.revision };
       });
     },
   };

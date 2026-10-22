@@ -1,6 +1,5 @@
 import {randomUUID} from 'node:crypto';
 import {Router} from 'express';
-import {z} from 'zod';
 import {authenticate,checkCsrf,checkOrigin} from '../auth/session.mjs';
 import {httpError,requireRole} from '../auth/authorize.mjs';
 import {appendAudit,runIdempotent,withTransaction} from '../db/transaction.mjs';
@@ -9,16 +8,7 @@ import {evaluateSchedule} from '../workers/scheduler.mjs';
 import {errorHandler} from './boundary.mjs';
 import {readFormat} from '../replies/contracts.mjs';
 import {defaultReplyFormat} from '../replies/renderer.mjs';
-
-const pauseInput=z.strictObject({paused:z.boolean()});
-const sample=z.strictObject({grounded:z.boolean(),automaticEligible:z.boolean(),confidence:z.number().min(0).max(1),replyWindowOpen:z.boolean(),optOut:z.boolean().optional(),humanTakeover:z.boolean().optional()});
-const previewInput=z.strictObject({sourceId:z.string().min(1).max(200),conversationId:z.string().min(1).max(200),sample});
-const businessHours=z.strictObject({timeZone:z.string().min(1).max(100),days:z.array(z.number().int().min(0).max(6)).min(1),start:z.string(),end:z.string()});
-const limits=z.strictObject({organization:z.number().int().positive(),source:z.number().int().positive(),conversation:z.number().int().positive()});
-const policy=z.strictObject({mode:z.enum(['observe','approval','automatic']),minimumConfidence:z.number().min(0).max(1).optional(),rateLimits:limits.optional(),businessHours:businessHours.optional()});
-const storedPolicy=z.strictObject({mode:z.enum(['observe','approval','automatic']),minimumConfidence:z.number().min(0).max(1),rateLimits:limits,businessHours});
-const maintenance=z.strictObject({startsAt:z.iso.datetime(),endsAt:z.iso.datetime()});
-const scheduleInput=z.strictObject({enabled:z.boolean(),cadenceMinutes:z.number().int().min(1).max(1440),timeZone:z.string().min(1).max(100),days:z.array(z.number().int().min(0).max(6)).min(1).max(7),start:z.string(),end:z.string(),dailyLimit:z.number().int().min(1).max(1440),maintenanceWindows:z.array(maintenance).max(100)});
+import {automationPauseInput as pauseInput,automationPolicy as storedPolicy,automationSchedule as scheduleInput,policyPreviewInput as previewInput} from '../automation/contracts.mjs';
 
 function key(request) {
   const value=request.get('Idempotency-Key');

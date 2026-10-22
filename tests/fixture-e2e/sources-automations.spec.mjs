@@ -1,4 +1,7 @@
 import { expect, test } from "@playwright/test";
+import { evaluateSourceDecision } from "../../src/policy/source-decision.mjs";
+
+const evaluationTime = new Date("2026-10-22T03:00:00.000Z");
 
 test("fixture server exposes seeded Sources and Automations without intercepted APIs", async ({ page, request }) => {
   const sourcesResponse = await request.get("/api/sources");
@@ -9,7 +12,7 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
     expect.objectContaining({ name: "Rental Radar Thailand", health: "connected" }),
   ]));
   expect(sources.groups).toHaveLength(2);
-  expect(new Set(sources.groups.map((source) => source.mode))).toEqual(new Set(["observe", "approval"]));
+  expect(new Set(sources.groups.map((source) => source.mode))).toEqual(new Set(["observe", "automatic"]));
   expect(sources.groups).toEqual(expect.arrayContaining([
     expect.objectContaining({
       health: expect.objectContaining({ session: "healthy", selector: "healthy" }),
@@ -177,4 +180,263 @@ test("fixture mutations preserve canonical URLs, revisions, idempotency, scan re
   expect(automationAfter.receipts[0]).toEqual(expect.objectContaining({ reasonCode: "GLOBAL_PAUSED" }));
   expect(automationAfter.policy.revision).toBe(automationBefore.policy.revision + 1);
   expect(automationAfter.replyFormat.revision).toBe(automationBefore.replyFormat.revision + 1);
+
+  await request.post("/api/automation/pause", {
+    data: { paused: false },
+    headers: headers("global-resume"),
+  });
+});
+
+test("fixture policy preview is the production source evaluator for authorize and refusal paths", async ({ request }) => {
+  const automation = await (await request.get("/api/automation")).json();
+  const sourceState = await (await request.get("/api/sources")).json();
+  const automatic = automation.sources.find((source) => source.mode === "automatic");
+  const observe = automation.sources.find((source) => source.mode === "observe" && source.health.sessionCircuit);
+  expect(automatic).toBeTruthy();
+  expect(observe).toBeTruthy();
+
+  const sample = { grounded: true, automaticEligible: true, confidence: 0.95, replyWindowOpen: true, optOut: false, humanTakeover: false };
+  const productionSource = (source) => {
+    const state = sourceState.groups.find((entry) => entry.id === source.id);
+    return ({
+    mode: source.mode,
+    policy: source.policy,
+    kill_switch: source.paused,
+    archived: false,
+    allow_listed: state.allowListed,
+    session_health: source.health.session,
+    selector_health: source.health.selector,
+    session_circuit: source.health.sessionCircuit,
+    selector_circuit: source.health.selectorCircuit,
+    });
+  };
+  const preview = async (source, conversationId, context = sample) => {
+    const response = await request.post("/api/automation/policy-preview", { data: { sourceId: source.id, conversationId, sample: context } });
+    expect(response.status()).toBe(200);
+    return response.json();
+  };
+
+  const cleanConversation = automatic.previewContexts.find((context) => !context.id.endsWith("-busy"));
+  const eligible = await preview(automatic, cleanConversation.id);
+  const expectedEligible = evaluateSourceDecision({
+    organizationPaused: false,
+    organizationPolicy: automation.policy.value,
+    source: productionSource(automatic),
+    context: { ...sample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: eligible.action, reasons: eligible.reasons, effectivePolicy: eligible.effectivePolicy }).toEqual(expectedEligible);
+  expect(eligible.evaluatedAt).toBe(evaluationTime.toISOString());
+
+  const refusedSample = { ...sample, confidence: 0.4, optOut: true, humanTakeover: true };
+  const refused = await preview(automatic, cleanConversation.id, refusedSample);
+  const expectedRefused = evaluateSourceDecision({
+    organizationPaused: false,
+    organizationPolicy: automation.policy.value,
+    source: productionSource(automatic),
+    context: { ...refusedSample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: refused.action, reasons: refused.reasons, effectivePolicy: refused.effectivePolicy }).toEqual(expectedRefused);
+  expect(refused.reasons).toEqual(expect.arrayContaining(["confidence", "opt_out", "human_takeover"]));
+
+  const busyConversation = automatic.previewContexts.find((context) => context.id.endsWith("-busy"));
+  expect(busyConversation).toBeTruthy();
+  const rateLimited = await preview(automatic, busyConversation.id);
+  expect(rateLimited.reasons).toEqual(expect.arrayContaining(["source_rate_limit", "conversation_rate_limit"]));
+
+  const observed = await preview(observe, observe.previewContexts[0].id);
+  const expectedObserved = evaluateSourceDecision({
+    organizationPaused: false,
+    organizationPolicy: automation.policy.value,
+    source: productionSource(observe),
+    context: { ...sample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: observed.action, reasons: observed.reasons, effectivePolicy: observed.effectivePolicy }).toEqual(expectedObserved);
+  expect(observed.reasons).toEqual(expect.arrayContaining(["observe_mode", "source_session_unhealthy", "session_circuit_open"]));
+
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const headers = (key, revision) => ({
+    "X-CSRF-Token": csrfToken,
+    "Idempotency-Key": key,
+    ...(revision == null ? {} : { "If-Match": `"${revision}"` }),
+  });
+  const sourcePause = await request.post(`/api/automation/sources/${automatic.id}/pause`, { data: { paused: true }, headers: headers("preview-source-pause") });
+  expect(sourcePause.status()).toBe(200);
+  const pausedAutomatic = { ...automatic, paused: true };
+  const pausedPreview = await preview(pausedAutomatic, cleanConversation.id);
+  const expectedPaused = evaluateSourceDecision({
+    organizationPaused: false,
+    organizationPolicy: automation.policy.value,
+    source: productionSource(pausedAutomatic),
+    context: { ...sample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: pausedPreview.action, reasons: pausedPreview.reasons, effectivePolicy: pausedPreview.effectivePolicy }).toEqual(expectedPaused);
+  expect(pausedPreview.reasons).toContain("source_pause");
+  await request.post(`/api/automation/sources/${automatic.id}/pause`, { data: { paused: false }, headers: headers("preview-source-resume") });
+
+  await request.post("/api/automation/pause", { data: { paused: true }, headers: headers("preview-global-pause") });
+  const globallyPaused = await preview(automatic, cleanConversation.id);
+  const expectedGlobalPause = evaluateSourceDecision({
+    organizationPaused: true,
+    organizationPolicy: automation.policy.value,
+    source: productionSource(automatic),
+    context: { ...sample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: globallyPaused.action, reasons: globallyPaused.reasons, effectivePolicy: globallyPaused.effectivePolicy }).toEqual(expectedGlobalPause);
+  expect(globallyPaused.reasons).toContain("global_pause");
+  await request.post("/api/automation/pause", { data: { paused: false }, headers: headers("preview-global-resume") });
+
+  const observeState = sourceState.groups.find((source) => source.id === observe.id);
+  const outsidePolicy = { ...observe.policy, businessHours: { ...observe.policy.businessHours, days: [5] } };
+  const changedSource = await request.patch(`/api/sources/groups/${observe.id}`, {
+    data: { mode: "approval", allowListed: false, policy: outsidePolicy },
+    headers: headers("preview-source-override", observeState.revision),
+  });
+  expect(changedSource.status()).toBe(200);
+  const changedState = await changedSource.json();
+  const changedAutomation = (await (await request.get("/api/automation")).json()).sources.find((source) => source.id === observe.id);
+  const overridden = await preview(changedAutomation, changedAutomation.previewContexts[0].id);
+  const expectedOverride = evaluateSourceDecision({
+    organizationPaused: false,
+    organizationPolicy: automation.policy.value,
+    source: {
+      ...productionSource(changedAutomation),
+      allow_listed: false,
+    },
+    context: { ...sample, counts: { organization: 3, source: 0, conversation: 0 } },
+    now: evaluationTime,
+  });
+  expect({ action: overridden.action, reasons: overridden.reasons, effectivePolicy: overridden.effectivePolicy }).toEqual(expectedOverride);
+  expect(overridden.reasons).toEqual(expect.arrayContaining(["source_not_allowlisted", "business_hours", "approval_required"]));
+  const restoredSource = await request.patch(`/api/sources/groups/${observe.id}`, {
+    data: { mode: "observe", allowListed: true, policy: observe.policy },
+    headers: headers("preview-source-restore", changedState.revision),
+  });
+  expect(restoredSource.status()).toBe(200);
+});
+
+test("fixture rejects invalid automation policy, reply format, and schedule without changing revisions", async ({ request }) => {
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const before = await (await request.get("/api/automation")).json();
+  const headers = (key, revision) => ({ "X-CSRF-Token": csrfToken, "Idempotency-Key": key, "If-Match": `"${revision}"` });
+
+  const invalidPolicy = await request.put("/api/automation/policy", {
+    data: { ...before.policy.value, mode: "launch", minimumConfidence: 2 },
+    headers: headers("invalid-policy", before.policy.revision),
+  });
+  expect(invalidPolicy.status()).toBe(422);
+
+  const invalidPolicyTimeZone = await request.put("/api/automation/policy", {
+    data: { ...before.policy.value, businessHours: { ...before.policy.value.businessHours, timeZone: "Mars/Olympus" } },
+    headers: headers("invalid-policy-timezone", before.policy.revision),
+  });
+  expect(invalidPolicyTimeZone.status()).toBe(422);
+
+  const invalidFormat = await request.put("/api/automation/reply-format", {
+    data: { ...before.replyFormat.value, locale: "jp", unexpected: true },
+    headers: headers("invalid-format", before.replyFormat.revision),
+  });
+  expect(invalidFormat.status()).toBe(422);
+
+  const source = before.sources[0];
+  const invalidSchedule = await request.put(`/api/automation/sources/${source.id}/schedule`, {
+    data: { ...source.schedule, revision: undefined, cadenceMinutes: 0, timeZone: "Mars/Olympus" },
+    headers: headers("invalid-schedule", source.schedule.revision),
+  });
+  expect(invalidSchedule.status()).toBe(422);
+
+  const after = await (await request.get("/api/automation")).json();
+  expect(after.policy.revision).toBe(before.policy.revision);
+  expect(after.replyFormat.revision).toBe(before.replyFormat.revision);
+  expect(after.sources.find((entry) => entry.id === source.id).schedule).toEqual(source.schedule);
+});
+
+test("fixture role identity enforces production read, scan, recovery, and automation boundaries", async ({ request }) => {
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const roleHeaders = (role, key, revision) => ({
+    "X-Fixture-Role": role,
+    "X-CSRF-Token": csrfToken,
+    "Idempotency-Key": key,
+    ...(revision == null ? {} : { "If-Match": `"${revision}"` }),
+  });
+  const viewerSources = await request.get("/api/sources", { headers: { "X-Fixture-Role": "viewer" } });
+  const viewerState = await viewerSources.json();
+  expect(viewerState.actorRole).toBe("viewer");
+  const source = viewerState.groups[0];
+
+  const viewerRecovery = await request.post(`/api/sources/${source.id}/recovery`, {
+    data: { ttlSeconds: 300 },
+    headers: roleHeaders("viewer", "viewer-recovery"),
+  });
+  expect(viewerRecovery.status()).toBe(403);
+
+  const operatorPause = await request.post("/api/automation/pause", {
+    data: { paused: true },
+    headers: roleHeaders("operator", "operator-pause"),
+  });
+  expect(operatorPause.status()).toBe(403);
+
+  const operatorScan = await request.post(`/api/sources/groups/${source.id}/scans`, {
+    data: {},
+    headers: roleHeaders("operator", "operator-scan", source.revision),
+  });
+  expect(operatorScan.status()).toBe(202);
+
+  const viewerScan = await request.post(`/api/sources/groups/${source.id}/scans`, {
+    data: {},
+    headers: roleHeaders("viewer", "viewer-scan", source.revision),
+  });
+  expect(viewerScan.status()).toBe(403);
+});
+
+test("fixture scan gates refuse paused and circuit-open work without replacing evidence", async ({ request }) => {
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const headers = (key, revision) => ({
+    "X-CSRF-Token": csrfToken,
+    "Idempotency-Key": key,
+    ...(revision == null ? {} : { "If-Match": `"${revision}"` }),
+  });
+  const initial = await (await request.get("/api/sources")).json();
+  const healthy = initial.groups.find((source) => source.mode === "automatic");
+  const circuit = initial.groups.find((source) => source.health.sessionCircuit);
+  const priorHealthyOperation = healthy.latestOperation;
+  const priorHealthyReceipt = healthy.latestReceipt;
+  const priorCircuitOperation = circuit.latestOperation;
+  const priorCircuitReceipt = circuit.latestReceipt;
+
+  await request.post("/api/automation/pause", { data: { paused: true }, headers: headers("gate-global-pause") });
+  const globalBlocked = await request.post(`/api/sources/groups/${healthy.id}/scans`, { data: {}, headers: headers("gate-global-scan", healthy.revision) });
+  expect(globalBlocked.status()).toBe(409);
+  expect(await globalBlocked.json()).toEqual(expect.objectContaining({ error: "Source automation is paused", reasonCode: "GLOBAL_PAUSED" }));
+  let after = await (await request.get("/api/sources")).json();
+  expect(after.groups.find((source) => source.id === healthy.id)).toEqual(expect.objectContaining({ latestOperation: priorHealthyOperation, latestReceipt: priorHealthyReceipt }));
+  await request.post("/api/automation/pause", { data: { paused: false }, headers: headers("gate-global-resume") });
+
+  const pause = await request.post(`/api/automation/sources/${healthy.id}/pause`, { data: { paused: true }, headers: headers("gate-source-pause") });
+  const paused = await pause.json();
+  const sourceBlocked = await request.post(`/api/sources/groups/${healthy.id}/scans`, { data: {}, headers: headers("gate-source-scan", paused.revision) });
+  expect(sourceBlocked.status()).toBe(409);
+  expect(await sourceBlocked.json()).toEqual(expect.objectContaining({ error: "Source automation is paused", reasonCode: "SOURCE_PAUSED" }));
+  const resume = await request.post(`/api/automation/sources/${healthy.id}/pause`, { data: { paused: false }, headers: headers("gate-source-resume") });
+  expect(resume.status()).toBe(200);
+
+  const circuitBlocked = await request.post(`/api/sources/groups/${circuit.id}/scans`, { data: {}, headers: headers("gate-circuit-scan", circuit.revision) });
+  expect(circuitBlocked.status()).toBe(409);
+  expect(await circuitBlocked.json()).toEqual(expect.objectContaining({ error: "Source circuit requires explicit recovery", reasonCode: "SESSION_CIRCUIT_OPEN" }));
+  after = await (await request.get("/api/sources")).json();
+  expect(after.groups.find((source) => source.id === circuit.id)).toEqual(expect.objectContaining({ latestOperation: priorCircuitOperation, latestReceipt: priorCircuitReceipt }));
+
+  const recovery = await request.post(`/api/sources/groups/${circuit.id}/scans`, { data: { recovery: true }, headers: headers("gate-circuit-recovery", circuit.revision) });
+  expect(recovery.status()).toBe(202);
+  const queued = await recovery.json();
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/sources")).json();
+    return state.groups.find((source) => source.id === circuit.id)?.latestOperation?.state;
+  }).toBe("completed");
+  after = await (await request.get("/api/sources")).json();
+  expect(after.groups.find((source) => source.id === circuit.id)?.latestReceipt).toEqual(expect.objectContaining({ operationId: queued.operationId, coverage: "partial", health: "auth_required" }));
 });
