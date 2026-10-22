@@ -5,7 +5,7 @@ import {appendAudit,withTransaction} from '../db/transaction.mjs';
 import {loadContext,assertReplyFresh} from '../inbox/service.mjs';
 import {freshnessConflictCodes,terminalPreparationCodes} from '../inbox/errors.mjs';
 import {validateReply} from '../replies/validator.mjs';
-import {evaluatePolicy} from '../policy/evaluator.mjs';
+import {evaluateSourceDecision} from '../policy/source-decision.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -104,8 +104,6 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
           await assertReplyFresh(tx,reply,context);validateReply(reply.content,reply.context);
           if(!isDeepStrictEqual(authorization.evidence.inventory,reply.context.snapshot.inventoryWatermark))reject('INVALID_AUTHORIZATION');
           const source=context.source;
-          if(!source.allow_listed||source.kill_switch||source.archived||source.session_circuit||source.selector_circuit||source.session_health!=='healthy'||source.selector_health!=='healthy'||source.mode==='observe'||context.org.group_automation_paused)reject('SOURCE_UNAVAILABLE');
-          if(authorization.actor_kind==='policy'&&source.mode!=='automatic')reject('SOURCE_UNAVAILABLE');
           const now=clock();
           const {rows:[counts]}=await tx.query(`SELECT count(*)::int AS organization,
             count(*) FILTER(WHERE coalesce(d.source_id,d.group_source_id)=$2)::int AS source,
@@ -113,10 +111,9 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
             FROM delivery_attempts a JOIN delivery_intents d ON d.organization_id=a.organization_id AND d.id=a.delivery_intent_id
             WHERE a.organization_id=$1 AND a.started_at>$4::timestamptz-interval '1 hour'`,[intent.organization_id,source.id,intent.conversation_id,now]);
           const human=authorization.actor_kind==='human',policy=reply.context.evidence.policy;
-          const decision=evaluatePolicy({...policy,...(human?{mode:'automatic',minimumConfidence:0}:{})},{
-            confidence:human?1:reply.context.confidence,grounded:human?true:reply.content.grounded,automaticEligible:human?true:reply.content.automaticEligible,
-            sourceHealth:'connected',replyWindowOpen:true,optOut:context.conversation.opted_out,humanTakeover:context.conversation.human_takeover,counts,
-          },now);
+          const decision=evaluateSourceDecision({organizationPaused:context.org.group_automation_paused,organizationPolicy:policy,source,
+            actorKind:human?'human':'policy',context:{confidence:reply.context.confidence,grounded:reply.content.grounded,automaticEligible:reply.content.automaticEligible,
+              replyWindowOpen:true,optOut:context.conversation.opted_out,humanTakeover:context.conversation.human_takeover,counts},now});
           if(decision.action!=='authorize')reject('FINAL_POLICY_GATE');
           const {rows:[target]}=await tx.query(`SELECT o.target_id,o.id FROM messages m
             JOIN group_observations o ON o.organization_id=m.organization_id AND o.id=m.raw_evidence->>'observationId'

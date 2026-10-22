@@ -23,6 +23,7 @@ export default function SourcesPage() {
   const [browserHealth, setBrowserHealth] = useState({});
   const [recovery, setRecovery] = useState(null);
   const csrfRef = useRef("");
+  const pollAttemptRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoadError("");
@@ -31,6 +32,14 @@ export default function SourcesPage() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const pending = data.groups.some((source) => source.latestOperation?.state === "queued");
+    if (!pending) { pollAttemptRef.current = 0; return undefined; }
+    if (pollAttemptRef.current >= 6) return undefined;
+    const delay = Math.min(1000 * (2 ** pollAttemptRef.current), 8000);
+    const timer = globalThis.setTimeout(() => { pollAttemptRef.current += 1; void load(); }, delay);
+    return () => globalThis.clearTimeout(timer);
+  }, [data.groups, load]);
 
   async function csrf(force = false) {
     if (!force && csrfRef.current) return csrfRef.current;

@@ -60,6 +60,13 @@ export async function authorizeRecoveryUpgrade({pool,registry,request}) {
 }
 
 function publicGroup(row) {
+  const receipt=value=>value?{
+    operationId:value.operationId??value.operation_id,
+    coverage:value.coverage,
+    health:value.health,
+    reason:value.reason??null,
+    createdAt:(value.createdAt??value.created_at)?.toISOString?.()??value.createdAt??value.created_at,
+  }:null;
   return {
     id:row.id,
     canonicalUrl:row.canonical_url,
@@ -69,14 +76,9 @@ function publicGroup(row) {
     health:{session:row.session_health,selector:row.selector_health,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit},
     paused:row.kill_switch,
     revision:row.revision,
-    latestScan:row.operation_id?{
-      operationId:row.operation_id,
-      state:row.coverage?'completed':'queued',
-      coverage:row.coverage??null,
-      health:row.scan_health??null,
-      reason:row.reason??null,
-      createdAt:(row.receipt_created_at??row.operation_created_at)?.toISOString?.()??row.receipt_created_at??row.operation_created_at,
-    }:null,
+    latestOperation:row.operation_id?{operationId:row.operation_id,state:row.operation_completed?'completed':row.operation_stuck?'stuck':'queued',createdAt:row.operation_created_at?.toISOString?.()??row.operation_created_at}:null,
+    latestReceipt:receipt(row.receipt_operation_id?{operationId:row.receipt_operation_id,coverage:row.receipt_coverage,health:row.receipt_health,reason:row.receipt_reason,createdAt:row.receipt_created_at}:null),
+    receiptHistory:(row.receipt_history??[]).map(receipt),
     session:{owner:'group-worker',state:row.session_health==='healthy'?'available':row.session_health},
   };
 }
@@ -98,10 +100,18 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
     try {
       const [{rows:pages},{rows:groups}]=await Promise.all([
         pool.query(`SELECT id,name,health,expires_at,updated_at FROM meta_page_sources WHERE organization_id=$1 ORDER BY updated_at DESC,id`,[request.actor.organizationId]),
-        pool.query(`SELECT g.*,op.id operation_id,op.created_at operation_created_at,r.coverage,r.health scan_health,r.reason,r.created_at receipt_created_at
+        pool.query(`SELECT g.*,op.id operation_id,op.created_at operation_created_at,(op_receipt.operation_id IS NOT NULL) operation_completed,
+          (op_receipt.operation_id IS NULL AND op.created_at<clock_timestamp()-interval '10 minutes') operation_stuck,
+          receipt.operation_id receipt_operation_id,receipt.coverage receipt_coverage,receipt.health receipt_health,receipt.reason receipt_reason,receipt.created_at receipt_created_at,
+          coalesce(history.items,'[]'::jsonb) receipt_history
           FROM group_sources g
           LEFT JOIN LATERAL (SELECT id,created_at FROM group_operations WHERE organization_id=g.organization_id AND source_id=g.id AND kind='ScanCommand' ORDER BY operation_order DESC LIMIT 1) op ON true
-          LEFT JOIN group_scan_receipts r ON r.organization_id=g.organization_id AND r.operation_id=op.id
+          LEFT JOIN group_scan_receipts op_receipt ON op_receipt.organization_id=g.organization_id AND op_receipt.operation_id=op.id
+          LEFT JOIN LATERAL (SELECT r.* FROM group_scan_receipts r JOIN group_operations ro ON ro.organization_id=r.organization_id AND ro.id=r.operation_id
+            WHERE r.organization_id=g.organization_id AND r.source_id=g.id ORDER BY ro.operation_order DESC LIMIT 1) receipt ON true
+          LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('operationId',h.operation_id,'coverage',h.coverage,'health',h.health,'reason',h.reason,'createdAt',h.created_at) ORDER BY h.operation_order DESC) items
+            FROM (SELECT r.*,ro.operation_order FROM group_scan_receipts r JOIN group_operations ro ON ro.organization_id=r.organization_id AND ro.id=r.operation_id
+              WHERE r.organization_id=g.organization_id AND r.source_id=g.id ORDER BY ro.operation_order DESC LIMIT 5) h) history ON true
           WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[request.actor.organizationId]),
       ]);
       response.json({actorRole:request.actor.role,pages:pages.map(row=>({id:row.id,name:row.name,health:row.health,expiresAt:row.expires_at?.toISOString?.()??row.expires_at,updatedAt:row.updated_at?.toISOString?.()??row.updated_at})),groups:groups.map(publicGroup)});
