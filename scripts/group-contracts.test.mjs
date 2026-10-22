@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { signCommand, verifyCommand, signResult, verifyResult, canonicalSerialize } from '../src/channels/groups/contracts.mjs';
+import { signCommand, verifyCommand, signResult, verifyResult, canonicalSerialize, assertResultBoundToCommand } from '../src/channels/groups/contracts.mjs';
 const now=new Date('2026-10-22T12:00:00Z');
 const options={keyId:'test',key:'s'.repeat(32),now};
 const verify={keys:{test:options.key},now};
@@ -47,4 +47,13 @@ test('signed results bind observations and delivery evidence to operation and de
   assert.equal(verifyResult(signResult(result,options),verify).state,'unknown');
   const reconcile={...result,kind:'ReconcileResult',state:'not_found'};
   assert.equal(verifyResult(signResult(reconcile,options),verify).state,'not_found');
+});
+
+test('delivery result binding rejects wrong evidence fields, impossible remote IDs, and attempt times outside the command',()=>{
+  const text='Exact';const reply=signCommand({...base,kind:'GroupReplyCommand',targetId:'post:1',text,textHash:createHash('sha256').update(text).digest('hex')},options);
+  const body={...Object.fromEntries(Object.entries(reply).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender',attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt,evidenceHash:'b'.repeat(64),remoteId:'remote'};
+  const result=signResult(body,options);assert.doesNotThrow(()=>assertResultBoundToCommand(result,reply));
+  for(const patch of [{targetId:'post:2'},{textHash:'0'.repeat(64)},{attemptStartedAt:'2026-10-22T11:00:00.000Z',attemptFinishedAt:base.issuedAt}]) assert.throws(()=>assertResultBoundToCommand({...result,...patch},reply),/binding/i);
+  assert.throws(()=>signResult({...body,remoteId:null},options));
+  assert.throws(()=>signResult({...body,state:'unknown',remoteId:'remote'},options));
 });

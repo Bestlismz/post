@@ -45,7 +45,7 @@ export function createAutomationWorker({ pool, service, workerId, leaseSeconds =
   async function runOnce() {
     const leaseOwner=`${workerId}:${randomUUID()}`;
     const {rows:[job]}=await pool.query(`WITH candidate AS (
-      SELECT j.id FROM jobs j WHERE j.kind='analyze_work_item'
+      SELECT j.id FROM jobs j WHERE j.kind IN ('analyze_work_item','analyze_group_work_item')
       AND ((j.status='pending' AND j.available_at<=now()) OR (j.status='running' AND j.retry_safe AND j.lease_expires_at<=now()))
       AND NOT EXISTS (SELECT 1 FROM jobs earlier WHERE earlier.organization_id=j.organization_id AND earlier.kind=j.kind
         AND earlier.payload->>'conversationId'=j.payload->>'conversationId' AND earlier.status IN ('pending','running')

@@ -26,6 +26,8 @@ const grants = {
   delivery_intents: "SELECT, INSERT, UPDATE (id)",
   delivery_attempts: "SELECT, INSERT, UPDATE (state, outcome_code, provider_message_id, finished_at)",
   delivery_cancellations: "SELECT, INSERT",
+  group_delivery_attempts: "SELECT, INSERT",
+  group_send_receipts: "SELECT, INSERT",
   meta_oauth_states: "SELECT, INSERT, UPDATE (used_at)",
   meta_page_sources: "SELECT, INSERT, UPDATE (name, health, expires_at, updated_at)",
   group_sources: "SELECT, INSERT, UPDATE (mode, allow_listed, policy, kill_switch, archived, revision, updated_at)",
@@ -69,6 +71,7 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     workerTables.add('group_sources');
     workerTables.add('group_operations');
     for(const table of ['group_scan_receipts','group_observations','group_targets']) workerTables.add(table);
+    for(const table of ['group_delivery_attempts','group_send_receipts']) workerTables.add(table);
     for (const [table, webPermissions] of Object.entries(grants)) {
       if(profile==='worker' && !workerTables.has(table))continue;
       const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':

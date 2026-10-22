@@ -17,10 +17,21 @@ import { evaluatePolicy } from '../policy/evaluator.mjs';
 import { operationReceipt } from './receipts.mjs';
 
 const fail = (message,code='INVALID_REPLY_STATE') => { throw inboxConflict(code,message); };
+const sourceHealth = (source,now=new Date()) => source?.channel==='facebook_group'
+  ? !source.allow_listed||source.kill_switch||source.archived ? 'unavailable'
+    : source.session_circuit||source.session_health!=='healthy' ? source.session_health
+    : source.selector_circuit||source.selector_health!=='healthy' ? 'selector_failure' : 'connected'
+  : source?.expires_at && new Date(source.expires_at)<=now ? 'expired' : source?.health;
+const policyFor = context => context.conversation.channel==='facebook_group'
+  ? {...context.org.automation_policy,...context.source.policy,mode:context.source.mode}
+  : context.org.automation_policy;
+const sourceEvidence = source => source?.channel==='facebook_group'
+  ? {id:source.id,health:sourceHealth(source),expiresAt:null,mode:source.mode,policy:source.policy,revision:source.revision,allowListed:source.allow_listed}
+  : source ? {id:source.id,health:source.health,expiresAt:source.expires_at?.toISOString() ?? null} : null;
 const evidence = context => ({ policyRevision: context.org.automation_policy_revision, profileRevision: context.org.profile_revision,
-  formatRevision: context.org.reply_format_revision, policy: context.org.automation_policy,
+  formatRevision: context.org.reply_format_revision, policy: policyFor(context),
   profile: context.org.business_profile, format: context.org.reply_format ?? defaultReplyFormat(), conversationRevision: context.conversation.processing_revision,
-  source: context.source ? {id:context.source.id,health:context.source.health,expiresAt:context.source.expires_at?.toISOString() ?? null} : null });
+  source: sourceEvidence(context.source) });
 
 function assertEvidence(stored, context) {
   const current=evidence(context);
@@ -44,7 +55,10 @@ export async function loadContext(tx, id, revision, organizationId) {
   if (conversation.processing_revision !== revision || item.processing_revision !== revision || item.status==='superseded') fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
   if (conversation.human_takeover || item.status === 'handoff') fail('Conversation superseded by human takeover','HUMAN_TAKEOVER');
   const { rows: messages } = await tx.query('SELECT id,text,processing_revision AS revision,created_at,provider_timestamp_ms FROM messages WHERE organization_id=$1 AND conversation_id=$2 ORDER BY processing_revision,id',[organizationId,conversation.id]);
-  const { rows: [source] } = await tx.query('SELECT id,health,expires_at FROM meta_page_sources WHERE organization_id=$1 AND page_id=$2 FOR SHARE',[organizationId,conversation.page_id]);
+  const { rows: [source] } = conversation.channel==='facebook_group'
+    ? await tx.query(`SELECT *,'facebook_group' AS channel FROM group_sources WHERE organization_id=$1 AND 'facebook_group:' || group_id=$2 FOR SHARE`,[organizationId,conversation.page_id])
+    : await tx.query(`SELECT id,health,expires_at,'messenger' AS channel FROM meta_page_sources WHERE organization_id=$1 AND page_id=$2 FOR SHARE`,[organizationId,conversation.page_id]);
+  if(!source) fail('Conversation source unavailable','SOURCE_CHANGED');
   return { org, item, conversation, messages, source };
 }
 
@@ -88,13 +102,13 @@ export async function findFreshPreparedReply(tx,{organizationId,workItemId,proce
 async function policyContext(tx, context, reply, now) {
   const { org,conversation,source,messages } = context;
   const { rows: [counts] } = await tx.query(`SELECT count(*)::int AS organization,
-    count(*) FILTER(WHERE source_id=$2)::int AS source,
+    count(*) FILTER(WHERE coalesce(source_id,group_source_id)=$2)::int AS source,
     count(*) FILTER(WHERE conversation_id=$3)::int AS conversation FROM delivery_intents
     WHERE organization_id=$1 AND created_at>$4::timestamptz-interval '1 hour'`,[org.id,source?.id,conversation.id,now]);
   const last = Number(messages.at(-1)?.provider_timestamp_ms);
   return { confidence: reply.confidence, grounded: reply.content.grounded, automaticEligible: reply.content.automaticEligible,
-    sourceHealth: source?.expires_at && new Date(source.expires_at) <= now ? 'expired' : source?.health,
-    replyWindowOpen: Number.isSafeInteger(last) && last>0 && now.valueOf()>=last && now.valueOf()-last < 24*60*60*1000,
+    sourceHealth: sourceHealth(source,now),
+    replyWindowOpen: conversation.channel==='facebook_group' || Number.isSafeInteger(last) && last>0 && now.valueOf()>=last && now.valueOf()-last < 24*60*60*1000,
     optOut: conversation.opted_out, humanTakeover: conversation.human_takeover, counts };
 }
 
@@ -139,21 +153,23 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     }
     if ((await tx.query('SELECT 1 FROM reply_supersessions WHERE organization_id=$1 AND reply_version_id=$2',[org.id,reply.id])).rowCount) fail('Reply superseded');
     assertEvidence(reply.context.evidence,context);
-    if (org.automation_policy.mode==='observe') fail('Observe mode does not authorize delivery');
+    const policy=policyFor(context);
+    if (policy.mode==='observe') fail('Observe mode does not authorize delivery');
     await checkInventory(tx,org.id,reply.context.snapshot.inventoryWatermark);
     const valid = validateReply(reply.content,reply.context);
     const gates = await policyContext(tx,context,{ ...reply,confidence: reply.context.confidence },now);
     // Transport and rate gates apply to human authorization too; humans may approve free edits.
-    const decision = evaluatePolicy({ ...org.automation_policy, mode: 'automatic', minimumConfidence: actorKind === 'human' ? 0 : org.automation_policy.minimumConfidence },
+    const decision = evaluatePolicy({ ...policy, mode: 'automatic', minimumConfidence: actorKind === 'human' ? 0 : policy.minimumConfidence },
       actorKind === 'human' ? { ...gates, grounded: true, automaticEligible: true, confidence: 1 } : gates,now);
     if (decision.action !== 'authorize' || (actorKind === 'policy' && !valid.automaticEligible)) fail(`Policy gates: ${decision.reasons.join(',')}`);
     const authorizationId = randomUUID(), intentId = randomUUID();
     await tx.query(`INSERT INTO reply_authorizations(id,organization_id,work_item_id,reply_version_id,actor_kind,actor_id,evidence) VALUES($1,$2,$3,$4,$5,$6,$7)`,
       [authorizationId,org.id,item.id,reply.id,actorKind,actor?.id ?? null,JSON.stringify({ ...reply.context.evidence,inventory: reply.context.snapshot.inventoryWatermark,decision })]);
-    const { rows: [intent] } = await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,content) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
-      [intentId,org.id,authorizationId,reply.id,item.conversation_id,context.source.id,JSON.stringify(reply.content)]);
+    const group=context.conversation.channel==='facebook_group';
+    const { rows: [intent] } = await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [intentId,org.id,authorizationId,reply.id,item.conversation_id,group?null:context.source.id,group?context.source.id:null,JSON.stringify(reply.content)]);
     await appendAudit(tx,{ organizationId: org.id,actorId: actor?.id ?? null,action: 'reply.authorized',entityType: 'delivery_intent',entityId: intent.id,details: { authorizationId,replyVersionId: reply.id,actorKind } });
-    await enqueueJob(tx,{ organizationId: org.id,kind: 'deliver_reply',retrySafe: false,payload: { deliveryIntentId: intent.id } });
+    await enqueueJob(tx,{ organizationId: org.id,kind: group?'deliver_group_reply':'deliver_reply',retrySafe: false,payload: { deliveryIntentId: intent.id } });
     await tx.query("UPDATE work_items SET status='ready',updated_at=now() WHERE organization_id=$1 AND id=$2",[org.id,item.id]);
     return intent;
   }
@@ -205,7 +221,7 @@ export function createInboxService({ pool, client, model, clock = () => new Date
         [randomUUID(),organizationId,workItemId,context.conversation.id,expectedRevision,(existing?.version ?? 0)+1,JSON.stringify(content),JSON.stringify({ snapshot,selections,format,extraction,confidence,evidence:before })]);
       if (existing) await tx.query('INSERT INTO reply_supersessions(organization_id,reply_version_id,replacement_id) VALUES($1,$2,$3)',[organizationId,existing.id,reply.id]);
       const now=clock();
-      const decision = evaluatePolicy(context.org.automation_policy,await policyContext(tx,context,{content,confidence},now),now);
+      const decision = evaluatePolicy(policyFor(context),await policyContext(tx,context,{content,confidence},now),now);
       if (decision.action === 'authorize') await authorize(tx,reply,context,null,'policy',now);
       else await tx.query("UPDATE work_items SET status=$3,updated_at=now() WHERE organization_id=$1 AND id=$2",[organizationId,workItemId,decision.action === 'observe' ? 'completed' : 'needs_review']);
       await appendAudit(tx,{ organizationId,actorId:actor.id ?? null,action:'reply.prepared',entityType:'reply_version',entityId:reply.id,details:{workItemId,decision,supersedes:existing?.id ?? null} });

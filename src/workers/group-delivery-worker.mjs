@@ -1,0 +1,170 @@
+import {createHash,randomUUID} from 'node:crypto';
+import {isDeepStrictEqual} from 'node:util';
+import {assertResultBoundToCommand,canonicalSerialize,signCommand,verifyResult} from '../channels/groups/contracts.mjs';
+import {appendAudit,withTransaction} from '../db/transaction.mjs';
+import {loadContext,assertReplyFresh} from '../inbox/service.mjs';
+import {freshnessConflictCodes,terminalPreparationCodes} from '../inbox/errors.mjs';
+import {validateReply} from '../replies/validator.mjs';
+import {evaluatePolicy} from '../policy/evaluator.mjs';
+
+const digest=value=>createHash('sha256').update(value).digest('hex');
+const outcome=row=>({state:row.state==='attempting'?'unknown':row.state,attemptId:row.id,code:row.outcome_code??'ATTEMPT_UNRESOLVED',retrySafe:false});
+const reject=code=>{throw Object.assign(new Error(code),{code});};
+const terminalCodes=new Set([...freshnessConflictCodes,...terminalPreparationCodes,'INVALID_AUTHORIZATION','DELIVERY_STATE_CHANGED','SOURCE_UNAVAILABLE','TARGET_CHANGED','REPLY_SUPERSEDED','LOCAL_INVALID_REQUEST','FINAL_POLICY_GATE']);
+
+export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clock=()=>new Date()}) {
+  async function claimJob(intentId=null) {
+    const leaseOwner=randomUUID();
+    const {rows:[job]}=await pool.query(`WITH candidate AS (
+      SELECT j.id FROM jobs j WHERE j.kind='deliver_group_reply'
+      AND ($2::text IS NULL OR j.payload->>'deliveryIntentId'=$2)
+      AND ((j.status='pending' AND j.available_at<=now()) OR (j.status='running' AND j.lease_expires_at<=now()))
+      AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.organization_id=j.organization_id AND a.delivery_intent_id=j.payload->>'deliveryIntentId')
+      AND NOT EXISTS (SELECT 1 FROM delivery_cancellations c WHERE c.organization_id=j.organization_id AND c.delivery_intent_id=j.payload->>'deliveryIntentId')
+      ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+      UPDATE jobs j SET status='running',lease_owner=$1,lease_expires_at=now()+interval '60 seconds',attempts=attempts+1,updated_at=now()
+      FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner,intentId]);
+    return job;
+  }
+  async function lockIntent(tx,intent) {
+    await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[intent.organization_id]);
+    await tx.query('SELECT id FROM delivery_intents WHERE organization_id=$1 AND id=$2 FOR UPDATE',[intent.organization_id,intent.id]);
+  }
+  async function existing(tx,intent) {
+    const attempt=(await tx.query('SELECT * FROM delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2 FOR UPDATE',[intent.organization_id,intent.id])).rows[0];
+    if(attempt)return outcome(attempt);
+    const cancelled=(await tx.query('SELECT reason FROM delivery_cancellations WHERE organization_id=$1 AND delivery_intent_id=$2',[intent.organization_id,intent.id])).rows[0];
+    return cancelled?{state:'cancelled',code:cancelled.reason,retrySafe:false}:null;
+  }
+  async function ownsClaim(tx,claim,intent) {
+    return (await tx.query(`SELECT id FROM jobs WHERE id=$1 AND organization_id=$2 AND kind='deliver_group_reply'
+      AND payload->>'deliveryIntentId'=$3 AND status='running' AND lease_owner=$4 AND lease_expires_at>now() FOR UPDATE`,[claim.id,intent.organization_id,intent.id,claim.lease_owner])).rowCount>0;
+  }
+  async function finishJobs(tx,intent,status,code) {
+    await tx.query("UPDATE jobs SET status=$3,last_error=$4,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE organization_id=$1 AND kind='deliver_group_reply' AND payload->>'deliveryIntentId'=$2",[intent.organization_id,intent.id,status,code]);
+  }
+  async function cancel(tx,intent,code) {
+    await tx.query('INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[intent.organization_id,intent.id,code]);
+    await finishJobs(tx,intent,'completed',code);
+    await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.cancelled',entityType:'delivery_intent',entityId:intent.id,details:{code,channel:'facebook_group'}});
+    return {state:'cancelled',code,retrySafe:false};
+  }
+  async function receipt(tx,intent,attempt,operation,result) {
+    await tx.query(`INSERT INTO group_send_receipts(operation_id,organization_id,delivery_intent_id,delivery_attempt_id,digest,kind,state,destination,target_id,sender_id,text_hash,attempt_started_at,attempt_finished_at,evidence_hash,remote_id,result)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,[operation.id,intent.organization_id,intent.id,attempt.id,digest(canonicalSerialize(result)),result.kind,result.state,result.canonicalTarget,result.targetId,result.senderId,result.textHash,result.attemptStartedAt,result.attemptFinishedAt,result.evidenceHash,result.remoteId,JSON.stringify(result)]);
+  }
+  async function settle(intent,attemptId,operation,result,{trusted=true}={}) {
+    return withTransaction(pool,async tx=>{
+      await lockIntent(tx,intent);
+      const attempt=(await tx.query('SELECT * FROM delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2 FOR UPDATE',[intent.organization_id,intent.id])).rows[0];
+      if(!attempt||attempt.id!==attemptId||attempt.state!=='attempting')return attempt?outcome(attempt):{state:'unknown',code:'ATTEMPT_UNRESOLVED',retrySafe:false};
+      if(trusted)await receipt(tx,intent,attempt,operation,result);
+      const state=result.state,code=state==='sent'?'VISIBLE_VERIFIED':state==='failed'?'DEFINITE_REJECTION':'POSSIBLE_SEND';
+      const {rows:[saved]}=await tx.query('UPDATE delivery_attempts SET state=$2,outcome_code=$3,provider_message_id=$4,finished_at=$5 WHERE id=$1 RETURNING *',[attempt.id,state,code,state==='sent'?result.remoteId:null,result.attemptFinishedAt]);
+      await finishJobs(tx,intent,state==='sent'?'completed':'failed',code);
+      if(state==='sent')await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=(SELECT work_item_id FROM reply_authorizations WHERE organization_id=$1 AND id=$2) AND status='ready'",[intent.organization_id,intent.authorization_id]);
+      await appendAudit(tx,{organizationId:intent.organization_id,action:`delivery.${state}`,entityType:'delivery_intent',entityId:intent.id,details:{attemptId:attempt.id,operationId:operation.id,code,channel:'facebook_group',...(result.remoteId?{providerMessageId:result.remoteId}:{})}});
+      return outcome(saved);
+    });
+  }
+  async function deliverGroupIntent(intentId,claim) {
+    const intent=(await pool.query('SELECT * FROM delivery_intents WHERE id=$1',[intentId])).rows[0];
+    if(!intent||!intent.group_source_id||intent.source_id)return {state:'failed',code:'INTENT_NOT_FOUND',retrySafe:false};
+    const prior=await withTransaction(pool,async tx=>{await lockIntent(tx,intent);return existing(tx,intent);});if(prior)return prior;
+    claim??=await claimJob(intent.id);if(!claim)return {state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true};
+    const attemptId=randomUUID(),operationId=randomUUID();let attempted=false,operation;
+    try {
+      const gate=await withTransaction(pool,async tx=>{
+        await lockIntent(tx,intent);const prior=await existing(tx,intent);if(prior)return {prior};
+        if(!await ownsClaim(tx,claim,intent))return {prior:{state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true}};
+        const reply=(await tx.query('SELECT * FROM reply_versions WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.reply_version_id])).rows[0];
+        const authorization=(await tx.query('SELECT * FROM reply_authorizations WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.authorization_id])).rows[0];
+        try {
+          if(!reply||!authorization||authorization.reply_version_id!==reply.id||authorization.work_item_id!==reply.work_item_id||reply.conversation_id!==intent.conversation_id||!isDeepStrictEqual(reply.content,intent.content))reject('INVALID_AUTHORIZATION');
+          const context=await loadContext(tx,reply.work_item_id,reply.conversation_revision,intent.organization_id);
+          if(context.conversation.channel!=='facebook_group'||context.source.id!==intent.group_source_id)reject('SOURCE_CHANGED');
+          if(context.item.status!=='ready'||context.conversation.opted_out)reject('DELIVERY_STATE_CHANGED');
+          if((await tx.query('SELECT 1 FROM reply_supersessions WHERE organization_id=$1 AND reply_version_id=$2',[intent.organization_id,reply.id])).rowCount)reject('REPLY_SUPERSEDED');
+          await assertReplyFresh(tx,reply,context);validateReply(reply.content,reply.context);
+          if(!isDeepStrictEqual(authorization.evidence.inventory,reply.context.snapshot.inventoryWatermark))reject('INVALID_AUTHORIZATION');
+          const source=context.source;
+          if(!source.allow_listed||source.kill_switch||source.archived||source.session_circuit||source.selector_circuit||source.session_health!=='healthy'||source.selector_health!=='healthy'||source.mode==='observe'||context.org.group_automation_paused)reject('SOURCE_UNAVAILABLE');
+          if(authorization.actor_kind==='policy'&&source.mode!=='automatic')reject('SOURCE_UNAVAILABLE');
+          const now=clock();
+          const {rows:[counts]}=await tx.query(`SELECT count(*)::int AS organization,
+            count(*) FILTER(WHERE coalesce(d.source_id,d.group_source_id)=$2)::int AS source,
+            count(*) FILTER(WHERE d.conversation_id=$3)::int AS conversation
+            FROM delivery_attempts a JOIN delivery_intents d ON d.organization_id=a.organization_id AND d.id=a.delivery_intent_id
+            WHERE a.organization_id=$1 AND a.started_at>$4::timestamptz-interval '1 hour'`,[intent.organization_id,source.id,intent.conversation_id,now]);
+          const human=authorization.actor_kind==='human',policy=reply.context.evidence.policy;
+          const decision=evaluatePolicy({...policy,...(human?{mode:'automatic',minimumConfidence:0}:{})},{
+            confidence:human?1:reply.context.confidence,grounded:human?true:reply.content.grounded,automaticEligible:human?true:reply.content.automaticEligible,
+            sourceHealth:'connected',replyWindowOpen:true,optOut:context.conversation.opted_out,humanTakeover:context.conversation.human_takeover,counts,
+          },now);
+          if(decision.action!=='authorize')reject('FINAL_POLICY_GATE');
+          const {rows:[target]}=await tx.query(`SELECT o.target_id,o.id FROM messages m
+            JOIN group_observations o ON o.organization_id=m.organization_id AND o.id=m.raw_evidence->>'observationId'
+            JOIN group_targets t ON t.organization_id=o.organization_id AND t.source_id=o.source_id AND t.target_id=o.target_id AND t.observation_id=o.id
+            WHERE m.organization_id=$1 AND m.id=(SELECT message_id FROM work_items WHERE organization_id=$1 AND id=$2) AND o.source_id=$3`,[intent.organization_id,reply.work_item_id,source.id]);
+          if(!target)reject('TARGET_CHANGED');
+          const textHash=digest(intent.content.text);
+          const command=signCommand({version:1,kind:'GroupReplyCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:target.target_id,text:intent.content.text,textHash,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
+          await tx.query('INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,$4,$5)',[operationId,intent.organization_id,source.id,'GroupReplyCommand',JSON.stringify(command)]);
+          await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state) VALUES($1,$2,$3,'attempting')",[attemptId,intent.organization_id,intent.id]);
+          await tx.query('INSERT INTO group_delivery_attempts(organization_id,delivery_intent_id,delivery_attempt_id,operation_id,target_id,text_hash) VALUES($1,$2,$3,$4,$5,$6)',[intent.organization_id,intent.id,attemptId,operationId,target.target_id,textHash]);
+          await tx.query("UPDATE jobs SET lease_owner=$3,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[claim.id,claim.lease_owner,attemptId]);
+          await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.attempting',entityType:'delivery_intent',entityId:intent.id,details:{attemptId,operationId,replyVersionId:reply.id,channel:'facebook_group'}});
+          attempted=true;return {command,operation:{id:operationId}};
+        } catch(error) {
+          if(!terminalCodes.has(error.code))throw error;
+          return {prior:await cancel(tx,intent,error.code)};
+        }
+      });
+      if(gate.prior)return gate.prior;operation=gate.operation;
+      let result;
+      try {result=verifyResult(await client.reply(gate.command),{keys,now:clock()});}
+      catch {result=null;}
+      try {if(!result)throw new Error();assertResultBoundToCommand(result,gate.command);}
+      catch {
+        return settle(intent,attemptId,operation,{...Object.fromEntries(Object.entries(gate.command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'unknown',attemptStartedAt:clock().toISOString(),attemptFinishedAt:clock().toISOString(),evidenceHash:digest(`unknown:${operationId}`),remoteId:null},{trusted:false});
+      }
+      return settle(intent,attemptId,operation,result);
+    } catch {
+      return {state:attempted?'unknown':'failed',code:attempted?'ATTEMPT_UNRESOLVED':'PRE_DISPATCH_FAILED',retrySafe:!attempted};
+    }
+  }
+  async function reconcileGroupIntent(intentId) {
+    const intent=(await pool.query('SELECT * FROM delivery_intents WHERE id=$1',[intentId])).rows[0];if(!intent?.group_source_id)throw new Error('Intent not found');
+    const data=await withTransaction(pool,async tx=>{
+      await lockIntent(tx,intent);
+      const attempt=(await tx.query('SELECT * FROM delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2 FOR UPDATE',[intent.organization_id,intent.id])).rows[0];
+      if(!attempt||!['attempting','unknown'].includes(attempt.state))throw new Error('Unresolved attempt required');
+      const initial=(await tx.query("SELECT * FROM group_send_receipts WHERE organization_id=$1 AND delivery_intent_id=$2 AND kind='GroupReplyResult' ORDER BY created_at DESC LIMIT 1",[intent.organization_id,intent.id])).rows[0];
+      if(!initial)throw new Error('Attempt evidence unavailable');
+      const source=(await tx.query('SELECT * FROM group_sources WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.group_source_id])).rows[0];
+      const operationId=randomUUID(),now=clock();
+      const command=signCommand({version:1,kind:'ReconcileCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:initial.target_id,textHash:initial.text_hash,senderId:initial.sender_id,attemptStartedAt:initial.attempt_started_at.toISOString(),attemptFinishedAt:initial.attempt_finished_at.toISOString(),issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
+      await tx.query('INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,$4,$5)',[operationId,intent.organization_id,source.id,'ReconcileCommand',JSON.stringify(command)]);
+      return {attempt,command,operation:{id:operationId}};
+    });
+    const result=verifyResult(await client.reconcile(data.command),{keys,now:clock()});
+    assertResultBoundToCommand(result,data.command);
+    return withTransaction(pool,async tx=>{
+      await lockIntent(tx,intent);const attempt=(await tx.query('SELECT * FROM delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2 FOR UPDATE',[intent.organization_id,intent.id])).rows[0];
+      if(!attempt||attempt.id!==data.attempt.id||!['attempting','unknown'].includes(attempt.state))return outcome(attempt);
+      await receipt(tx,intent,attempt,data.operation,result);
+      if(result.state!=='sent') {
+        if(attempt.state==='attempting')await tx.query("UPDATE delivery_attempts SET state='unknown',outcome_code='RECONCILIATION_NOT_FOUND',finished_at=now() WHERE id=$1",[attempt.id]);
+        await finishJobs(tx,intent,'failed','RECONCILIATION_NOT_FOUND');
+        return {state:'unknown',attemptId:attempt.id,code:'RECONCILIATION_NOT_FOUND',retrySafe:false};
+      }
+      const {rows:[saved]}=await tx.query("UPDATE delivery_attempts SET state='sent',provider_message_id=$2,outcome_code='EVIDENCE_RECONCILED',finished_at=now() WHERE id=$1 RETURNING *",[attempt.id,result.remoteId]);
+      await finishJobs(tx,intent,'completed','EVIDENCE_RECONCILED');
+      await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=(SELECT work_item_id FROM reply_authorizations WHERE organization_id=$1 AND id=$2) AND status='ready'",[intent.organization_id,intent.authorization_id]);
+      await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.reconciled',entityType:'delivery_intent',entityId:intent.id,details:{attemptId:attempt.id,operationId:data.operation.id,providerMessageId:result.remoteId,channel:'facebook_group'}});
+      return outcome(saved);
+    });
+  }
+  async function runOnce(){const job=await claimJob();return job?deliverGroupIntent(job.payload.deliveryIntentId,job):null;}
+  return {deliverGroupIntent,reconcileGroupIntent,runOnce};
+}

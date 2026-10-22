@@ -3,6 +3,7 @@ import test from 'node:test';
 import { mkdtemp, rm, readFile, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { spawn, execFileSync } from 'node:child_process';
+import {createHash} from 'node:crypto';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { signCommand, signResult, verifyResult } from '../src/channels/groups/contracts.mjs';
@@ -66,6 +67,21 @@ test('client rejects signed results for another operation and bounds response st
   await assert.rejects(make(async()=>new Response('x'.repeat(262145))).scan(cmd),/Worker request failed/);
   await assert.rejects(make(async(_url,{signal})=>new Promise((_r,reject)=>signal.addEventListener('abort',()=>reject(new Error('sensitive'))))).scan(cmd),/Worker request failed/);
   assert.throws(()=>createGroupWorkerClient({baseUrl:'https://evil.test',keys,keyId:'current',key}),/internal/);
+});
+
+test('private server and client carry only signed exact group reply and reconciliation commands',async t=>{
+  const {createGroupWorkerServer}=await load('group-worker/server');
+  const {createGroupWorkerClient}=await load('channels/groups/client');
+  const now=new Date(),base={version:1,operationId:'reply-op',sourceId:'source-1',groupId:'100',canonicalTarget:'https://www.facebook.com/groups/100',targetId:'comment:900:901',textHash:createHash('sha256').update('Exact reply').digest('hex'),keyId:'current',issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString()};
+  const reply=signCommand({...base,kind:'GroupReplyCommand',text:'Exact reply'},{key,keyId:'current'});
+  const reconcile=signCommand({...base,operationId:'reconcile-op',kind:'ReconcileCommand',senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString()},{key,keyId:'current'});
+  const server=createGroupWorkerServer({keys,keyId:'current',key,allowedGroups:['100'],scan:async()=>assert.fail('scan ran'),
+    reply:async command=>({state:'sent',targetId:command.targetId,textHash:command.textHash,senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString(),evidenceHash:'b'.repeat(64),remoteId:'remote-1'}),
+    reconcile:async command=>({state:'not_found',targetId:command.targetId,textHash:command.textHash,senderId:command.senderId,attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'c'.repeat(64),remoteId:null})});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const client=createGroupWorkerClient({baseUrl:`http://127.0.0.1:${server.address().port}`,keys,keyId:'current',key});
+  assert.equal((await client.reply(reply)).remoteId,'remote-1');
+  assert.equal((await client.reconcile(reconcile)).state,'not_found');
 });
 
 test('page selection ignores unrelated pages and closes duplicate exact pages',async()=>{
