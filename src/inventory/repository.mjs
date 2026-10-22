@@ -52,3 +52,14 @@ export async function saveUnit(tx, unit, project, create) {
   await tx.query("INSERT INTO unit_fact_revisions (organization_id,unit_id,revision,facts) VALUES ($1,$2,$3,$4::jsonb)", [unit.organizationId, unit.id, unit.revision, JSON.stringify({ ...saved, project })]);
   return saved;
 }
+
+export async function saveSnapshot(tx, snapshot) {
+  await tx.query(`INSERT INTO match_snapshots
+    (organization_id,id,requirements_revision,requirements,policy,matcher_version,inventory_watermark,candidates,fact_snapshot)
+    VALUES ($1,$2,$3,$4::jsonb,$5::jsonb,$6,$7::jsonb,$8::jsonb,$9::jsonb)`, [
+    snapshot.organizationId, snapshot.id, snapshot.requirementsRevision, JSON.stringify(snapshot.requirements),
+    JSON.stringify(snapshot.policy), snapshot.matcherVersion, JSON.stringify(snapshot.inventoryWatermark),
+    JSON.stringify(snapshot.candidates), JSON.stringify(snapshot.factSnapshot),
+  ]);
+  return snapshot;
+}

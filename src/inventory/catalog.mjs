@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { enqueueJob } from "../jobs/queue.mjs";
+import { matchInventory, requirementsSchema, policySchema } from "./matcher.mjs";
+import { snapshotUnitFacts } from "./facts.mjs";
 import { appendAudit, runIdempotent, withTransaction } from "../db/transaction.mjs";
 import { validateCommand, validatePublication } from "./schemas.mjs";
-import { getProject, getUnit, saveProject, saveUnit } from "./repository.mjs";
+import { getProject, getUnit, saveProject, saveUnit, saveSnapshot } from "./repository.mjs";
 
 const transitions = {
   draft: ["unknown", "available"],
@@ -18,6 +22,45 @@ function fail(message, status) {
 
 export function createCatalog(pool) {
   const catalog = {};
+  catalog.saveMatchSnapshot = async (command) => {
+    const id = z.string().min(1), revision = z.number().int().positive();
+    z.object({ organizationId: id, actorId: id, idempotencyKey: id }).parse(command);
+    const input = z.strictObject({
+      requirementsRevision: revision, requirements: requirementsSchema, policy: policySchema.default({}),
+      expectedInventory: z.array(z.strictObject({ unitId: id, unitRevision: revision, projectId: id, projectRevision: revision })).max(1000),
+    }).parse(command.input);
+    if (new Set(input.expectedInventory.map(entry => entry.unitId)).size !== input.expectedInventory.length) fail("Duplicate inventory evidence", 422);
+    const { organizationId, actorId, idempotencyKey } = command;
+    const response = await withTransaction(pool, tx => runIdempotent(tx, {
+      organizationId, actorId, route: "inventory.saveMatchSnapshot", key: idempotencyKey, body: command.input,
+    }, async () => {
+      const units = [];
+      // All writers lock units before projects. Sorted locks make overlapping snapshots agree.
+      for (const evidence of [...input.expectedInventory].sort((a, b) => a.unitId < b.unitId ? -1 : a.unitId > b.unitId ? 1 : 0)) {
+        const unit = await getUnit(tx, organizationId, evidence.unitId);
+        if (!unit || unit.revision !== evidence.unitRevision || unit.projectId !== evidence.projectId || !unit.publishedAt || unit.status !== "available") fail("Inventory changed; match again", 409);
+        units.push(unit);
+      }
+      const projects = new Map();
+      for (const projectId of [...new Set(input.expectedInventory.map(entry => entry.projectId))].sort()) projects.set(projectId, await getProject(tx, organizationId, projectId));
+      for (const unit of units) {
+        const evidence = input.expectedInventory.find(entry => entry.unitId === unit.id);
+        unit.project = projects.get(unit.projectId);
+        if (!unit.project || unit.project.revision !== evidence.projectRevision) fail("Inventory changed; match again", 409);
+      }
+      const result = matchInventory(input.requirements, units, input.policy);
+      const snapshot = await saveSnapshot(tx, {
+        id: randomUUID(), organizationId, requirementsRevision: input.requirementsRevision,
+        requirements: input.requirements, policy: input.policy, matcherVersion: result.matcherVersion,
+        inventoryWatermark: units.map(unit => ({ unitId: unit.id, unitRevision: unit.revision, projectId: unit.projectId, projectRevision: unit.project.revision })),
+        candidates: result.candidates, factSnapshot: result.candidates.map(candidate => snapshotUnitFacts(units.find(unit => unit.id === candidate.unitId))),
+      });
+      await appendAudit(tx, { organizationId, actorId, action: "match.snapshot_created", entityType: "match_snapshot", entityId: snapshot.id, details: { requirementsRevision: input.requirementsRevision, matcherVersion: result.matcherVersion, inventoryWatermark: snapshot.inventoryWatermark } });
+      await enqueueJob(tx, { organizationId, kind: "match.snapshot_created", payload: { snapshotId: snapshot.id }, retrySafe: true });
+      return { status: 201, body: snapshot };
+    }));
+    return response.body;
+  };
   for (const action of ["createProject", "updateProject", "createUnit", "updateUnit", "publishUnit", "changeAvailability", "archiveUnit"]) {
     catalog[action] = async (command) => {
       const input = validateCommand(action, command);
