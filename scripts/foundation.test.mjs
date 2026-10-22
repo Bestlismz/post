@@ -65,7 +65,7 @@ test("migrations are atomic and concurrency safe", { skip: !databaseUrl }, async
     await Promise.all([migrate(pool), migrate(pool)]);
     await migrate(pool);
     const ledger = await pool.query("SELECT version, checksum FROM schema_migrations ORDER BY version");
-    assert.deepEqual(ledger.rows.map((row) => row.version), [1, 2]);
+    assert.deepEqual(ledger.rows.map((row) => row.version), [1, 2, 3]);
     assert.match(ledger.rows[0].checksum, /^[a-f0-9]{64}$/);
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM organizations WHERE id = 'org_default'")).rows[0].count, 1);
     const actualTables = await pool.query("SELECT tablename FROM pg_tables WHERE schemaname = current_schema() AND tablename <> 'schema_migrations' ORDER BY tablename");
