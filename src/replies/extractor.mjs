@@ -11,17 +11,27 @@ const extractionSchema = z.strictObject({
 const conversationSchema = z.strictObject({ id: z.string().min(1), revision: z.number().int().positive(), messages: z.array(z.strictObject({ id: z.string().min(1), revision: z.number().int().positive(), text: z.string().max(20000) })).min(1).max(100) });
 
 function budgetSupported(field, value, text) {
-  const amount = "(?<![\\d.,])\\d+(?:,\\d{3})*(?:\\.\\d+)?(?![\\d.,])";
+  const amount = "(?<![\\d.,])\\d+(?:,\\d{3})*(?:\\.\\d+)?(?![\\d,]|\\.(?=\\d))";
   const minimum = "minimum|min|at least|no less than|(?:งบ)?ขั้นต่ำ|อย่างน้อย".normalize("NFKC");
   const maximum = "maximum|max|at most|up to|no more than|(?:งบ)?ไม่เกิน|(?:งบ)?สูงสุด".normalize("NFKC");
   const values = { budgetMin: new Set(), budgetMax: new Set() };
   const number = text => Number(text.replaceAll(",", ""));
   // Accept only complete, unscaled amounts. Unknown suffixes require clarification.
   const complete = end => {
-    let tail = text.slice(end).trimStart();
+    const horizontalTrim = value => value.replace(/^[^\S\r\n]*/u, "");
+    let tail = horizontalTrim(text.slice(end));
     const currency = /^(?:THB|baht|บาท)(?![\p{L}\p{N}_])/iu.exec(tail);
-    if (currency) tail = tail.slice(currency[0].length).trimStart();
-    return !tail || /^[;!?]/u.test(tail) || /^per month(?:[;!?]|$)/iu.test(tail) || new RegExp(`^and\\s+(?:${minimum}|${maximum})(?![\\p{L}\\p{N}_])`, "iu").test(tail);
+    if (currency) tail = horizontalTrim(tail.slice(currency[0].length));
+    if (!tail || /^[;!?]/u.test(tail) || /^per month(?:[.;!?]|$)/iu.test(tail)) return true;
+    const requirement = "(?:\\d+(?:\\.\\d+)?\\s*(?:bedrooms?\\b|beds?\\b|ห้องนอน|bathrooms?\\b|ห้องน้ำ)|(?:need|want|prefer|near|move|pets?)\\b|ทำเล|วันที่|เลี้ยงสัตว์)";
+    const nextClause = new RegExp(`^(?:(?:${minimum}|${maximum})(?![\\p{L}\\p{N}_])|${requirement})`, "iu");
+    const continuation = value => {
+      if (/^(?:k[\p{L}\p{N}_]*|thousand[\p{L}]*|พัน|หมื่น|แสน|ล้าน)/iu.test(value)) return false;
+      return nextClause.test(value) || /^\p{L}/u.test(value);
+    };
+    if (tail.startsWith(".")) return tail === "." || /^\.\s/u.test(tail) && continuation(tail.slice(1).trimStart());
+    if (/^[\r\n]/u.test(tail)) return continuation(tail.trimStart());
+    return /^and\s+/iu.test(tail) && continuation(tail.replace(/^and\s+/iu, ""));
   };
   const pattern = new RegExp(`(?<![\\p{L}\\p{N}])(${minimum}|${maximum})(?:\\s+budget)?(?:\\s+is)?\\s*[:=]?\\s*(${amount})`, "dgiu");
   for (const match of text.matchAll(pattern)) {

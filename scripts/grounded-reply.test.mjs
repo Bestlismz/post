@@ -206,3 +206,26 @@ test("range endpoints require complete unscaled amounts while plain decimals rem
     else await assert.rejects(extractRequirements(input), /evidence/i);
   }
 });
+
+test("complete budget evidence accepts ordinary sentence, line and requirement continuations", async () => {
+  for (const text of ["Maximum budget 18000.", "Maximum budget 18,000 THB. Need one bedroom.", "งบไม่เกิน ๑๘,๐๐๐ บาท\n1 ห้องนอน", "Maximum budget 18000 and 1 bedroom", "Minimum budget 18000. Need one bedroom.", "Maximum budget 18000\n1 bedroom", "Maximum budget 18000; 1 bedroom", "Maximum budget 18000. Thanks for your help.", "Maximum budget 18000\nParking needed", "Maximum budget 18000 and parking needed"]) {
+    const field = text.startsWith("Minimum") ? "budgetMin" : "budgetMax";
+    const source = { id: "continuation", revision: 1, messages: [{ id: "continuation", revision: 1, text }] };
+    const numberEnd = text.search(/18000|18,000|๑๘,๐๐๐/u) + (text.includes("18000") ? 5 : 6);
+    for (const quote of [text, text.slice(0, numberEnd)]) {
+      const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+      fields[field] = { status: "known", value: 18000, evidence: [{ messageId: "continuation", messageRevision: 1, start: 0, end: quote.length, quote }] };
+      assert.deepEqual((await extractRequirements({ conversation: source, client: fake(fields) })).requirements, { [field]: 18000 }, text);
+    }
+  }
+});
+
+test("requirement boundaries cannot disguise multiplier or malformed numeric suffixes", async () => {
+  for (const tail of ["k", " K", "\n thousand", "\nหมื่นบาท", ".5k", ".2.5", "..5", ". 5", ",00", "_thousand", " and 1k", " and 18 พัน"]) {
+    const text = `Maximum budget 18${tail}`;
+    const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+    const quote = "Maximum budget 18";
+    fields.budgetMax = { status: "known", value: 18, evidence: [{ messageId: "tail", messageRevision: 1, start: 0, end: quote.length, quote }] };
+    await assert.rejects(extractRequirements({ conversation: { id: "tail", revision: 1, messages: [{ id: "tail", revision: 1, text }] }, client: fake(fields) }), /evidence/i, text);
+  }
+});
