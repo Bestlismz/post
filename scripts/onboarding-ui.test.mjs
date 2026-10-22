@@ -18,6 +18,13 @@ test("protected UI has a real app login and keeps Facebook credentials out of th
   assert.doesNotMatch(login, /facebookPassword|facebook_password/i);
 });
 
+test("customer fixture supports the app login screen with dedicated non-Facebook credentials", async () => {
+  const fixture = await source("src/fixture-server.mjs");
+  assert.match(fixture, /app\.post\("\/api\/auth\/login"/);
+  assert.match(fixture, /FIXTURE_APP_EMAIL/);
+  assert.doesNotMatch(fixture, /bestlismzwp|sk-proj-/i);
+});
+
 test("Meta callback scrubs provider query before the protected completion request", async () => {
   const callback = await source("app/settings/meta/callback/page.jsx");
   const scrub = callback.indexOf('window.history.replaceState({}, "", "/settings/meta/callback")');

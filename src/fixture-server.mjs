@@ -30,6 +30,7 @@ const port = Number(process.env.PORT ?? 3000);
 const mode = process.env.POC_MODE === "live" ? "live" : "fixture";
 const model = process.env.OPENAI_MODEL || "gpt-5-mini";
 const liveSubmissionEnabled = process.env.POC_LIVE_SUBMISSION === "true";
+const fixtureAppLogin = { email: process.env.FIXTURE_APP_EMAIL ?? "demo@rentalradar.local", password: process.env.FIXTURE_APP_PASSWORD ?? "demo-only-password" };
 const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
@@ -105,6 +106,11 @@ app.get("/api/me", (request, response) => {
   if (request.headers.cookie?.includes("fixture_session=logged_out")) return response.status(401).json({ error: "Authentication required" });
   const actor = fixtureActor(request);
   response.json({ user: { id: actor.id, displayName: actor.displayName, role: actor.role } });
+});
+app.post("/api/auth/login", (request, response) => {
+  const email=String(request.body?.email??"").trim().toLowerCase(),password=String(request.body?.password??"");
+  if(email!==fixtureAppLogin.email.toLowerCase()||password!==fixtureAppLogin.password)return response.status(401).json({error:"Invalid email or password"});
+  response.set("Set-Cookie", "fixture_session=connected; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200").json({user:fixtureActor(request),csrfToken:"fixture-csrf"});
 });
 app.post("/api/auth/csrf", (_request, response) => response.json({ csrfToken: "fixture-csrf" }));
 app.post("/api/auth/logout", (request, response) => {
