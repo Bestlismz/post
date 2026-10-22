@@ -4,8 +4,10 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, PanelRightClose, PanelRightOpen } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
+import { inboxHref, readInboxRouteState } from "../lib/routes.mjs";
 import { ConversationPane } from "./conversation-pane";
-import { InboxQueue } from "./inbox-queue";
+import { FocusSheet } from "./focus-sheet";
+import { InboxQueue, InboxTable } from "./inbox-queue";
 import { LeadInspector } from "./lead-inspector";
 import { ReplyComposer } from "./reply-composer";
 import "./workspace.css";
@@ -18,15 +20,18 @@ function commandHeaders({ action, id, revision, csrfToken }) {
 }
 
 function InboxWorkspace() {
-  const router = useRouter(), searchParams = useSearchParams(), requestedId = searchParams.get("item");
+  const router = useRouter(), searchParams = useSearchParams();
+  const routeState = readInboxRouteState(searchParams), requestedId = routeState.item, view = routeState.view, filter = routeState.state;
   const [items, setItems] = useState([]), [listState, setListState] = useState({ loading: true, error: null });
   const [selectedId, setSelectedId] = useState(requestedId), [detail, setDetail] = useState(null);
   const [detailState, setDetailState] = useState({ loading: false, error: null });
   const [inspectorOpen, setInspectorOpen] = useState(true), [receipt, setReceipt] = useState(null), [csrfToken, setCsrfToken] = useState("");
-  const [filter, setFilter] = useState("all"), [mobileQueueOpen, setMobileQueueOpen] = useState(!requestedId);
+  const [mobileQueueOpen, setMobileQueueOpen] = useState(!requestedId);
+  const tableTriggerRef = useRef(null);
   const selectedRef = useRef(selectedId); selectedRef.current = selectedId;
   const detailRef = useRef(detail); detailRef.current = detail;
   const filterRef = useRef(filter); filterRef.current = filter;
+  const viewRef = useRef(view); viewRef.current = view;
 
   const applySelection = useCallback((id) => {
     const nextId = id ?? null;
@@ -37,25 +42,29 @@ function InboxWorkspace() {
     return true;
   }, []);
 
+  const navigateState = useCallback((patch, { history = "push" } = {}) => {
+    const href = inboxHref(window.location.search, patch);
+    router[history](href, { scroll: false });
+  }, [router]);
+
   const navigateSelection = useCallback((id, { history = "replace", closeMobile = false } = {}) => {
     const nextId = id ?? null;
     const changed = applySelection(nextId);
     if (closeMobile) setMobileQueueOpen(false);
-    const params = new URLSearchParams(window.location.search);
-    const currentId = params.get("item");
-    if (nextId) params.set("item", nextId); else params.delete("item");
-    if (currentId !== nextId) router[history](`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
+    const currentId = new URLSearchParams(window.location.search).get("item");
+    if (currentId !== nextId) navigateState({ item: nextId }, { history });
     return changed;
-  }, [applySelection, router]);
+  }, [applySelection, navigateState]);
 
   const loadList = useCallback(async () => {
     setListState({ loading: true, error: null });
     try {
       const payload = await api.request("/api/inbox"), nextItems = Array.isArray(payload?.items) ? payload.items : [];
       setItems(nextItems);
-      const visible = filterRef.current === "review" ? nextItems.filter((item) => item.status === "needs_review") : nextItems;
-      const current = selectedRef.current, nextId = current && visible.some((item) => item.id === current) ? current : visible[0]?.id ?? null;
-      navigateSelection(nextId);
+      const visible = filterRef.current === "needs_review" ? nextItems.filter((item) => item.status === "needs_review") : nextItems;
+      const current = selectedRef.current;
+      const nextId = current && visible.some((item) => item.id === current) ? current : viewRef.current === "workspace" ? visible[0]?.id ?? null : null;
+      if (nextId !== current) navigateSelection(nextId);
       setListState({ loading: false, error: null });
     } catch (error) { setListState({ loading: false, error }); }
   }, [navigateSelection]);
@@ -95,16 +104,29 @@ function InboxWorkspace() {
   }, [loadDetail, loadList]);
 
   const selectedSummary = useMemo(() => items.find((item) => item.id === selectedId) ?? null, [items, selectedId]);
-  const choose = useCallback((id) => {
+  const choose = useCallback((id, trigger = null) => {
+    if (viewRef.current === "table") tableTriggerRef.current = trigger;
     navigateSelection(id, { history: "push", closeMobile: true });
   }, [navigateSelection]);
   const changeFilter = useCallback((nextFilter) => {
-    setFilter(nextFilter);
-    const visible = nextFilter === "review" ? items.filter((item) => item.status === "needs_review") : items;
-    if (!visible.some((item) => item.id === selectedRef.current)) {
-      navigateSelection(visible[0]?.id ?? null);
-    }
-  }, [items, navigateSelection]);
+    const visible = nextFilter === "needs_review" ? items.filter((item) => item.status === "needs_review") : items;
+    const current = selectedRef.current;
+    const nextId = visible.some((item) => item.id === current) ? current : viewRef.current === "workspace" ? visible[0]?.id ?? null : null;
+    applySelection(nextId);
+    navigateState({ state: nextFilter, item: nextId }, { history: "push" });
+  }, [applySelection, items, navigateState]);
+  const changeView = useCallback((nextView) => {
+    if (nextView === viewRef.current) return;
+    const visible = filterRef.current === "needs_review" ? items.filter((item) => item.status === "needs_review") : items;
+    const nextId = nextView === "workspace" ? selectedRef.current ?? visible[0]?.id ?? null : selectedRef.current;
+    applySelection(nextId);
+    navigateState({ view: nextView, item: nextId }, { history: "push" });
+  }, [applySelection, items, navigateState]);
+  const closeFocusSheet = useCallback(() => {
+    applySelection(null);
+    navigateState({ item: null }, { history: "push" });
+    requestAnimationFrame(() => tableTriggerRef.current?.focus({ preventScroll: true }));
+  }, [applySelection, navigateState]);
 
   const runCommand = useCallback(async (action, input = {}) => {
     if (!detail) return null;
@@ -116,9 +138,14 @@ function InboxWorkspace() {
     throw new Error("Unsupported Inbox command");
   }, [csrfToken, detail]);
 
+  if (view === "table") return <section className="inbox-table-view" aria-label="กล่องข้อความรวม">
+    <InboxTable items={items} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} filter={filter} onFilterChange={changeFilter} view={view} onViewChange={changeView} obscured={Boolean(selectedId)} />
+    <FocusSheet open={Boolean(selectedId)} detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} onClose={closeFocusSheet} runCommand={runCommand} onRefresh={() => loadDetail(selectedId)} commandsReady={Boolean(csrfToken)} />
+  </section>;
+
   return (
     <section className={`inbox-workspace${inspectorOpen ? "" : " is-inspector-collapsed"}${mobileQueueOpen ? " is-mobile-queue-open" : ""}`} aria-label="กล่องข้อความรวม">
-      <InboxQueue items={items} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} filter={filter} onFilterChange={changeFilter} />
+      <InboxQueue items={items} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} filter={filter} onFilterChange={changeFilter} view={view} onViewChange={changeView} />
       <div className="inbox-focus">
         <header className="inbox-focus__toolbar">
           <div className="inbox-focus__identity"><button type="button" className="inbox-mobile-back" aria-label="กลับไปคิวข้อความ" onClick={() => setMobileQueueOpen(true)}><ArrowLeft size={19} /></button><span className="inbox-avatar" aria-hidden="true">{(detail?.participant?.label ?? selectedSummary?.participant?.label ?? "R").slice(0, 1)}</span><div><strong>{detail?.participant?.label ?? selectedSummary?.participant?.label ?? "เลือกรายการสนทนา"}</strong><span>{detail?.channel === "facebook_group" ? detail?.source?.name : "Facebook Page Inbox"}</span></div></div>

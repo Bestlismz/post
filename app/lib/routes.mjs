@@ -7,8 +7,31 @@ const manifest = [
 ];
 
 export const routes = Object.freeze(manifest.map((route) => Object.freeze(route)));
+export const inboxViews = Object.freeze(["workspace", "table"]);
+export const inboxStates = Object.freeze(["all", "needs_review"]);
 const routeById = new Map(routes.map((route) => [route.id, route]));
 const routeByPath = new Map(routes.map((route) => [route.path, route]));
+
+export function readInboxRouteState(search) {
+  const params = search instanceof URLSearchParams ? search : new URLSearchParams(search ?? "");
+  const requestedView = params.get("view");
+  const requestedState = params.get("state");
+  return {
+    view: inboxViews.includes(requestedView) ? requestedView : "workspace",
+    state: requestedState === "needs_review" ? "needs_review" : "all",
+    item: params.get("item") || null,
+  };
+}
+
+export function inboxHref(search, patch = {}) {
+  const params = new URLSearchParams(search ?? "");
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    if (value === null || value === "" || (key === "state" && value === "all")) params.delete(key);
+    else params.set(key, String(value));
+  }
+  return `/inbox${params.size ? `?${params.toString()}` : ""}`;
+}
 
 function locationUrl(location) {
   return new URL(location?.href ?? "http://localhost/inbox");
