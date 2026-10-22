@@ -28,15 +28,37 @@ function InboxWorkspace() {
   const detailRef = useRef(detail); detailRef.current = detail;
   const filterRef = useRef(filter); filterRef.current = filter;
 
+  const applySelection = useCallback((id) => {
+    const nextId = id ?? null;
+    if (selectedRef.current === nextId) return false;
+    selectedRef.current = nextId;
+    setSelectedId(nextId);
+    setReceipt(null);
+    return true;
+  }, []);
+
+  const navigateSelection = useCallback((id, { history = "replace", closeMobile = false } = {}) => {
+    const nextId = id ?? null;
+    const changed = applySelection(nextId);
+    if (closeMobile) setMobileQueueOpen(false);
+    const params = new URLSearchParams(window.location.search);
+    const currentId = params.get("item");
+    if (nextId) params.set("item", nextId); else params.delete("item");
+    if (currentId !== nextId) router[history](`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
+    return changed;
+  }, [applySelection, router]);
+
   const loadList = useCallback(async () => {
     setListState({ loading: true, error: null });
     try {
       const payload = await api.request("/api/inbox"), nextItems = Array.isArray(payload?.items) ? payload.items : [];
       setItems(nextItems);
-      setSelectedId((current) => { const visible = filterRef.current === "review" ? nextItems.filter((item) => item.status === "needs_review") : nextItems; return current && visible.some((item) => item.id === current) ? current : visible[0]?.id ?? null; });
+      const visible = filterRef.current === "review" ? nextItems.filter((item) => item.status === "needs_review") : nextItems;
+      const current = selectedRef.current, nextId = current && visible.some((item) => item.id === current) ? current : visible[0]?.id ?? null;
+      navigateSelection(nextId);
       setListState({ loading: false, error: null });
     } catch (error) { setListState({ loading: false, error }); }
-  }, []);
+  }, [navigateSelection]);
 
   const loadDetail = useCallback(async (id) => {
     if (!id) { setDetail(null); return; }
@@ -52,7 +74,7 @@ function InboxWorkspace() {
     const media = window.matchMedia("(max-width: 767px)"), sync = () => setInspectorOpen(!media.matches);
     sync(); media.addEventListener("change", sync); return () => media.removeEventListener("change", sync);
   }, []);
-  useEffect(() => { if (requestedId) setSelectedId(requestedId); }, [requestedId]);
+  useEffect(() => { applySelection(requestedId); }, [applySelection, requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
   useEffect(() => {
     if (typeof EventSource === "undefined") return undefined;
@@ -64,7 +86,7 @@ function InboxWorkspace() {
         const resources = [selectedRef.current, current?.conversationId, ...(current?.replies ?? []).map((reply) => reply.id), ...(current?.deliveries ?? []).map((delivery) => delivery.id)];
         const selectedChanged = next.resourceType === "inbox" || next.workItemId === selectedRef.current || resources.includes(next.resourceId);
         void loadList();
-        if (selectedChanged) { setReceipt(next); void loadDetail(selectedRef.current); }
+        if (selectedChanged) { setReceipt({ ...next, scopedWorkItemId: selectedRef.current }); void loadDetail(selectedRef.current); }
       } catch { /* a later durable receipt reconciles malformed transport data */ }
     };
     events.addEventListener("inbox", handleReceipt);
@@ -74,19 +96,15 @@ function InboxWorkspace() {
 
   const selectedSummary = useMemo(() => items.find((item) => item.id === selectedId) ?? null, [items, selectedId]);
   const choose = useCallback((id) => {
-    setSelectedId(id); setMobileQueueOpen(false); const params = new URLSearchParams(searchParams.toString());
-    if (id) params.set("item", id); else params.delete("item");
-    router.replace(`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
-  }, [router, searchParams]);
+    navigateSelection(id, { history: "push", closeMobile: true });
+  }, [navigateSelection]);
   const changeFilter = useCallback((nextFilter) => {
     setFilter(nextFilter);
     const visible = nextFilter === "review" ? items.filter((item) => item.status === "needs_review") : items;
     if (!visible.some((item) => item.id === selectedRef.current)) {
-      const nextId = visible[0]?.id ?? null; setSelectedId(nextId);
-      const params = new URLSearchParams(searchParams.toString()); if (nextId) params.set("item", nextId); else params.delete("item");
-      router.replace(`/inbox${params.size ? `?${params.toString()}` : ""}`, { scroll: false });
+      navigateSelection(visible[0]?.id ?? null);
     }
-  }, [items, router, searchParams]);
+  }, [items, navigateSelection]);
 
   const runCommand = useCallback(async (action, input = {}) => {
     if (!detail) return null;
@@ -104,7 +122,7 @@ function InboxWorkspace() {
       <div className="inbox-focus">
         <header className="inbox-focus__toolbar">
           <div className="inbox-focus__identity"><button type="button" className="inbox-mobile-back" aria-label="กลับไปคิวข้อความ" onClick={() => setMobileQueueOpen(true)}><ArrowLeft size={19} /></button><span className="inbox-avatar" aria-hidden="true">{(detail?.participant?.label ?? selectedSummary?.participant?.label ?? "R").slice(0, 1)}</span><div><strong>{detail?.participant?.label ?? selectedSummary?.participant?.label ?? "เลือกรายการสนทนา"}</strong><span>{detail?.channel === "facebook_group" ? detail?.source?.name : "Facebook Page Inbox"}</span></div></div>
-          <div className="inbox-focus__status">{receipt ? <span className="inbox-updated" role="status"><i />อัปเดตแล้ว</span> : null}<button type="button" className="inbox-icon-button" aria-label={inspectorOpen ? "ซ่อนข้อมูลลีด" : "แสดงข้อมูลลีด"} onClick={() => setInspectorOpen((value) => !value)}>{inspectorOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div>
+          <div className="inbox-focus__status">{receipt?.scopedWorkItemId === selectedId ? <span className="inbox-updated" role="status"><i />อัปเดตแล้ว</span> : null}<button type="button" className="inbox-icon-button" aria-label={inspectorOpen ? "ซ่อนข้อมูลลีด" : "แสดงข้อมูลลีด"} onClick={() => setInspectorOpen((value) => !value)}>{inspectorOpen ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}</button></div>
         </header>
         <div className="inbox-focus__scroll"><ConversationPane detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} /></div>
         {detail && !detailState.error ? <ReplyComposer detail={detail} runCommand={runCommand} onRefresh={() => loadDetail(selectedId)} commandsReady={Boolean(csrfToken)} /> : null}

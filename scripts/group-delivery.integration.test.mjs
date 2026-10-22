@@ -136,6 +136,41 @@ dbtest('group analysis uses DB-owned format and source policy, then authorizatio
   await assert.rejects(pool.query("UPDATE delivery_intents SET content='{}' WHERE id=$1",[intent.id]),/immutable/i);
 });
 
+dbtest('handoff atomically fences pending and running Messenger and Group work with a durable reason',async({pool,actor,workItemId,conversationId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');
+  const {createAutomationWorker}=await import('../src/workers/automation-worker.mjs');
+  const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});
+  const reply=await service.prepareReply(workItemId,1,actor);
+  const intent=await service.approveAndQueue(reply.id,1,actor);
+  await pool.query("UPDATE jobs SET status='running',lease_owner='analysis-owner',lease_expires_at=now()+interval '1 hour' WHERE id='analysis-job'");
+  await pool.query("UPDATE jobs SET status='running',lease_owner='delivery-owner',lease_expires_at=now()+interval '1 hour' WHERE kind='deliver_group_reply'");
+  await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe) VALUES
+    ('group-analysis-pending','org_default','analyze_group_work_item',$1,true),
+    ('group-delivery-pending','org_default','deliver_group_reply',$2,false),
+    ('messenger-analysis-pending','org_default','analyze_work_item',$1,true),
+    ('messenger-delivery-running','org_default','deliver_reply',$2,false)`,[
+    JSON.stringify({workItemId,conversationId,processingRevision:1}),JSON.stringify({deliveryIntentId:intent.id}),
+  ]);
+  await pool.query("UPDATE jobs SET status='running',lease_owner='messenger-owner',lease_expires_at=now()+interval '1 hour' WHERE id='messenger-delivery-running'");
+
+  const options={idempotencyKey:'group-handoff-all-jobs',expectedRevision:1};
+  const first=await service.requestHandoff(workItemId,'ลูกค้าขอให้เจ้าหน้าที่ดูแล',actor,options);
+  const replay=await service.requestHandoff(workItemId,'ลูกค้าขอให้เจ้าหน้าที่ดูแล',actor,options);
+  assert.deepEqual(replay,first);
+  const jobs=(await pool.query(`SELECT kind,status,lease_owner,lease_expires_at FROM jobs
+    WHERE kind IN ('analyze_work_item','deliver_reply','analyze_group_work_item','deliver_group_reply') ORDER BY id`)).rows;
+  assert.equal(jobs.length,6);
+  assert.ok(jobs.every(job=>job.status==='completed'&&job.lease_owner===null&&job.lease_expires_at===null));
+  assert.deepEqual((await pool.query('SELECT reason,actor_id FROM delivery_cancellations WHERE delivery_intent_id=$1',[intent.id])).rows[0],{reason:'ลูกค้าขอให้เจ้าหน้าที่ดูแล',actor_id:'operator'});
+  const audits=(await pool.query("SELECT details FROM audit_entries WHERE action='conversation.handoff' AND entity_id=$1",[conversationId])).rows;
+  assert.equal(audits.length,1);assert.equal(audits[0].details.reason,'ลูกค้าขอให้เจ้าหน้าที่ดูแล');assert.equal(audits[0].details.workItemId,workItemId);
+  assert.equal(await createAutomationWorker({pool,service,workerId:'after-handoff'}).runOnce(),null);
+  let sends=0;
+  const delivery=createGroupDeliveryWorker({pool,client:{reply:async()=>{sends++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  assert.equal((await delivery.deliverGroupIntent(intent.id)).state,'cancelled');assert.equal(sends,0);
+});
+
 dbtest('group worker commits attempting before private dispatch and accepts only bound signed visible evidence',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);

@@ -81,6 +81,7 @@ const messengerDetail = {
 };
 
 async function mockInbox(page, { items = queue, failFirstApproval = false } = {}) {
+  let currentItems = items;
   let partialAttempts = 0;
   let approvalAttempts = 0;
   const commands = [], requests = { list: 0, detail: 0 };
@@ -88,7 +89,7 @@ async function mockInbox(page, { items = queue, failFirstApproval = false } = {}
   await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "ณัฐวุฒิ", role: "admin" }, csrfToken: "test-csrf" } }));
   await page.route("**/api/auth/csrf", (route) => route.fulfill({ json: { csrfToken: "test-csrf" } }));
   await page.route("**/api/inbox/events", (route) => route.fulfill({ status: 200, contentType: "text/event-stream", body: ": heartbeat\n\n" }));
-  await page.route("**/api/inbox", (route) => { requests.list++; return route.fulfill({ json: { items, nextCursor: null } }); });
+  await page.route("**/api/inbox", (route) => { requests.list++; return route.fulfill({ json: { items: currentItems, nextCursor: null } }); });
   await page.route(/\/api\/inbox\/[^/]+$/, async (route) => {
     requests.detail++;
     const id = new URL(route.request().url()).pathname.split("/").at(-1);
@@ -106,7 +107,7 @@ async function mockInbox(page, { items = queue, failFirstApproval = false } = {}
     if (!editing && failFirstApproval && approvalAttempts++ === 0) return route.fulfill({ status: 503, json: { error: "temporary failure" } });
     await route.fulfill({ status: editing ? 200 : 202, json: editing ? { reply: { id: "reply-2", version: 2, text: route.request().postDataJSON().text } } : { operation: { receiptId: `receipt-${commands.length}`, resourceId: "delivery-1", resourceType: "delivery_intent", state: "queued" } } });
   });
-  return { commands, requests };
+  return { commands, requests, replaceItems(nextItems) { currentItems = nextItems; } };
 }
 
 test("one workspace renders Group context, grounded facts, and one exact composer", async ({ page }) => {
@@ -207,6 +208,44 @@ test("SSE refreshes the queue and selected item without flagging unrelated work"
   await page.evaluate(() => window.__emitInbox({ receiptId: "r-selected", resourceId: "delivery-1", resourceType: "delivery_intent", workItemId: "group_1", state: "queued" }));
   await expect(page.getByText("อัปเดตแล้ว")).toBeVisible();
   await expect.poll(() => fixture.requests.detail).toBeGreaterThan(initialDetail);
+});
+
+test("receipt and URL selection stay coherent across SSE reconciliation and browser history", async ({ page }) => {
+  await page.addInitScript(() => {
+    class FixtureEventSource {
+      constructor() { window.__inboxSource = this; }
+      close() {}
+      addEventListener(type, listener) { if (type === "inbox") this.onmessage = listener; }
+    }
+    window.EventSource = FixtureEventSource;
+    window.__emitInbox = (payload) => window.__inboxSource?.onmessage?.({ data: JSON.stringify(payload), lastEventId: "18" });
+  });
+  const fixture = await mockInbox(page);
+  await page.goto("/inbox?item=group_1");
+  await expect(page.getByText("โพสต์จากกลุ่ม")).toBeVisible();
+
+  await page.evaluate(() => window.__emitInbox({ receiptId: "r-a", resourceId: "delivery-a", resourceType: "delivery_intent", workItemId: "group_1", state: "queued" }));
+  await expect(page.getByText("อัปเดตแล้ว")).toBeVisible();
+  await page.getByRole("button", { name: /Nattapong S\./ }).click();
+  await expect(page).toHaveURL(/item=messenger_1/);
+  await expect(page.getByText("อัปเดตแล้ว")).toHaveCount(0);
+  await page.goBack();
+  await expect(page).toHaveURL(/item=group_1/);
+  await expect(page.getByText("โพสต์จากกลุ่ม")).toBeVisible();
+  await expect(page.getByText("อัปเดตแล้ว")).toHaveCount(0);
+  await page.goForward();
+  await expect(page).toHaveURL(/item=messenger_1/);
+  await expect(page.getByText("ข้อความจากเพจ")).toBeVisible();
+
+  await page.getByRole("button", { name: "ต้องตรวจ 1" }).click();
+  await expect(page).toHaveURL(/item=group_1/);
+  const historyBefore = await page.evaluate(() => history.length);
+  fixture.replaceItems(queue.map((item) => item.id === "group_1" ? { ...item, status: "ready" } : item.id === "messenger_1" ? { ...item, status: "needs_review" } : item));
+  await page.evaluate(() => window.__emitInbox({ receiptId: "r-review", resourceId: "reply-a", resourceType: "reply_version", workItemId: "group_1", state: "prepared" }));
+  await expect(page).toHaveURL(/item=messenger_1/);
+  await expect(page.getByRole("button", { name: /Nattapong S\./ })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByText("อัปเดตแล้ว")).toHaveCount(0);
+  expect(await page.evaluate(() => history.length)).toBe(historyBefore);
 });
 
 test("[mobile] starts on the queue and provides a back-to-queue control", async ({ page }, testInfo) => {
