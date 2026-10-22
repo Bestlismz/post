@@ -24,6 +24,11 @@ export function createMessengerWorker({ store, generate, decide, meta, now = () 
     const current = store.read();
     const decision = decide({ event, thread: current.messengerThreads[event.senderId], analysis: generated.analysis, config: { ...current.messengerConfig, handoffKeywords: current.replyProfile.humanHandoffKeywords }, now: now() });
     if (decision.action === "ignore") return store.mutate((state) => { state.messengerMessages[key].state = "ignored"; state.messengerMessages[key].detail = decision.reason; });
+    if (generated.automaticEligible !== true || generated.reply?.automaticEligible === false) return store.mutate((state) => {
+      state.messengerMessages[key].state = "review";
+      state.messengerMessages[key].detail = "generation_ineligible";
+      state.messengerThreads[event.senderId].insight = generated.analysis;
+    });
     if (decision.action === "acknowledge_and_handoff") await store.mutate((state) => { state.messengerThreads[event.senderId].status = "human_handoff"; });
     const reservation = await store.mutate((state) => {
       if (state.messengerOutbound[key]) return { created: false };

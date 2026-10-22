@@ -6,7 +6,7 @@ import { renderReply, defaultReplyFormat } from "../src/replies/renderer.mjs";
 import { validateReply } from "../src/replies/validator.mjs";
 import { createMessengerGenerator } from "../src/messenger-generator.mjs";
 
-const conversation = { id: "c1", revision: 2, messages: [{ id: "m1", revision: 1, text: "Budget 18,000; 1 bedroom; move 2026-11-01; Asoke" }] };
+const conversation = { id: "c1", revision: 2, messages: [{ id: "m1", revision: 1, text: "Maximum budget 18,000; 1 bedroom; move 2026-11-01; Asoke" }] };
 const fact = { kind: "rental_unit", unitId: "u1", unitRevision: 3, projectId: "p1", projectRevision: 2, unitCode: "A-12", projectName: "Life Asoke", address: null, district: "Asoke", province: "Bangkok", roomType: "condo", bedrooms: 1, bathrooms: 1, floor: 12, areaSqm: 35, monthlyRentThb: 18000, depositMonths: 2, advanceMonths: 1, petPolicy: "case_by_case", availableFrom: "2026-11-01", publishedAt: "2026-10-01T00:00:00Z", factsUpdatedAt: "2026-10-01T00:00:00Z", transit: [{ station: "MRT Rama 9", walkingDistanceM: 450 }], amenities: [] };
 const snapshot = { id: "s1", factSnapshot: [fact] };
 const selections = { units: [{ unitId: "u1", factIds: ["identity", "price", "availableFrom", "bedrooms", "petPolicy", "transit"] }], templateId: "options" };
@@ -15,7 +15,7 @@ const context = { snapshot, selections, format };
 const clone = value => structuredClone(value);
 const evidence = quote => { const start = conversation.messages[0].text.indexOf(quote); return { messageId: "m1", messageRevision: 1, start, end: start + quote.length, quote }; };
 const missing = () => ({ status: "missing", value: null, evidence: [] });
-const extraction = () => ({ budgetMin: missing(), budgetMax: { status: "known", value: 18000, evidence: [evidence("18,000")] }, bedrooms: { status: "known", value: 1, evidence: [evidence("1 bedroom")] }, moveInDate: { status: "known", value: "2026-11-01", evidence: [evidence("2026-11-01")] }, requiredPetPolicy: missing(), district: { status: "known", value: "Asoke", evidence: [evidence("Asoke")] } });
+const extraction = () => ({ budgetMin: missing(), budgetMax: { status: "known", value: 18000, evidence: [evidence("Maximum budget 18,000")] }, bedrooms: { status: "known", value: 1, evidence: [evidence("1 bedroom")] }, moveInDate: { status: "known", value: "2026-11-01", evidence: [evidence("2026-11-01")] }, requiredPetPolicy: missing(), district: { status: "known", value: "Asoke", evidence: [evidence("Asoke")] } });
 function fake(value, inspect = () => {}) { return { responses: { create: async request => { inspect(request); return { output_text: JSON.stringify(value), status: "completed" }; } } }; }
 
 test("structured extraction maps exact immutable evidence and missing values into matcher requirements", async () => {
@@ -129,4 +129,53 @@ test("evidence endpoints must be inside the exact source message", async () => {
   const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
   fields.district = { status: "known", value: "Asoke", evidence: [{ messageId: "m3", messageRevision: 1, start: 0, end: 99, quote: "Asoke" }] };
   await assert.rejects(extractRequirements({ conversation: { id: "c3", revision: 1, messages: [{ id: "m3", revision: 1, text: "Asoke" }] }, client: fake(fields) }));
+});
+
+test("budget evidence preserves explicit English and Thai bound direction and range endpoints", async () => {
+  for (const [text, minimum, maximum] of [["My maximum budget is 18000", null, 18000], ["My minimum budget is 18000", 18000, null], ["งบไม่เกิน ๑๘,๐๐๐ บาท", null, 18000], ["งบขั้นต่ำ 18000 บาท", 18000, null], ["Budget between 12000 and 18000", 12000, 18000], ["งบ 12000 ถึง 18000 บาท", 12000, 18000], ["Minimum 18000 and maximum 18000", 18000, 18000], ["Minimum 12000 and maximum 18000", 12000, 18000]]) {
+    const fields = Object.fromEntries(Object.keys(extraction()).map(key => [key, missing()]));
+    const span = { messageId: "b", messageRevision: 1, start: 0, end: text.length, quote: text };
+    for (const [key, value] of [["budgetMin", minimum], ["budgetMax", maximum]]) if (value !== null) fields[key] = { status: "known", value, evidence: [span] };
+    const source = { id: "budget", revision: 1, messages: [{ id: "b", revision: 1, text }] };
+    const result = await extractRequirements({ conversation: source, client: fake(fields) });
+    assert.equal(result.requirements.budgetMin, minimum ?? undefined);
+    assert.equal(result.requirements.budgetMax, maximum ?? undefined);
+    if (minimum !== maximum) {
+      for (const [key, wrong] of [["budgetMin", maximum], ["budgetMax", minimum]]) if (wrong !== null) {
+        const invalid = clone(fields); invalid[key] = { status: "known", value: wrong, evidence: [span] };
+        await assert.rejects(extractRequirements({ conversation: source, client: fake(invalid) }), /evidence|budget/i);
+      }
+    }
+  }
+});
+
+test("bare budget amounts remain ambiguous and cannot be promoted to either bound", async () => {
+  for (const text of ["Budget 18000", "งบ ๑๘,๐๐๐ บาท", "Budget 18000 and 18000"]) {
+  const source = { id: "budget", revision: 1, messages: [{ id: "b", revision: 1, text }] };
+  const span = { messageId: "b", messageRevision: 1, start: 0, end: text.length, quote: text };
+  for (const key of ["budgetMin", "budgetMax"]) {
+    const fields = Object.fromEntries(Object.keys(extraction()).map(field => [field, missing()]));
+    fields[key] = { status: "ambiguous", value: null, evidence: [span] };
+    assert.deepEqual((await extractRequirements({ conversation: source, client: fake(fields) })).requirements, {});
+    fields[key] = { status: "known", value: 18000, evidence: [span] };
+    await assert.rejects(extractRequirements({ conversation: source, client: fake(fields) }), /evidence/i);
+  }
+  }
+});
+
+test("human free edits retain mandatory format constraints", () => {
+  const reply = renderReply(selections, snapshot, format);
+  const edit = text => ({ ...reply, text, grounded: false, editKind: "human_free_edit", automaticEligible: false });
+  for (const text of [reply.text + "\nforbidden", reply.text + "🙂", reply.text.replace("Details reflect the inventory snapshot; please confirm current availability with our team.", ""), reply.text + "\u202e", reply.text + "\t", reply.text + "x".repeat(2001), reply.text + "\ud800"]) {
+    assert.throws(() => validateReply(edit(text), { ...context, format: { ...format, forbiddenPhrases: ["forbidden"] } }));
+  }
+  assert.equal(validateReply(edit(reply.text.replace("18,000", "16,000")), context).automaticEligible, false);
+});
+
+test("emoji policy applies to factual project, unit and transit names without rewriting them", () => {
+  for (const patch of [{ projectName: "Life 🙂 Asoke" }, { unitCode: "A-12 ❤️" }, { transit: [{ station: "MRT 🚆", walkingDistanceM: 450 }] }]) {
+    const source = { ...snapshot, factSnapshot: [{ ...fact, ...patch }] };
+    assert.throws(() => renderReply(selections, source, format), /emoji/i);
+    assert.match(renderReply(selections, source, { ...format, emojiPolicy: "friendly" }).text, /🙂|❤️|🚆/u);
+  }
 });

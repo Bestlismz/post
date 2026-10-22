@@ -1,4 +1,4 @@
-import { immutable, readSnapshot, readFormat, readSelections } from "./contracts.mjs";
+import { immutable, readSnapshot, readFormat, readSelections, safeText } from "./contracts.mjs";
 
 export function defaultReplyFormat(locale = "th") {
   return readFormat({ locale, tone: "friendly", greetingId: "hello", closingId: "thanks", ctaId: "requirements", emojiPolicy: "none", maxLength: 1800, numberFormat: "grouped", dateFormat: "iso", requiredDisclosureId: "snapshot", forbiddenPhrases: [] });
@@ -8,6 +8,15 @@ const words = {
   en: { hello: { friendly: "Hello!", formal: "Hello.", neutral: "Hello." }, thanks: "Thank you.", requirements: "Please share your preferred area, budget, and move-in date.", follow_up: "Would you like our team to follow up?", snapshot: "Details reflect the inventory snapshot; please confirm current availability with our team.", confirm: "Our team must reconfirm these details before any booking.", options: "Options from our inventory:", clarify: "We need more details to check suitable options.", handoff: "Our team will review your request.", pets: { allowed: "Pets allowed", case_by_case: "Pets considered case by case", not_allowed: "Pets not allowed", unknown: "Pet policy unknown" } },
   th: { hello: { friendly: "สวัสดีค่ะ", formal: "เรียนคุณลูกค้า", neutral: "สวัสดี" }, thanks: "ขอบคุณค่ะ", requirements: "รบกวนแจ้งทำเล งบประมาณ และวันที่ต้องการย้ายเข้า", follow_up: "ต้องการให้ทีมงานติดต่อกลับในแชตนี้ไหมคะ", snapshot: "ข้อมูลอ้างอิงจากรายการห้อง ณ เวลาที่ตรวจสอบ กรุณายืนยันห้องว่างปัจจุบันกับทีมงานอีกครั้ง", confirm: "ทีมงานต้องยืนยันข้อมูลเหล่านี้อีกครั้งก่อนการจอง", options: "ตัวเลือกจากรายการห้องของเรา:", clarify: "รบกวนแจ้งข้อมูลเพิ่มเติมเพื่อช่วยตรวจสอบตัวเลือกที่เหมาะสม", handoff: "ทีมงานจะช่วยตรวจสอบคำขอของคุณ", pets: { allowed: "เลี้ยงสัตว์ได้", case_by_case: "พิจารณาสัตว์เลี้ยงเป็นรายกรณี", not_allowed: "ห้ามเลี้ยงสัตว์", unknown: "ยังไม่ทราบนโยบายสัตว์เลี้ยง" } },
 };
+
+export function validateFormatText(text, inputFormat) {
+  const format = readFormat(inputFormat);
+  safeText(text.replaceAll("\n", " "));
+  if (!text.trim() || [...text].length > format.maxLength) throw new Error("Reply exceeds maximum length or is empty");
+  if (format.emojiPolicy === "none" && /[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Modifier}\uFE0F\u20E3]/u.test(text)) throw new Error("Reply violates emoji policy");
+  if (!text.split("\n").includes(words[format.locale][format.requiredDisclosureId])) throw new Error("Reply is missing required disclosure");
+  for (const phrase of format.forbiddenPhrases) if (text.toLocaleLowerCase("en-US").includes(phrase.toLocaleLowerCase("en-US"))) throw new Error("Reply contains forbidden phrase");
+}
 
 export function renderReply(input, snapshot, inputFormat) {
   const facts = readSnapshot(snapshot), format = readFormat(inputFormat), selections = readSelections(input, facts);
@@ -34,7 +43,6 @@ export function renderReply(input, snapshot, inputFormat) {
   if (format.ctaId !== "none") append(w[format.ctaId]);
   if (format.closingId !== "none") append(w.thanks);
   const text = lines.join("\n");
-  if ([...text].length > format.maxLength) throw new Error("Reply exceeds maximum length");
-  for (const phrase of format.forbiddenPhrases) if (text.toLocaleLowerCase("en-US").includes(phrase.toLocaleLowerCase("en-US"))) throw new Error("Reply contains forbidden phrase");
+  validateFormatText(text, format);
   return immutable({ text, snapshotId: facts.id, selections, format, provenance, grounded: true, automaticEligible: true });
 }
