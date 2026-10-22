@@ -138,11 +138,14 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
 
 dbtest("Automations API persists exact format and policy revisions and exposes immutable receipts", async () => fixture(async ({ pool, request }) => {
   await pool.query(`INSERT INTO group_sources(id,organization_id,group_id,canonical_url,mode,allow_listed,session_health,selector_health,selector_version)
-    VALUES('source-1','org_default','123','https://www.facebook.com/groups/123','approval',true,'healthy','healthy','facebook-dom-v2')`);
+    VALUES('source-1','org_default','123','https://www.facebook.com/groups/123','approval',true,'healthy','healthy','facebook-dom-v2');
+    INSERT INTO conversations(id,organization_id,channel,page_id,psid,processing_revision)
+    VALUES('conversation-1','org_default','facebook_group','facebook_group:123','facebook_group_target:456',1)`);
   const initial = await request("/api/automation");
   assert.equal(initial.status, 200);
   assert.equal(initial.body.policy.revision, 1);
   assert.equal(initial.body.replyFormat.value.locale, "th");
+  assert.deepEqual(initial.body.sources[0].previewContexts.map(({ id }) => id), ["conversation-1"]);
 
   const policy = { mode: "automatic", minimumConfidence: 0.82, rateLimits: { organization: 100, source: 20, conversation: 2 }, businessHours: { timeZone: "Asia/Bangkok", days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "24:00" } };
   const savedPolicy = await request("/api/automation/policy", { method: "PUT", revision: 1, body: policy });
@@ -156,38 +159,55 @@ dbtest("Automations API persists exact format and policy revisions and exposes i
   assert.deepEqual(savedFormat.body.value, format);
   assert.equal(savedFormat.body.revision, 2);
 
-  const preview = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const preview = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert.equal(preview.status, 200);
   assert.equal(preview.body.source.id, "source-1");
   assert.equal(preview.body.action, "review");
   assert.deepEqual(preview.body.reasons, ["approval_required"]);
 
   await pool.query("UPDATE group_sources SET mode='automatic',policy=$2 WHERE id=$1", ["source-1", JSON.stringify({ rateLimits: { organization: 100, source: 1, conversation: 2 }, businessHours: policy.businessHours })]);
-  const automatic = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const automatic = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert.equal(automatic.body.action, "authorize");
   assert.equal(automatic.body.effectivePolicy.rateLimits.source, 1, "source override is authoritative");
 
+  await pool.query(`INSERT INTO messages(id,organization_id,conversation_id,page_id,mid,text,processing_revision,raw_evidence)
+    VALUES('message-1','org_default','conversation-1','facebook_group:123','message-1','lead',1,'{}');
+    INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision,status)
+    VALUES('work-1','org_default','conversation-1','message-1',1,'ready');
+    INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+    VALUES('reply-1','org_default','work-1','conversation-1',1,1,'{}','{}');
+    INSERT INTO reply_authorizations(id,organization_id,work_item_id,reply_version_id,actor_kind,evidence)
+    VALUES('authorization-1','org_default','work-1','reply-1','policy','{}');
+    INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,group_source_id,content)
+    VALUES('intent-1','org_default','authorization-1','reply-1','conversation-1','source-1','{}');
+    INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state)
+    VALUES('attempt-1','org_default','intent-1','sent')`);
+  await pool.query("UPDATE organizations SET automation_policy=jsonb_set(automation_policy,'{rateLimits}','{\"organization\":1,\"source\":20,\"conversation\":1}'); UPDATE group_sources SET policy='{}' WHERE id='source-1'");
+  const limited = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  assert(limited.body.reasons.includes("conversation_rate_limit"), "preview uses the selected conversation attempt ledger");
+  assert(limited.body.reasons.includes("organization_rate_limit"), "preview uses the same organization window as the final gate");
+
   const paused = await request("/api/automation/pause", { method: "POST", body: { paused: true }, key: "global-pause" });
   assert.equal(paused.status, 200);
-  const globalPaused = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const globalPaused = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert(globalPaused.body.reasons.includes("global_pause"));
   const sourcePaused = await request("/api/automation/sources/source-1/pause", { method: "POST", body: { paused: true }, key: "source-pause" });
   assert.equal(sourcePaused.body.revision, 2);
   assert.equal(typeof sourcePaused.body.updatedAt, "string");
-  const pausedSourceDecision = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const pausedSourceDecision = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert(pausedSourceDecision.body.reasons.includes("source_pause"));
   const stalePolicy = await request("/api/sources/groups/source-1", { method: "PATCH", revision: 1, body: { policy: { rateLimits: policy.rateLimits, businessHours: policy.businessHours } } });
   assert.equal(stalePolicy.status, 409);
   const freshPolicy = await request("/api/sources/groups/source-1", { method: "PATCH", revision: sourcePaused.body.revision, body: { policy: { rateLimits: policy.rateLimits, businessHours: policy.businessHours } } });
   assert.equal(freshPolicy.status, 200);
   await pool.query("UPDATE organizations SET group_automation_paused=false; UPDATE group_sources SET kill_switch=false,session_health='failed',selector_health='failed',session_circuit=true,selector_circuit=true WHERE id='source-1'");
-  const unhealthy = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const unhealthy = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert(unhealthy.body.reasons.includes("source_session_unhealthy"));
   assert(unhealthy.body.reasons.includes("source_selector_unhealthy"));
   assert(unhealthy.body.reasons.includes("session_circuit_open"));
   assert(unhealthy.body.reasons.includes("selector_circuit_open"));
   await pool.query("UPDATE group_sources SET mode='observe',session_health='healthy',selector_health='healthy',session_circuit=false,selector_circuit=false WHERE id='source-1'");
-  const observe = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
+  const observe = await request("/api/automation/policy-preview", { method: "POST", body: { sourceId: "source-1", conversationId: "conversation-1", sample: { grounded: true, automaticEligible: true, confidence: 0.9, replyWindowOpen: true } } });
   assert.equal(observe.body.action, "observe");
   assert(observe.body.reasons.includes("observe_mode"));
   const state = await request("/api/automation");

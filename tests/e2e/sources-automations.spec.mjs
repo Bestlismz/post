@@ -47,10 +47,11 @@ async function mockOperations(page, { role = "admin", conflictPolicyOnce = false
   });
   await page.route(/\/api\/sources\/[^/]+\/browser-health$/, (route) => route.fulfill({ json: { sourceId: "group-source-1", sourceHealth: { session: "auth_required", selector: "healthy", sessionCircuit: true, selectorCircuit: false, paused: true }, browser: { ok: false, session: { state: "auth_required" }, recovery: { state: "available" } } } }));
   await page.route(/\/api\/sources\/[^/]+\/recovery$/, (route) => role === "admin" ? route.fulfill({ status: 201, json: { sourceId: "group-source-1", sessionId: "recovery-1", expiresAt: "2026-10-22T09:10:00.000Z", tunnelUrl: "/api/sources/group-source-1/recovery/recovery-1/novnc/vnc.html" } }) : route.fulfill({ status: 403, json: { error: "forbidden" } }));
-  await page.route("**/api/automation", (route) => route.fulfill({ json: { actorRole: role, paused, policy: { value: policy, revision: policyRevision }, replyFormat: { value: replyFormat, revision: formatRevision }, sources: groups.map((source) => ({ id: source.id, label: source.canonicalUrl, revision: source.revision, policy: { rateLimits: policy.rateLimits, businessHours: policy.businessHours }, paused: source.paused, mode: source.mode, health: source.health, schedule: { enabled: true, cadenceMinutes: 15, timeZone: "Asia/Bangkok", days: [1, 2, 3, 4, 5], start: "08:00", end: "20:00", dailyLimit: 48, maintenanceWindows: [], revision: 1 } })), receipts } }));
+  await page.route("**/api/automation", (route) => route.fulfill({ json: { actorRole: role, paused, policy: { value: policy, revision: policyRevision }, replyFormat: { value: replyFormat, revision: formatRevision }, sources: groups.map((source) => ({ id: source.id, label: source.canonicalUrl, revision: source.revision, policy: { rateLimits: policy.rateLimits, businessHours: policy.businessHours }, paused: source.paused, mode: source.mode, health: source.health, previewContexts: [{ id: `conversation-${source.id}`, label: "บทสนทนา revision 1", updatedAt: "2026-10-22T09:00:00.000Z" }], schedule: { enabled: true, cadenceMinutes: 15, timeZone: "Asia/Bangkok", days: [1, 2, 3, 4, 5], start: "08:00", end: "20:00", dailyLimit: 48, maintenanceWindows: [], revision: 1 } })), receipts } }));
   await page.route("**/api/automation/policy-preview", async (route) => {
-    const { sample, sourceId } = route.request().postDataJSON();
+    const { sample, sourceId, conversationId } = route.request().postDataJSON();
     const selected = groups.find((source) => source.id === sourceId);
+    expect(conversationId).toBe(`conversation-${sourceId}`);
     const reasons = [];
     if (paused) reasons.push("global_pause");
     if (selected.paused) reasons.push("source_pause");
@@ -106,6 +107,7 @@ test("Automations previews the production decision and persists pause/format rec
   await page.goto("/automations");
   await expect(page.getByRole("heading", { name: "กติกาอัตโนมัติ" })).toBeVisible();
   await page.getByLabel("แหล่งข้อมูลสำหรับทดสอบ").selectOption("group-source-1");
+  await expect(page.getByLabel("บทสนทนาสำหรับตรวจ rate limit")).toHaveValue("conversation-group-source-1");
   await page.getByLabel("ความมั่นใจของตัวอย่าง").fill("70");
   await page.getByRole("button", { name: "ทดสอบกติกา" }).click();
   await expect(page.getByText("ส่งให้คนตรวจ")).toBeVisible();
@@ -147,7 +149,7 @@ test("all Sources and Automations controls meet 44px across supported viewports"
     await page.setViewportSize(viewport);
     for (const path of ["/sources", "/automations"]) {
       await page.goto(path);
-      const undersized = await page.locator(".ops-page button:not([disabled]),.ops-page a[href],.ops-page input:not([type=range]):not([type=checkbox]),.ops-page select").evaluateAll((nodes) => nodes.filter((node) => { const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44); }).map((node) => ({ tag: node.tagName, text: node.textContent?.trim(), aria: node.getAttribute("aria-label"), box: node.getBoundingClientRect().toJSON() })));
+      const undersized = await page.locator(".ops-page button:not([disabled]),.ops-page a[href],.ops-page input,.ops-page select").evaluateAll((nodes) => nodes.map((node) => node instanceof HTMLInputElement && node.type === "checkbox" ? node.closest("label") : node).filter(Boolean).filter((node) => { const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44); }).map((node) => ({ tag: node.tagName, text: node.textContent?.trim(), aria: node.getAttribute("aria-label"), box: node.getBoundingClientRect().toJSON() })));
       expect(undersized, `${path} at ${viewport.width}px`).toEqual([]);
       expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
     }

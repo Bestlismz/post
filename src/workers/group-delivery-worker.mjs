@@ -6,6 +6,7 @@ import {loadContext,assertReplyFresh} from '../inbox/service.mjs';
 import {freshnessConflictCodes,terminalPreparationCodes} from '../inbox/errors.mjs';
 import {validateReply} from '../replies/validator.mjs';
 import {evaluateSourceDecision} from '../policy/source-decision.mjs';
+import {loadHourlyAttemptCounts} from '../policy/attempt-counts.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
@@ -105,11 +106,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
           if(!isDeepStrictEqual(authorization.evidence.inventory,reply.context.snapshot.inventoryWatermark))reject('INVALID_AUTHORIZATION');
           const source=context.source;
           const now=clock();
-          const {rows:[counts]}=await tx.query(`SELECT count(*)::int AS organization,
-            count(*) FILTER(WHERE coalesce(d.source_id,d.group_source_id)=$2)::int AS source,
-            count(*) FILTER(WHERE d.conversation_id=$3)::int AS conversation
-            FROM delivery_attempts a JOIN delivery_intents d ON d.organization_id=a.organization_id AND d.id=a.delivery_intent_id
-            WHERE a.organization_id=$1 AND a.started_at>$4::timestamptz-interval '1 hour'`,[intent.organization_id,source.id,intent.conversation_id,now]);
+          const counts=await loadHourlyAttemptCounts(tx,{organizationId:intent.organization_id,sourceId:source.id,conversationId:intent.conversation_id,now});
           const human=authorization.actor_kind==='human',policy=reply.context.evidence.policy;
           const decision=evaluateSourceDecision({organizationPaused:context.org.group_automation_paused,organizationPolicy:policy,source,
             actorKind:human?'human':'policy',context:{confidence:reply.context.confidence,grounded:reply.content.grounded,automaticEligible:reply.content.automaticEligible,

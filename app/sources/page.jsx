@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, MessagesSquare, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
 import { BrowserRecovery } from "./browser-recovery";
+import { createOperationPoller } from "./operation-poller.mjs";
 import { SourceRow } from "./source-row";
 import "../sources-automations.css";
 
@@ -23,23 +24,34 @@ export default function SourcesPage() {
   const [browserHealth, setBrowserHealth] = useState({});
   const [recovery, setRecovery] = useState(null);
   const csrfRef = useRef("");
-  const pollAttemptRef = useRef(0);
+  const pollersRef = useRef(new Map());
 
-  const load = useCallback(async () => {
-    setLoadError("");
-    try { setData(await api.request("/api/sources")); }
-    catch (error) { setLoadError(error.message); }
+  const load = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) setLoadError("");
+    try { const next = await api.request("/api/sources"); setData(next); return next; }
+    catch (error) { if (quiet) throw error; setLoadError(error.message); return null; }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    const pending = data.groups.some((source) => source.latestOperation?.state === "queued");
-    if (!pending) { pollAttemptRef.current = 0; return undefined; }
-    if (pollAttemptRef.current >= 6) return undefined;
-    const delay = Math.min(1000 * (2 ** pollAttemptRef.current), 8000);
-    const timer = globalThis.setTimeout(() => { pollAttemptRef.current += 1; void load(); }, delay);
-    return () => globalThis.clearTimeout(timer);
+    const pending = new Set(data.groups.filter((source) => source.latestOperation?.state === "queued").map((source) => source.latestOperation.operationId));
+    for (const [operationId, poller] of pollersRef.current) {
+      if (!pending.has(operationId)) { poller.destroy(); pollersRef.current.delete(operationId); }
+    }
+    for (const operationId of pending) {
+      if (pollersRef.current.has(operationId)) continue;
+      const poller = createOperationPoller({ reload: async (id) => {
+        const next = await load({ quiet: true });
+        return next.groups.flatMap((source) => source.latestOperation ?? []).find((operation) => operation.operationId === id)?.state ?? "replaced";
+      } });
+      pollersRef.current.set(operationId, poller);
+      poller.start(operationId);
+    }
   }, [data.groups, load]);
+  useEffect(() => () => {
+    for (const poller of pollersRef.current.values()) poller.destroy();
+    pollersRef.current.clear();
+  }, []);
 
   async function csrf(force = false) {
     if (!force && csrfRef.current) return csrfRef.current;
