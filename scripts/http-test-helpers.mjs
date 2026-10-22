@@ -23,12 +23,17 @@ export async function httpFixture(fn) {
       env: { ...process.env, DATABASE_URL: url.href, ADMIN_EMAIL: email, ADMIN_PASSWORD: "long-password-123", ADMIN_DISPLAY_NAME: "Admin" },
     });
     const { createApplicationRouter } = await import("../src/http/auth-routes.mjs");
-    const app = express();
-    app.use(express.json());
-    app.use(createApplicationRouter({ pool, config: { appOrigin: origin, nodeEnv: "production" }, env: { OPENAI_API_KEY: "private-api-key" } }));
-    server = app.listen(0, "127.0.0.1");
-    await new Promise((resolve) => server.once("listening", resolve));
-    const base = `http://127.0.0.1:${server.address().port}`;
+    let base;
+    const restart = async () => {
+      if (server) await new Promise((resolve) => server.close(resolve));
+      const app = express();
+      app.use(express.json());
+      app.use(createApplicationRouter({ pool, config: { appOrigin: origin, nodeEnv: "production" }, env: { OPENAI_API_KEY: "private-api-key" } }));
+      server = app.listen(0, "127.0.0.1");
+      await new Promise((resolve) => server.once("listening", resolve));
+      base = `http://127.0.0.1:${server.address().port}`;
+    };
+    await restart();
     const request = async (route, { method = "GET", body, cookie, csrf, headers = {} } = {}) => {
       const response = await fetch(base + route, { method, headers: { "Content-Type": "application/json", Origin: origin, ...(cookie ? { Cookie: cookie } : {}), ...(csrf ? { "X-CSRF-Token": csrf } : {}), ...headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, headers: response.headers, body: await response.json() };
@@ -46,7 +51,7 @@ export async function httpFixture(fn) {
       await pool.query("INSERT INTO memberships (organization_id,user_id,role) VALUES ($1,$2,$3)", [organizationId, id, role]);
       return { id, ...(await login(email)) };
     };
-    await fn({ pool, bootstrap, request, login, mutate, addUser });
+    await fn({ pool, bootstrap, request, login, mutate, addUser, restart });
   } finally {
     await new Promise((resolve) => server ? server.close(resolve) : resolve());
     await pool?.end();

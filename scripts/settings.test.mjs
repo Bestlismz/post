@@ -2,6 +2,22 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { databaseUrl, httpFixture } from "./http-test-helpers.mjs";
 
+test("settings GET ETags round trip through If-Match and reject reuse after a change", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, login, request, mutate }) => {
+  await bootstrap();
+  const admin = await login();
+  for (const [resource, body] of [["retention", { rawPayloadDays: 14, screenshotDays: 7 }], ["business-profile", { name: "Updated", description: "Rentals", relevanceThreshold: 70 }]]) {
+    const route = `/api/settings/${resource}`;
+    const before = await request(route, admin);
+    const etag = before.headers.get("etag");
+    const changed = await mutate(admin, route, body, etag);
+    assert.equal(changed.status, 200);
+    assert.equal(changed.body.revision, before.body.revision + 1);
+    assert.equal(changed.headers.get("etag"), `"${changed.body.revision}"`);
+    assert.equal((await mutate(admin, route, body, etag)).status, 409);
+    assert.equal((await request(route, admin)).headers.get("etag"), changed.headers.get("etag"));
+  }
+}));
+
 test("admin settings persist revisions, enforce roles, filter audit, and redact readiness", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, login, request, mutate, addUser }) => {
   await bootstrap();
   const admin = await login();

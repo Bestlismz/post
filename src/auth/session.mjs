@@ -6,17 +6,22 @@ const cookieName = "rental_session";
 export function sessionCookie(token, config, clear = false) {
   return `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${clear ? 0 : 43200}${config.nodeEnv === "production" || config.appOrigin.startsWith("https:") ? "; Secure" : ""}`;
 }
-export async function createSession(tx, actor) {
+export function readSessionToken(request) {
+  const token = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
+  return token && /^[\w-]{43}$/.test(token) ? token : null;
+}
+export async function createSession(tx, actor, previousToken) {
   const token = randomBytes(32).toString("base64url");
   const csrfToken = randomBytes(32).toString("base64url");
+  if (previousToken) await tx.query("UPDATE sessions SET expires_at=now() WHERE organization_id=$1 AND token_hash=$2", [actor.organizationId, tokenHash(previousToken)]);
   await tx.query("INSERT INTO sessions (id,organization_id,user_id,token_hash,csrf_token_hash,expires_at) VALUES ($1,$2,$3,$4,$5,now()+interval '12 hours')", [randomUUID(), actor.organizationId, actor.id, tokenHash(token), tokenHash(csrfToken)]);
   return { token, csrfToken };
 }
 export function authenticate(pool) {
   return async (request, _response, next) => {
     try {
-      const token = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${cookieName}=`))?.slice(cookieName.length + 1);
-      if (!token || !/^[\w-]{43}$/.test(token)) throw httpError(401, "Authentication required");
+      const token = readSessionToken(request);
+      if (!token) throw httpError(401, "Authentication required");
       const { rows: [row] } = await pool.query(`SELECT s.id AS session_id,s.csrf_token_hash,u.id,u.email,u.display_name,m.organization_id,m.role
         FROM sessions s JOIN memberships m ON m.organization_id=s.organization_id AND m.user_id=s.user_id JOIN users u ON u.id=m.user_id
         WHERE s.token_hash=$1 AND s.expires_at>now()`, [tokenHash(token)]);

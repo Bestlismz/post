@@ -7,7 +7,7 @@ export function settingsRoutes({ pool, write, env }) {
   const router = Router();
   router.use("/api/settings", requireRole("admin"));
   for (const [route, kind] of [["users", "users"], ["business-profile", "profile"], ["retention", "retention"]]) {
-    router.get(`/api/settings/${route}`, async (request, response) => response.json(await readSetting(pool, request.actor.organizationId, kind)));
+    router.get(`/api/settings/${route}`, async (request, response) => sendEntity(response, await readSetting(pool, request.actor.organizationId, kind)));
     if (kind !== "users") for (const method of ["patch", "put"]) router[method](`/api/settings/${route}`, ...write, async (request, response) => sendEntity(response, await changeSetting(pool, kind, commandFor(request, request.body))));
   }
   router.post("/api/settings/users", ...write, async (request, response) => sendEntity(response, await changeSetting(pool, "user", commandFor(request, request.body, true)), 201));

@@ -89,3 +89,65 @@ test("sessions use hashed opaque tokens, secure cookies, live roles, and logout 
   await pool.query("UPDATE sessions SET expires_at=now()-interval '1 second'");
   assert.equal((await request("/api/me", expired)).status, 401);
 }));
+
+test("login throttles known and unknown accounts equally, survives new routers, and expires", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, request, restart }) => {
+  await bootstrap();
+  const attempt = (email, headers = {}) => request("/api/auth/login", { method: "POST", body: { email, password: "wrong" }, headers });
+  let known, unknown;
+  for (let index = 0; index < 5; index++) {
+    known = await attempt("admin@example.com");
+    unknown = await attempt("unknown@example.com");
+    assert.equal(known.status, 401);
+    assert.deepEqual(known.body, unknown.body);
+  }
+  await restart();
+  known = await attempt("ADMIN@example.com", { "X-Forwarded-For": "192.0.2.2" });
+  unknown = await attempt("unknown@example.com");
+  assert.equal(known.status, 429);
+  assert.deepEqual(known.body, unknown.body);
+  assert.ok(Number(known.headers.get("retry-after")) > 0);
+  assert.ok(Number(known.headers.get("retry-after")) <= 900);
+  const successWhileBlocked = await request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "long-password-123" } });
+  assert.equal(successWhileBlocked.status, 429);
+  assert.equal((await pool.query("SELECT count(*)::int AS count FROM sessions")).rows[0].count, 0);
+  await pool.query("UPDATE login_attempts SET expires_at=now()-interval '1 second'");
+  assert.equal((await attempt("admin@example.com")).status, 401);
+}));
+
+test("login IP budget prevents rotating account guesses and cannot be reset by successes", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, request }) => {
+  await bootstrap();
+  for (let index = 0; index < 50; index++) {
+    const result = await request("/api/auth/login", { method: "POST", body: { email: index % 10 === 0 ? "admin@example.com" : `guess${index}@example.com`, password: index % 10 === 0 ? "long-password-123" : "wrong" }, headers: { "X-Forwarded-For": `192.0.2.${index + 1}` } });
+    assert.equal(result.status, index % 10 === 0 ? 200 : 401);
+  }
+  const limited = await request("/api/auth/login", { method: "POST", body: { email: "another@example.com", password: "wrong" } });
+  assert.equal(limited.status, 429);
+  assert.ok(Number(limited.headers.get("retry-after")) > 0);
+}));
+
+test("successful login resets account failures and rotates a supplied session", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, request, login }) => {
+  await bootstrap();
+  const session = await login();
+  for (let index = 0; index < 4; index++) assert.equal((await request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "wrong" } })).status, 401);
+  const rotated = await request("/api/auth/login", { method: "POST", cookie: session.cookie, body: { email: "admin@example.com", password: "long-password-123" } });
+  assert.equal(rotated.status, 200);
+  assert.notEqual(rotated.headers.get("set-cookie").split(";")[0], session.cookie);
+  assert.equal((await request("/api/me", session)).status, 401);
+  assert.equal((await request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "wrong" } })).status, 401);
+}));
+
+test("concurrent login guesses share one durable account budget", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, request }) => {
+  await bootstrap();
+  const attempts = await Promise.all(Array.from({ length: 12 }, () => request("/api/auth/login", { method: "POST", body: { email: "admin@example.com", password: "wrong" } })));
+  assert.equal(attempts.filter((result) => result.status === 401).length, 5);
+  assert.equal(attempts.filter((result) => result.status === 429).length, 7);
+}));
+
+test("login throttle storage is bounded and expired rows can be reused without deleting state", { skip: !databaseUrl }, () => httpFixture(async ({ pool, request }) => {
+  await pool.query("INSERT INTO login_attempts (organization_id,kind,key_hash,attempts,expires_at) SELECT 'org_default','account',md5(i::text)||md5(i::text),1,now()+interval '15 minutes' FROM generate_series(1,10000) i");
+  const attempt = () => request("/api/auth/login", { method: "POST", body: { email: "unknown@example.com", password: "wrong" } });
+  assert.equal((await attempt()).status, 429);
+  await pool.query("UPDATE login_attempts SET expires_at=now()-interval '1 second' WHERE key_hash IN (SELECT key_hash FROM login_attempts ORDER BY key_hash LIMIT 2)");
+  assert.equal((await attempt()).status, 401);
+  assert.equal((await pool.query("SELECT count(*)::int AS count FROM login_attempts")).rows[0].count, 10000);
+}));

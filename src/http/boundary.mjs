@@ -27,5 +27,6 @@ export function errorHandler(error, _request, response, _next) {
   } else if (error.fields) {
     fieldErrors = Object.fromEntries(error.fields.map((field) => [field, ["Required for publication"]]));
   } else if (error.code === "23505") { status = 409; message = "Resource already exists"; }
+  if (error.retryAfter) response.set("Retry-After", String(error.retryAfter));
   response.status(status).json({ error: message, fieldErrors });
 }
