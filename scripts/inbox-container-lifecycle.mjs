@@ -72,6 +72,7 @@ test('production containers receive SIGTERM, drain current work, and respect the
         INSERT INTO jobs(id,organization_id,kind,retry_safe,payload,created_at) VALUES('worker-job','org_default','analyze_work_item',true,'{"workItemId":"worker-item","conversationId":"worker-conv","processingRevision":1}',now()-interval '1 second'),('next-job','org_default','analyze_work_item',true,'{"workItemId":"next-item","conversationId":"next-conv","processingRevision":1}',now())`);
       const name=`lifecycle-worker-${suffix}`;
       start(name,workerRole,['-e','OPENAI_API_KEY=fake-no-live-calls','-e','META_TOKEN_KEY_VERSION=one','-e',`META_TOKEN_KEYS=${JSON.stringify({one:Buffer.alloc(32,1).toString('base64')})}`,
+        '-e','GROUP_COMMAND_KEY_ID=group','-e',`GROUP_COMMAND_KEYS=${JSON.stringify({group:Buffer.alloc(32,2).toString('base64')})}`,
         '-v',`${fileURLToPath(new URL('./fixtures/delayed-openai.mjs',import.meta.url))}:/lifecycle/delayed-openai.mjs:ro`,image,'node','--import','/lifecycle/delayed-openai.mjs','src/worker.mjs']);
       await until(()=>docker(['logs',name]).includes('DELAYED_PROVIDER_ENTERED'));
       const before=Date.now();await stop(name,120);

@@ -25,6 +25,35 @@ export async function inspectSession(page) {
   return {state:'healthy'};
 }
 
+async function inspectCdpPage(page,{timeoutMs=2000,WebSocketImpl=WebSocket}={}) {
+  const endpoint=new URL(page.webSocketDebuggerUrl);
+  if(endpoint.protocol!=='ws:'||!['127.0.0.1','localhost','[::1]'].includes(endpoint.hostname))throw Error('Invalid CDP page');
+  return new Promise((resolve,reject)=>{
+    const socket=new WebSocketImpl(endpoint),timer=setTimeout(()=>finish(reject,Error('CDP probe timed out')),timeoutMs);let settled=false;
+    const finish=(callback,value)=>{if(settled)return;settled=true;clearTimeout(timer);try{socket.close();}catch{}callback(value);};
+    socket.addEventListener('open',()=>socket.send(JSON.stringify({id:1,method:'Runtime.evaluate',params:{returnByValue:true,expression:`(()=>{if(location.pathname.startsWith('/checkpoint'))return 'checkpoint';if(location.pathname.startsWith('/login')||document.querySelector('input[name="email"],input[name="pass"]'))return 'auth_required';return location.origin==='https://www.facebook.com'?'healthy':'unavailable'})()`}})));
+    socket.addEventListener('message',event=>{try{const message=JSON.parse(String(event.data));if(message.id!==1)return;const state=message.result?.result?.value;if(!['healthy','auth_required','checkpoint'].includes(state))throw Error();finish(resolve,{state});}catch(error){finish(reject,error);}});
+    socket.addEventListener('error',()=>finish(reject,Error('CDP probe failed')));
+  });
+}
+
+export async function probeBrowserHealth({cdpUrl,ownership,fetchImpl=fetch,timeoutMs=2000,inspectPage=page=>inspectCdpPage(page,{timeoutMs})}) {
+  const state=ownership?.state;
+  if(state==='quarantined')return {state};
+  try {
+    const base=new URL(cdpUrl);if(base.protocol!=='http:'||!['127.0.0.1','localhost','[::1]'].includes(base.hostname))throw Error();
+    const response=await fetchImpl(new URL('/json/list',base),{signal:AbortSignal.timeout(timeoutMs),redirect:'error'});if(!response.ok)throw Error();
+    const pages=await response.json();if(!Array.isArray(pages))throw Error();
+    const facebook=pages.filter(item=>{try{return item?.type==='page'&&new URL(item.url).origin==='https://www.facebook.com';}catch{return false;}});
+    if(!facebook.length)return {state:'unavailable'};
+    const states=[];for(const page of facebook)states.push((await inspectPage(page)).state);
+    if(states.includes('checkpoint'))return {state:'checkpoint'};
+    if(states.includes('auth_required'))return {state:'auth_required'};
+    if(!states.includes('healthy'))return {state:'unavailable'};
+    return {state:state==='busy'?'busy':'healthy'};
+  } catch {return {state:'unavailable'};}
+}
+
 // The OS owns stale recovery. A dead holder releases flock even after SIGKILL.
 const lockHolder=`import fcntl, os, sys, select
 f=open(sys.argv[1], 'a+')

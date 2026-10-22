@@ -81,6 +81,19 @@ integration('concurrent scheduler ticks create one durable unsigned job per sour
   await assert.rejects(pool.query("UPDATE group_schedule_receipts SET state='skipped'"),/append-only/i);
 });
 
+integration('production Group scan worker consumes a scheduled job and persists its signed result',async({pool})=>{
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,1,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',1440)`);
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  await createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2']}).tick();
+  const [{createGroupScanWorker},{createGroupResultService},{signResult}]=await Promise.all([import('../src/workers/group-scan-worker.mjs'),import('../src/workers/group-results.mjs'),import('../src/channels/groups/contracts.mjs')]);
+  const keys={[keyId]:Buffer.from(key)},results=createGroupResultService(pool,{keys,signingKey:Buffer.from(key),keyId,supportedSelectorVersions:['facebook-dom-v2']});let scanned=0;
+  const worker=createGroupScanWorker({pool,workerId:'scheduled-test',keys,keyId,signingKey:Buffer.from(key),results,client:{async scan(command){scanned++;const {signature,...body}=command,now=new Date();return signResult({...body,kind:'ScanResult',issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString(),selectorVersion:'facebook-dom-v2',coverage:'partial',health:'healthy',reason:'scan_limit',cursor:null,observations:[]},{key:Buffer.from(key),keyId,now});}}});
+  assert.equal(typeof await worker.runOnce(),'string');assert.equal(scanned,1);
+  assert.equal((await pool.query("SELECT status FROM jobs WHERE kind='group.scan'")).rows[0].status,'completed');
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_scan_receipts')).rows[0].n,1);
+});
+
 integration('scheduler persists explicit refusal reasons for pauses health circuits maintenance and daily limit',async({pool})=>{
   const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
   const scheduler=createGroupScheduler({pool,signingKey:key,keyId,supportedSelectorVersions:['facebook-dom-v2']});

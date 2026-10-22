@@ -42,7 +42,7 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
       return {path,commandHash,existing};
     }
   }
-  async function deliver(input) {
+  async function deliver(input,options={}) {
     const command=plainCommand(input);if(command.kind!=='GroupReplyCommand')throw new Error('Group reply command required');
     const reservation=await reserve(command);
     if(reservation.existing) {
@@ -59,7 +59,7 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
       if(typeof senderId!=='string'||!senderId||senderId.length>200) return finish(resultEvidence(command,{state:'failed',senderId:'unknown',started,finished:clock(),code:'SENDER_UNAVAILABLE'}));
       const possible={commandHash:reservation.commandHash,state:'attempting',phase:'possible_send',senderId,attemptStartedAt:started.toISOString(),attemptDeadlineAt:command.expiresAt};
       await durableReplace(reservation.path,possible);await syncDirectory(ledgerPath);
-      const sent=await driver.sendExact(target,command.text);
+      const sent=await driver.sendExact(target,command.text,{signal:options.signal,deadline:Date.parse(command.expiresAt)});
       if(sent?.state==='sent'&&sent.visible===true&&typeof sent.remoteId==='string'&&sent.remoteId) return finish(resultEvidence(command,{state:'sent',senderId,started,finished:clock(),remoteId:sent.remoteId,code:'VISIBLE_VERIFIED'}));
       if(sent?.state==='failed'&&sent.possibleClick!==true) return finish(resultEvidence(command,{state:'failed',senderId,started,finished:clock(),code:'SEND_REJECTED'}));
       return finish(resultEvidence(command,{state:'unknown',senderId,started,finished:clock(),code:'POSSIBLE_SEND'}));

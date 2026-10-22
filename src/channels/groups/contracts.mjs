@@ -43,7 +43,7 @@ function validate(value,schema,now) {
   return parsed;
 }
 function signingKey(key) {
-  if((typeof key!=='string'&&!Buffer.isBuffer(key))||Buffer.byteLength(key)<32) throw new Error('Signing key must have at least 32 bytes');
+  if((typeof key!=='string'&&!Buffer.isBuffer(key))||Buffer.byteLength(key)!==32) throw new Error('Signing key must have exactly 32 bytes');
   return key;
 }
 function sign(value,schema,{key,keyId,now=new Date()}) {

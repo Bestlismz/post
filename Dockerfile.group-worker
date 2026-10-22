@@ -1,0 +1,19 @@
+FROM node:22-bookworm-slim
+
+ENV NODE_ENV=production DISPLAY=:99
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates chromium curl novnc openbox python3 supervisor websockify x11vnc xvfb \
+  && rm -rf /var/lib/apt/lists/*
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev
+COPY src/channels/groups ./src/channels/groups
+COPY src/group-worker ./src/group-worker
+COPY scripts/start-chromium.sh ./scripts/start-chromium.sh
+COPY supervisord.conf ./supervisord.conf
+RUN chmod 0755 ./scripts/start-chromium.sh \
+  && mkdir -p /data/chromium /data/group-operations \
+  && chown -R node:node /app /data/chromium /data/group-operations
+
+EXPOSE 3001 6081
+CMD ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]

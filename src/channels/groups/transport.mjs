@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 export const MAX_ENVELOPE_BYTES=262144;
 function signature(raw,key,version,keyId,expiresAt) {
-  if(typeof key!=='string'||Buffer.byteLength(key)<32) throw new Error('Invalid transport key');
+  if((typeof key!=='string'&&!Buffer.isBuffer(key))||Buffer.byteLength(key)!==32) throw new Error('Invalid transport key');
   return createHmac('sha256',key).update(`${version}\n${keyId}\n${expiresAt}\n`).update(raw).digest('hex');
 }
 export function transportHeaders(raw,{key,keyId,expiresAt=Date.now()+60000}) {

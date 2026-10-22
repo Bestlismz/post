@@ -18,7 +18,7 @@ COPY src/policy ./src/policy
 COPY src/config.mjs src/server.mjs src/worker.mjs src/meta-webhook.mjs src/conversation.mjs ./src/
 COPY app ./app
 COPY public ./public
-COPY scripts/create-admin.mjs scripts/migrate.mjs scripts/import-json-state.mjs scripts/provision-runtime.mjs ./scripts/
+COPY scripts/create-admin.mjs scripts/migrate.mjs scripts/import-json-state.mjs scripts/provision-runtime.mjs scripts/staging-facebook-check.mjs ./scripts/
 COPY next.config.mjs ./next.config.mjs
 RUN npm run build && chown -R node:node /app/.next
 

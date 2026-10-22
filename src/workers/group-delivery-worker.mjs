@@ -6,13 +6,15 @@ import {loadContext,assertReplyFresh} from '../inbox/service.mjs';
 import {freshnessConflictCodes,terminalPreparationCodes} from '../inbox/errors.mjs';
 import {validateReply} from '../replies/validator.mjs';
 import {evaluatePolicy} from '../policy/evaluator.mjs';
+import {enqueueJob} from '../jobs/queue.mjs';
 
 const digest=value=>createHash('sha256').update(value).digest('hex');
 const outcome=row=>({state:row.state==='attempting'?'unknown':row.state,attemptId:row.id,code:row.outcome_code??'ATTEMPT_UNRESOLVED',retrySafe:false});
 const reject=code=>{throw Object.assign(new Error(code),{code});};
 const terminalCodes=new Set([...freshnessConflictCodes,...terminalPreparationCodes,'INVALID_AUTHORIZATION','DELIVERY_STATE_CHANGED','SOURCE_UNAVAILABLE','TARGET_CHANGED','REPLY_SUPERSEDED','LOCAL_INVALID_REQUEST','FINAL_POLICY_GATE']);
 
-export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clock=()=>new Date()}) {
+export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clock=()=>new Date(),stagingSendEnabled=true,stagingAllowedGroups=null}) {
+  const stagingGroups=stagingAllowedGroups===null?null:[...new Set(stagingAllowedGroups)];
   async function claimJob(intentId=null) {
     const leaseOwner=randomUUID();
     const {rows:[job]}=await pool.query(`WITH candidate AS (
@@ -20,7 +22,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       JOIN delivery_intents d ON d.organization_id=j.organization_id AND d.id=j.payload->>'deliveryIntentId'
       JOIN group_sources s ON s.organization_id=d.organization_id AND s.id=d.group_source_id
       JOIN organizations o ON o.id=j.organization_id
-      WHERE j.kind='deliver_group_reply' AND NOT o.group_automation_paused AND NOT s.kill_switch AND NOT s.archived
+      WHERE j.kind='deliver_group_reply' AND $3::boolean AND ($4::text[] IS NULL OR s.group_id=ANY($4)) AND NOT o.group_automation_paused AND NOT s.kill_switch AND NOT s.archived
       AND NOT s.session_circuit AND NOT s.selector_circuit AND s.session_health='healthy' AND s.selector_health='healthy'
       AND ($2::text IS NULL OR j.payload->>'deliveryIntentId'=$2)
       AND ((j.status='pending' AND j.available_at<=now()) OR (j.status='running' AND j.lease_expires_at<=now()))
@@ -28,7 +30,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       AND NOT EXISTS (SELECT 1 FROM delivery_cancellations c WHERE c.organization_id=j.organization_id AND c.delivery_intent_id=j.payload->>'deliveryIntentId')
       ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE SKIP LOCKED)
       UPDATE jobs j SET status='running',lease_owner=$1,lease_expires_at=now()+interval '60 seconds',attempts=attempts+1,updated_at=now()
-      FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner,intentId]);
+      FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner,intentId,stagingSendEnabled,stagingGroups]);
     return job;
   }
   async function lockIntent(tx,intent) {
@@ -67,6 +69,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       const state=result.state,code=state==='sent'?'VISIBLE_VERIFIED':state==='failed'?'DEFINITE_REJECTION':'POSSIBLE_SEND';
       const {rows:[saved]}=await tx.query('UPDATE delivery_attempts SET state=$2,outcome_code=$3,provider_message_id=$4,finished_at=$5 WHERE id=$1 RETURNING *',[attempt.id,state,code,state==='sent'?result.remoteId:null,result.attemptFinishedAt]);
       await finishJobs(tx,intent,state==='sent'?'completed':'failed',code);
+      if(state==='unknown')await enqueueJob(tx,{organizationId:intent.organization_id,kind:'reconcile_group_reply',retrySafe:true,payload:{deliveryIntentId:intent.id}});
       if(state==='sent')await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=(SELECT work_item_id FROM reply_authorizations WHERE organization_id=$1 AND id=$2) AND status='ready'",[intent.organization_id,intent.authorization_id]);
       await appendAudit(tx,{organizationId:intent.organization_id,action:`delivery.${state}`,entityType:'delivery_intent',entityId:intent.id,details:{attemptId:attempt.id,operationId:operation.id,code,channel:'facebook_group',...(result.remoteId?{providerMessageId:result.remoteId}:{})}});
       return outcome(saved);
@@ -191,11 +194,33 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       const {rows:[attempt]}=await tx.query("UPDATE delivery_attempts SET state='unknown',outcome_code='ATTEMPT_INTERRUPTED',finished_at=now() WHERE organization_id=$1 AND delivery_intent_id=$2 AND state='attempting' AND started_at<$3 RETURNING id",[intent.organization_id,intent.id,cutoff]);
       if(!attempt)return;
       await finishJobs(tx,intent,'failed','ATTEMPT_INTERRUPTED');
+      await enqueueJob(tx,{organizationId:intent.organization_id,kind:'reconcile_group_reply',retrySafe:true,payload:{deliveryIntentId:intent.id}});
       await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.unknown',entityType:'delivery_intent',entityId:intent.id,details:{attemptId:attempt.id,code:'ATTEMPT_INTERRUPTED',channel:'facebook_group'}});
       recovered++;
     });
     return recovered;
   }
   async function runOnce(){await recoverInterruptedAttempts();const job=await claimJob();return job?deliverGroupIntent(job.payload.deliveryIntentId,job):null;}
-  return {deliverGroupIntent,reconcileGroupIntent,recoverInterruptedAttempts,runOnce};
+  async function runReconcileOnce() {
+    const leaseOwner=randomUUID();
+    const {rows:[job]}=await pool.query(`WITH candidate AS (
+      SELECT id FROM jobs WHERE kind='reconcile_group_reply'
+      AND ((status='pending' AND available_at<=now()) OR (status='running' AND retry_safe AND lease_expires_at<=now()))
+      ORDER BY available_at,created_at,id LIMIT 1 FOR UPDATE SKIP LOCKED)
+      UPDATE jobs j SET status='running',lease_owner=$1,lease_expires_at=now()+interval '60 seconds',attempts=attempts+1,updated_at=now()
+      FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner]);
+    if(!job)return null;
+    try {
+      const result=await reconcileGroupIntent(job.payload.deliveryIntentId);
+      await pool.query("UPDATE jobs SET status='completed',lease_owner=NULL,lease_expires_at=NULL,last_error=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[job.id,leaseOwner]);
+      return result;
+    } catch {
+      const status=job.attempts>=5?'failed':'pending';
+      await pool.query(`UPDATE jobs SET status=$3,lease_owner=NULL,lease_expires_at=NULL,last_error='GROUP_RECONCILIATION_FAILED',
+        available_at=CASE WHEN $3='pending' THEN now()+least(300,power(2,least(attempts,8))) * interval '1 second' ELSE available_at END,updated_at=now()
+        WHERE id=$1 AND lease_owner=$2 AND status='running'`,[job.id,leaseOwner,status]);
+      return {state:'unknown',code:'GROUP_RECONCILIATION_FAILED',retrySafe:status==='pending'};
+    }
+  }
+  return {deliverGroupIntent,reconcileGroupIntent,recoverInterruptedAttempts,runOnce,runReconcileOnce};
 }

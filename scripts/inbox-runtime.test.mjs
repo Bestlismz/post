@@ -34,6 +34,13 @@ test('worker continues polling both queues after a transient database failure wi
   assert.equal(attempts,2);assert.equal(delivered,2);assert.deepEqual(errors,['WORKER_POLL_FAILED','WORKER_POLL_FAILED']);
 });
 
+test('application worker loop polls Messenger plus Group scan delivery and reconciliation stages',async()=>{
+  const {runWorkers}=await import('../src/workers/runner.mjs');const controller=new AbortController(),calls=[];
+  const workers=['automation','meta-delivery','group-scan','group-delivery','group-reconcile'].map(name=>({async runOnce(){calls.push(name);if(name==='group-reconcile')controller.abort();return null;}}));
+  await runWorkers({workers,signal:controller.signal,pollMs:1});
+  assert.deepEqual(calls,['automation','meta-delivery','group-scan','group-delivery','group-reconcile']);
+});
+
 test('scheduler runtime isolates failures prevents overlap and stops cleanly',async()=>{
   const {runScheduler}=await import('../src/workers/runner.mjs');
   const controller=new AbortController();let calls=0,active=0,maxActive=0;const events=[];
