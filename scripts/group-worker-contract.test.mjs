@@ -270,10 +270,10 @@ test('session cancellation bounds late launch and navigation, and closes late co
   const dir=await mkdtemp(`${tmpdir()}/group-launch-abort-`);t.after(()=>rm(dir,{recursive:true,force:true}));t.after(()=>killLeaseHelper(dir).catch(()=>{}));
   let finishLaunch,started,closed=0;
   const active=new Promise(resolve=>{started=resolve;});
-  const session=createGroupSession({profilePath:dir,launchContext:()=>{started();return new Promise(resolve=>{finishLaunch=resolve;});}});
+  const session=createGroupSession({profilePath:dir,cleanupTimeoutMs:20,launchContext:()=>{started();return new Promise(resolve=>{finishLaunch=resolve;});}});
   const controller=new AbortController();
   const scan=session.withGroup(command(),()=>assert.fail('Late launch observed'),{signal:controller.signal});
-  await active;controller.abort();await assert.rejects(within(scan));
+  await active;controller.abort();await assert.rejects(within(scan),/quarantined/);
   finishLaunch({close:async()=>{closed++;}});await new Promise(resolve=>setTimeout(resolve,10));assert.equal(closed,1);
   const navigationStarted=Promise.withResolvers();
   const page={url:()=> 'about:blank',goto:()=>{navigationStarted.resolve();return new Promise(()=>{});}};
@@ -305,4 +305,73 @@ test('helper death aborts a hung observation and closes its browser before the n
   const scan=session.withGroup(command(),()=>{started();return new Promise(()=>{});});
   const stopped=assert.rejects(within(scan),/lease lost/);await active;await killLeaseHelper(dir);await stopped;
   assert.equal(closed,1);assert.equal(await within(session.withGroup(command(),async()=> 'next')),'next');
+});
+
+test('unconfirmed context and browser closure quarantines the profile until termination is confirmed',async t=>{
+  const {createGroupSession,acquireProfileLease}=await load('group-worker/session');
+  const dir=await mkdtemp(`${tmpdir()}/group-quarantine-close-`);t.after(()=>rm(dir,{recursive:true,force:true}));t.after(()=>killLeaseHelper(dir).catch(()=>{}));
+  const contextClosed=Promise.withResolvers(),browserClosed=Promise.withResolvers();
+  const page={url:()=> 'https://www.facebook.com/groups/100',locator:()=>({count:async()=>0})};
+  const session=createGroupSession({profilePath:dir,cleanupTimeoutMs:20,launchContext:async()=>({pages:()=>[page],close:()=>contextClosed.promise,browser:()=>({close:()=>browserClosed.promise})})});
+  await assert.rejects(within(session.withGroup(command(),async()=> 'observed')),/quarantined/);
+  assert.deepEqual(session.getHealth(),{state:'quarantined'});
+  await assert.rejects(session.withGroup(command(),()=>assert.fail('Quarantined observer ran')),/quarantined/);
+  const contender=acquireProfileLease(dir);t.after(async()=>{const lease=await contender.catch(()=>null);await lease?.release();});
+  await assert.rejects(contender,/leased/);
+  browserClosed.resolve();
+  for(let i=0;i<100&&session.getHealth().state!=='healthy';i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.deepEqual(session.getHealth(),{state:'healthy'});
+  const next=await acquireProfileLease(dir);await next.release();
+});
+
+test('an unresolved launch quarantines and retains its profile through late launch termination',async t=>{
+  const {createGroupSession,acquireProfileLease}=await load('group-worker/session');
+  const dir=await mkdtemp(`${tmpdir()}/group-quarantine-launch-`);t.after(()=>rm(dir,{recursive:true,force:true}));t.after(()=>killLeaseHelper(dir).catch(()=>{}));
+  const launch=Promise.withResolvers(),active=Promise.withResolvers(),closed=Promise.withResolvers();
+  const session=createGroupSession({profilePath:dir,cleanupTimeoutMs:20,launchContext:()=>{active.resolve();return launch.promise;}});
+  const controller=new AbortController();const scan=session.withGroup(command(),()=>assert.fail('Late observer ran'),{signal:controller.signal});
+  await active.promise;controller.abort();await assert.rejects(within(scan),/quarantined/);
+  assert.deepEqual(session.getHealth(),{state:'quarantined'});
+  let attempt=acquireProfileLease(dir);t.after(async()=>{const lease=await attempt.catch(()=>null);await lease?.release();});
+  await assert.rejects(attempt,/leased/);
+  await assert.rejects(session.withGroup(command(),()=>assert.fail('Quarantined launch restarted')),/quarantined/);
+  launch.resolve({close:()=>closed.promise});await new Promise(resolve=>setTimeout(resolve,30));
+  attempt=acquireProfileLease(dir);await assert.rejects(attempt,/leased/);
+  closed.resolve();
+  for(let i=0;i<100&&session.getHealth().state!=='healthy';i++)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.deepEqual(session.getHealth(),{state:'healthy'});
+  const next=await acquireProfileLease(dir);await next.release();
+});
+
+test('evaluation failure probes auth checkpoint closed and live-selector states while retaining observations',async()=>{
+  const {observeGroupPage}=await load('group-worker/observer');
+  for(const [failure,want] of [['login','auth_required'],['checkpoint','checkpoint'],['closed','expired'],['disconnected','expired'],['selector','selector_failure']]) {
+    let url='https://www.facebook.com/groups/100',pass=0,closed=false,disconnected=false;
+    const page={url:()=>url,isClosed:()=>closed,locator:()=>({count:async()=>{if(disconnected)throw new Error('Target closed');return 0;}}),evaluate:async()=>{
+      if(pass++) {if(failure==='login')url='https://www.facebook.com/login/';if(failure==='checkpoint')url='https://www.facebook.com/checkpoint/';if(failure==='closed')closed=true;if(failure==='disconnected')disconnected=true;throw new Error('Execution context was destroyed');}
+      return {selectorValid:true,hasMore:true,items:[{href:'https://www.facebook.com/groups/100/posts/900/',text:'Retained',authorLabel:'Mali'}]};
+    }};
+    const result=await observeGroupPage(page,command());
+    assert.equal(result.health,want,failure);assert.equal(result.coverage,'partial');assert.equal(result.observations[0].text,'Retained');
+    if(want==='expired')assert.equal(result.reason,'session_lost');
+  }
+});
+
+test('quarantined ownership survives across processes and kernel cleanup releases it on worker death',async t=>{
+  const {acquireProfileLease}=await load('group-worker/session');
+  const dir=await mkdtemp(`${tmpdir()}/group-quarantine-process-`);t.after(()=>rm(dir,{recursive:true,force:true}));
+  const holder=spawn(process.execPath,['--input-type=module','-e',`
+    import {createGroupSession} from ${JSON.stringify(new URL('../src/group-worker/session.mjs',import.meta.url).href)};
+    const page={url:()=> 'https://www.facebook.com/groups/100',locator:()=>({count:async()=>0})};
+    const session=createGroupSession({profilePath:${JSON.stringify(dir)},cleanupTimeoutMs:20,launchContext:async()=>({pages:()=>[page],close:()=>new Promise(()=>{})})});
+    await session.withGroup({canonicalTarget:'https://www.facebook.com/groups/100',expiresAt:new Date(Date.now()+60000).toISOString()},async()=> 'observed').catch(()=>{});
+    console.log(session.getHealth().state);
+    setInterval(()=>{},1000);
+  `],{stdio:['ignore','pipe','pipe']});
+  t.after(()=>holder.kill('SIGKILL'));
+  const [ready]=await within(once(holder.stdout,'data'),1500);assert.equal(ready.toString().trim(),'quarantined');
+  const contender=acquireProfileLease(dir);t.after(async()=>{const lease=await contender.catch(()=>null);await lease?.release();});
+  await assert.rejects(contender,/leased/);
+  holder.kill('SIGKILL');await once(holder,'exit');
+  const recovered=await acquireProfileLease(dir);await recovered.release();
 });

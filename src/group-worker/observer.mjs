@@ -70,7 +70,11 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
     const before=await checkSession();if(before)return before;
     let snapshot;
     try { snapshot=await abortable(()=>readPage(page,command.groupId),signal); }
-    catch { return signal?.aborted?batch(observations.length?'partial':'none','failed','scan_cancelled'):batch('partial','selector_failure','selector_changed'); }
+    catch {
+      if(signal?.aborted)return batch(observations.length?'partial':'none','failed','scan_cancelled');
+      const health=await checkSession();if(health)return health.health==='expired'?{...health,reason:'session_lost'}:health;
+      return batch('partial','selector_failure','selector_changed');
+    }
     if(page.url()!==command.canonicalTarget||page.isClosed?.()) {const changed=await checkSession();if(changed)return changed;}
     for(const raw of snapshot.items.slice(0,100)) {
       let ids; try{ids=identity(raw.href,command.groupId);}catch{return batch('partial','failed','page_changed');}

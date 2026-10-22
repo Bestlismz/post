@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MAX_GROUP_ID_LENGTH } from '../channels/groups/target.mjs';
-import { abortable, closeContext } from './cancellation.mjs';
+import { abortable, closeContext, settleWithin } from './cancellation.mjs';
 
 export function assertGroupTarget(target) {
   if(typeof target!=='string'||!new RegExp(`^https://www\\.facebook\\.com/groups/[0-9]{1,${MAX_GROUP_ID_LENGTH}}$`).test(target)) throw new Error('Invalid group target');
@@ -67,20 +67,25 @@ export async function acquireProfileLease(profilePath,{python='python3'}={}) {
 }
 
 export function createGroupSession({profilePath,launchContext,commandTimeoutMs=30000,cleanupTimeoutMs=200}) {
-  let busy=false;
-  return {async withGroup(command,run,{signal:parentSignal}={}) {
+  let state='healthy';
+  return {getHealth(){return {state};},async withGroup(command,run,{signal:parentSignal}={}) {
     assertGroupTarget(command.canonicalTarget);
-    if(busy) throw new Error('Profile already leased'); busy=true;
-    let lease,context;
+    if(state==='quarantined')throw new Error('Profile quarantined');
+    if(state!=='healthy') throw new Error('Profile already leased'); state='busy';
+    let lease,context,acquiring,launching;
     const controller=new AbortController(),signal=controller.signal;
     const cancel=()=>controller.abort(parentSignal.reason??new Error('Operation cancelled'));
     parentSignal?.addEventListener('abort',cancel,{once:true});if(parentSignal?.aborted)cancel();
     const timer=setTimeout(()=>controller.abort(new Error('Operation deadline exceeded')),Math.max(0,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now())));
     const lost=()=>controller.abort(lease.signal.reason);
     try {
-      lease=await abortable(()=>acquireProfileLease(profilePath),signal,lease=>lease.release());
+      if(signal.aborted)throw signal.reason;
+      acquiring=acquireProfileLease(profilePath);
+      lease=await abortable(()=>acquiring,signal);
       lease.signal.addEventListener('abort',lost,{once:true});if(lease.signal.aborted)lost();
-      context=await abortable(()=>launchContext(profilePath,{signal,timeout:Math.max(1,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now()))}),signal,context=>closeContext(context,cleanupTimeoutMs));
+      if(signal.aborted)throw signal.reason;
+      launching=Promise.resolve().then(()=>launchContext(profilePath,{signal,timeout:Math.max(1,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now()))}));
+      context=await abortable(()=>launching,signal);
       await lease.assertOwned();
       const page=await selectGroupPage(context,command.canonicalTarget,{signal});
       const health=await abortable(()=>inspectSession(page),signal);
@@ -89,8 +94,16 @@ export function createGroupSession({profilePath,launchContext,commandTimeoutMs=3
     } finally {
       clearTimeout(timer);parentSignal?.removeEventListener('abort',cancel);
       lease?.signal.removeEventListener('abort',lost);
-      try { await closeContext(context,cleanupTimeoutMs); }
-      finally {try{await lease?.release();}finally{busy=false;}}
+      const cleanup=(async()=>{
+        const owner=lease??await acquiring?.catch(()=>null);
+        const browserContext=context??await launching?.catch(()=>null);
+        await closeContext(browserContext,cleanupTimeoutMs);
+        await owner?.release();
+        state='healthy';return true;
+      })().catch(()=>{state='quarantined';return false;});
+      if(!await settleWithin(cleanup,cleanupTimeoutMs*2+220,false)) {
+        state='quarantined';throw new Error('Profile quarantined');
+      }
     }
   }};
 }

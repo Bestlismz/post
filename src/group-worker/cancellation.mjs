@@ -17,9 +17,20 @@ export async function settleWithin(promise,ms,fallback=null) {
   finally {clearTimeout(timer);}
 }
 
-export async function closeContext(context,ms=200) {
-  if(!context)return;
-  const pending=Promise.resolve().then(()=>context.close());
-  const closed=await settleWithin(pending.then(()=>true),ms,false);
-  if(!closed)await settleWithin(Promise.resolve().then(()=>context.browser?.()?.close()),ms);
+export function closeContext(context,ms=200) {
+  if(!context)return Promise.resolve();
+  return new Promise(resolve=>{
+    let fallbackStarted=false;
+    const confirmed=()=>{clearTimeout(timer);resolve();};
+    const fallback=()=>{
+      if(fallbackStarted)return;fallbackStarted=true;
+      Promise.resolve().then(()=>{
+        const browser=context.browser?.();
+        if(typeof browser?.close!=='function')return;
+        return Promise.resolve(browser.close()).then(confirmed);
+      }).catch(()=>{});
+    };
+    const timer=setTimeout(fallback,ms);
+    Promise.resolve().then(()=>context.close()).then(confirmed,fallback);
+  });
 }
