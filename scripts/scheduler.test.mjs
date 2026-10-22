@@ -48,6 +48,23 @@ test('scheduler deadline releases a database client acquired after the tick alre
   await new Promise(resolve=>setTimeout(resolve,40));assert.equal(released,1);
 });
 
+test('a blocked rollback is bounded and destroyed without masking the operational error',async()=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs'),primary=Object.assign(Error('primary sql failure'),{code:'XX001'});const queries=[],releases=[];
+  const client={query(query){const text=typeof query==='string'?query:query.text;queries.push(text);if(text.includes('clock_timestamp'))return new Promise((_,reject)=>setTimeout(()=>reject(primary),60));if(text==='ROLLBACK')return new Promise(()=>{});return Promise.resolve({rows:[]});},release(error){releases.push(error);}};
+  const scheduler=createGroupScheduler({pool:{connect:async()=>client},supportedSelectorVersions:['facebook-dom-v2'],tickTimeoutMs:100});const started=performance.now();
+  const outcome=await Promise.race([scheduler.tick().then(()=>({resolved:true}),error=>({error})),new Promise(resolve=>setTimeout(()=>resolve({hung:true}),250))]);
+  assert.equal(outcome.error,primary);assert.ok(performance.now()-started<180);assert.deepEqual(releases,[true]);assert.equal(queries.some(query=>/INSERT/u.test(query)),false);
+});
+
+test('signal during rollback wins promptly and destroys the connection without an orphan query',async()=>{
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs'),primary=Object.assign(Error('primary sql failure'),{code:'XX001'}),signalError=Error('shutdown');let rollbackStarted;const rollback=new Promise(resolve=>rollbackStarted=resolve),queries=[],releases=[];
+  const client={query(query){const text=typeof query==='string'?query:query.text;queries.push(text);if(text.includes('clock_timestamp'))return Promise.reject(primary);if(text==='ROLLBACK'){rollbackStarted();return new Promise(()=>{});}return Promise.resolve({rows:[]});},release(error){releases.push(error);}};
+  const scheduler=createGroupScheduler({pool:{connect:async()=>client},supportedSelectorVersions:['facebook-dom-v2'],tickTimeoutMs:1000}),controller=new AbortController(),started=performance.now();
+  const tick=scheduler.tick({signal:controller.signal});await rollback;controller.abort(signalError);
+  const outcome=await Promise.race([tick.then(()=>({resolved:true}),error=>({error})),new Promise(resolve=>setTimeout(()=>resolve({hung:true}),200))]);
+  assert.equal(outcome.error,signalError);assert.ok(performance.now()-started<150);assert.deepEqual(releases,[true]);assert.equal(queries.some(query=>/INSERT/u.test(query)),false);
+});
+
 integration('concurrent scheduler ticks create one durable unsigned job per source slot',async({pool})=>{
   await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
     VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',20)`);

@@ -4,6 +4,7 @@ import {enqueueJob} from '../jobs/queue.mjs';
 
 const weekdays=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const timePattern=/^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const connectionFatalErrors=new WeakSet();
 
 export function groupSchedulerConfig(env=process.env) {
   const keyId=env.GROUP_COMMAND_KEY_ID,raw=env.GROUP_COMMAND_KEYS;
@@ -85,13 +86,20 @@ function clientTimedQuery(tx,budget,args) {
   return typeof query==='string'?tx.query({text:query,values,query_timeout}):tx.query({...query,query_timeout});
 }
 async function clientDeadlineQuery(tx,deadline,signal,args) {
+  const budget=checkDeadline(signal,deadline),pending=Promise.resolve().then(()=>clientTimedQuery(tx,budget,args));let timer,onAbort;
+  const boundary=new Promise((_,reject)=>{
+    timer=setTimeout(()=>{const error=timeoutError();connectionFatalErrors.add(error);reject(error);},budget);
+    if(signal) {onAbort=()=>{const error=abortError(signal);connectionFatalErrors.add(error);reject(error);};signal.addEventListener('abort',onAbort,{once:true});if(signal.aborted)onAbort();}
+  });
   try {
-    const result=await clientTimedQuery(tx,checkDeadline(signal,deadline),args);checkDeadline(signal,deadline);return result;
+    const result=await Promise.race([pending,boundary]);checkDeadline(signal,deadline);return result;
   } catch(error) {
-    if(signal?.aborted) {const aborted=abortError(signal);aborted.destroyConnection=true;throw aborted;}
-    if(error?.message==='Query read timeout'||performance.now()>=deadline) {const timeout=timeoutError();timeout.destroyConnection=true;throw timeout;}
+    pending.catch(()=>{});
+    if(signal?.aborted) {const aborted=abortError(signal);connectionFatalErrors.add(aborted);throw aborted;}
+    if(connectionFatalErrors.has(error))throw error;
+    if(error?.message==='Query read timeout'||performance.now()>=deadline) {const timeout=timeoutError();connectionFatalErrors.add(timeout);throw timeout;}
     throw error;
-  }
+  } finally {clearTimeout(timer);if(onAbort)signal.removeEventListener('abort',onAbort);}
 }
 async function boundedQuery(tx,deadline,signal,...args) {
   const budget=Math.max(1,Math.floor(checkDeadline(signal,deadline)));
@@ -99,16 +107,19 @@ async function boundedQuery(tx,deadline,signal,...args) {
   return clientDeadlineQuery(tx,deadline,signal,args);
 }
 async function boundedTransaction(pool,deadline,signal,fn) {
-  const tx=await acquireClient(pool,deadline,signal);let releaseError,destroyConnection=false;
+  const tx=await acquireClient(pool,deadline,signal);let destroyConnection=false;
   try {
     await clientDeadlineQuery(tx,deadline,signal,['BEGIN']);
     const bounded={query:(...args)=>boundedQuery(tx,deadline,signal,...args)};
     const result=await fn(bounded);checkDeadline(signal,deadline);await boundedQuery(tx,deadline,signal,'COMMIT');return result;
   } catch(error) {
-    destroyConnection=error?.destroyConnection===true;
-    if(!destroyConnection)try {await tx.query('ROLLBACK');} catch(rollbackError) {releaseError=rollbackError;}
-    throw error;
-  } finally {tx.release(destroyConnection||releaseError);}
+    let primary=error;destroyConnection=connectionFatalErrors.has(error);
+    if(!destroyConnection) {
+      try {await clientDeadlineQuery(tx,deadline,signal,['ROLLBACK']);}
+      catch {destroyConnection=true;if(signal?.aborted)primary=abortError(signal);}
+    }
+    throw primary;
+  } finally {tx.release(destroyConnection);}
 }
 
 export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSize=50,tickTimeoutMs=30000}) {
