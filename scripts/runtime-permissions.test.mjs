@@ -38,6 +38,8 @@ test("runtime role supports authenticated API writes but cannot administer schem
     await assert.rejects(runtime.query("CREATE TABLE forbidden (id int)"), (error) => error.code === "42501");
     await assert.rejects(runtime.query("UPDATE schema_migrations SET checksum='changed'"), (error) => error.code === "42501");
     await assert.rejects(runtime.query("SET session_replication_role='replica'"), (error) => error.code === "42501");
+    await assert.rejects(runtime.query("SELECT envelope FROM meta_credentials"), (error) => error.code === "42501");
+    await assert.rejects(runtime.query("DELETE FROM meta_credentials"), (error) => error.code === "42501");
     const app = express();
     app.use(express.json());
     app.use(createApplicationRouter({ pool: runtime, config: { appOrigin: "https://radar.example", nodeEnv: "production" } }));
@@ -47,6 +49,15 @@ test("runtime role supports authenticated API writes but cannot administer schem
     const login = await fetch(base + "/api/auth/login", { method: "POST", headers: { Origin: "https://radar.example", "Content-Type": "application/json" }, body: JSON.stringify({ email: "runtime@example.com", password: "long-password-123" }) });
     assert.equal(login.status, 200);
     const session = await login.json();
+    const { createMetaConnection } = await import("../src/channels/meta/oauth.mjs");
+    const meta = createMetaConnection({ pool: runtime, config: { appId: "app", appSecret: "private", redirectUri: "https://radar.example/settings/meta/callback", graphVersion: "v24.0", keyVersion: "one", keys: { one: Buffer.alloc(32, 1) } } });
+    const begun = await meta.beginMetaConnection(session.user);
+    assert.equal(new URL(begun.authorizationUrl).hostname, "www.facebook.com");
+    const { createMetaCredentialRepository } = await import("../src/channels/meta/credentials.mjs");
+    const credentials = createMetaCredentialRepository({ pool: runtime, keys: { one: Buffer.alloc(32, 1) }, keyVersion: "one" });
+    await credentials.store({ organizationId: "org_default", actorId: session.user.id, id: "runtime-credential", kind: "pending", value: { pages: [] } });
+    await credentials.withCredential("org_default", "runtime-credential", (value) => assert.deepEqual(value.pages, []));
+    await credentials.remove("org_default", "runtime-credential");
     const created = await fetch(base + "/api/projects", { method: "POST", headers: { Origin: "https://radar.example", "Content-Type": "application/json", Cookie: login.headers.get("set-cookie").split(";")[0], "X-CSRF-Token": session.csrfToken, "Idempotency-Key": randomUUID() }, body: JSON.stringify({ name: "Runtime project" }) });
     assert.equal(created.status, 201);
     const project = await created.json();

@@ -8,6 +8,8 @@ import { createPool } from "./db/pool.mjs";
 import { createApplicationRouter } from "./http/auth-routes.mjs";
 import { errorHandler } from "./http/boundary.mjs";
 import { createMetaRouter } from "./http/meta-routes.mjs";
+import { createMetaConnectionRouter } from "./http/meta-connection-routes.mjs";
+import { createMetaConnection, metaConnectionConfig } from "./channels/meta/oauth.mjs";
 
 const config = loadConfig();
 const pool = createPool(config);
@@ -20,6 +22,7 @@ app.disable("x-powered-by");
 app.use(createMetaRouter({ pool, organizationId: process.env.META_ORGANIZATION_ID, pageId: process.env.META_PAGE_ID, appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
 app.use(express.json({ limit: "32kb" }));
 app.use(createApplicationRouter({ pool, config }));
+app.use(createMetaConnectionRouter({ pool, config, connection: createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env }) }));
 app.get("/health", (_request, response) => response.json({ ok: true }));
 app.use(["/api", "/fixture", "/novnc"], (_request, response) => response.status(404).json({ error: "Resource not found", fieldErrors: {} }));
 app.use(async (request, response) => {

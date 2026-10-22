@@ -19,6 +19,8 @@ const grants = {
   conversations: "SELECT, INSERT, UPDATE (processing_revision, updated_at)",
   messages: "SELECT, INSERT",
   work_items: "SELECT, INSERT",
+  meta_oauth_states: "SELECT, INSERT, UPDATE (used_at)",
+  meta_page_sources: "SELECT, INSERT, UPDATE (name, health, expires_at, updated_at)",
 };
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 
@@ -51,6 +53,9 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     await client.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${quote(context.schema)} FROM ${quote(role)}`);
     for (const [table, permissions] of Object.entries(grants)) {
       await client.query(`GRANT ${permissions} ON TABLE ${quote(context.schema)}.${quote(table)} TO ${quote(role)}`);
+    }
+    for (const signature of ["meta_credential_read(text,text)", "meta_credential_write(text,text,text,text,jsonb,timestamptz)", "meta_credential_delete(text,text)"]) {
+      await client.query(`GRANT EXECUTE ON FUNCTION ${quote(context.schema)}.${signature} TO ${quote(role)}`);
     }
     await client.query(`REVOKE ALL ON ALL SEQUENCES IN SCHEMA ${quote(context.schema)} FROM ${quote(role)}`);
     await client.query(`GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${quote(context.schema)} TO ${quote(role)}`);
