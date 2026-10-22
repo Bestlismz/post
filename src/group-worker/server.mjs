@@ -36,7 +36,7 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
       let body;
       if(command.kind==='ScanCommand') body={...common,...batch,kind:'ScanResult'};
       else body={...common,kind:command.kind==='GroupReplyCommand'?'GroupReplyResult':'ReconcileResult',targetId:command.targetId,textHash:command.textHash,
-        senderId:batch.senderId,attemptStartedAt:batch.attemptStartedAt,attemptFinishedAt:batch.attemptFinishedAt,evidenceHash:batch.evidenceHash,remoteId:batch.remoteId,state:batch.state};
+        ...(command.kind==='ReconcileCommand'?{attemptOperationId:command.attemptOperationId}:{}),senderId:batch.senderId,attemptStartedAt:batch.attemptStartedAt,attemptFinishedAt:batch.attemptFinishedAt,evidenceHash:batch.evidenceHash,remoteId:batch.remoteId,state:batch.state};
       const result=signResult(body,{key,keyId});
       res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(result));
     } catch(error) { if(!res.destroyed) {if(!res.headersSent) res.writeHead(error.status===413?413:503).end('Worker unavailable'); else res.end();} }

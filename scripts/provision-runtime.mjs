@@ -26,8 +26,8 @@ const grants = {
   delivery_intents: "SELECT, INSERT, UPDATE (id)",
   delivery_attempts: "SELECT, INSERT, UPDATE (state, outcome_code, provider_message_id, finished_at)",
   delivery_cancellations: "SELECT, INSERT",
-  group_delivery_attempts: "SELECT, INSERT",
-  group_send_receipts: "SELECT, INSERT",
+  group_delivery_attempts: "SELECT",
+  group_send_receipts: "SELECT",
   meta_oauth_states: "SELECT, INSERT, UPDATE (used_at)",
   meta_page_sources: "SELECT, INSERT, UPDATE (name, health, expires_at, updated_at)",
   group_sources: "SELECT, INSERT, UPDATE (mode, allow_listed, policy, kill_switch, archived, revision, updated_at)",
@@ -77,6 +77,7 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
       const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':
         profile==='worker' && table==='group_sources'?'SELECT, UPDATE (session_health, selector_health, selector_version, session_circuit, selector_circuit, selector_failures, last_result_order, updated_at)':
         profile==='worker' && ['group_scan_receipts','group_observations'].includes(table)?'SELECT, INSERT':
+        profile==='worker' && ['group_delivery_attempts','group_send_receipts'].includes(table)?'SELECT, INSERT':
         profile==='worker' && table==='group_targets'?'SELECT, INSERT, UPDATE (observation_id, operation_order)':
         profile==='worker' && ['projects','units'].includes(table)?'SELECT, UPDATE (id)':
         profile==='worker' && table==='organizations'?'SELECT, UPDATE (id)':

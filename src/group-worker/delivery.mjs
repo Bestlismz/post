@@ -47,31 +47,39 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
     const reservation=await reserve(command);
     if(reservation.existing) {
       if(reservation.existing.result)return reservation.existing.result;
-      const now=clock();return resultEvidence(command,{state:'unknown',senderId:reservation.existing.senderId??'unknown',started:now,finished:now,code:'ATTEMPT_INTERRUPTED'});
+      const now=clock(),result=resultEvidence(command,{state:'unknown',senderId:reservation.existing.senderId??'unknown',started:new Date(reservation.existing.attemptStartedAt??now),finished:new Date(reservation.existing.attemptFinishedAt??now),code:'ATTEMPT_INTERRUPTED'});
+      await durableReplace(reservation.path,{...reservation.existing,state:'unknown',phase:'terminal',attemptFinishedAt:result.attemptFinishedAt,result});await syncDirectory(ledgerPath);return result;
     }
     const started=clock();let senderId='unknown';
-    const finish=async result=>{await durableReplace(reservation.path,{commandHash:reservation.commandHash,state:result.state,senderId,result});await syncDirectory(ledgerPath);return result;};
+    const finish=async result=>{await durableReplace(reservation.path,{commandHash:reservation.commandHash,state:result.state,phase:'terminal',senderId,attemptStartedAt:result.attemptStartedAt,attemptFinishedAt:result.attemptFinishedAt,result});await syncDirectory(ledgerPath);return result;};
     try {
       const target=await driver.locateExactTarget(command);
       if(target?.canonicalTarget!==command.canonicalTarget||target?.targetId!==command.targetId) return finish(resultEvidence(command,{state:'failed',senderId,started,finished:clock(),code:'TARGET_MISMATCH'}));
       senderId=await driver.identifySender(command);
       if(typeof senderId!=='string'||!senderId||senderId.length>200) return finish(resultEvidence(command,{state:'failed',senderId:'unknown',started,finished:clock(),code:'SENDER_UNAVAILABLE'}));
+      const possible={commandHash:reservation.commandHash,state:'attempting',phase:'possible_send',senderId,attemptStartedAt:started.toISOString(),attemptDeadlineAt:command.expiresAt};
+      await durableReplace(reservation.path,possible);await syncDirectory(ledgerPath);
       const sent=await driver.sendExact(target,command.text);
       if(sent?.state==='sent'&&sent.visible===true&&typeof sent.remoteId==='string'&&sent.remoteId) return finish(resultEvidence(command,{state:'sent',senderId,started,finished:clock(),remoteId:sent.remoteId,code:'VISIBLE_VERIFIED'}));
       if(sent?.state==='failed'&&sent.possibleClick!==true) return finish(resultEvidence(command,{state:'failed',senderId,started,finished:clock(),code:'SEND_REJECTED'}));
       return finish(resultEvidence(command,{state:'unknown',senderId,started,finished:clock(),code:'POSSIBLE_SEND'}));
     } catch(error) {
+      if(error?.abrupt)throw error;
       return finish(resultEvidence(command,{state:error?.possibleClick?'unknown':'failed',senderId,started,finished:clock(),code:error?.possibleClick?'POSSIBLE_SEND':'SEND_REJECTED'}));
     }
   }
   async function reconcile(input) {
     const command=plainCommand(input);if(command.kind!=='ReconcileCommand')throw new Error('Reconcile command required');
+    const attempt=await readRecord(pathFor(ledgerPath,command.attemptOperationId));
+    const senderId=attempt?.senderId??command.senderId??await driver.identifySender?.(command);
+    if(typeof senderId!=='string'||!senderId)throw new Error('Attempt sender unavailable');
+    const attemptStartedAt=attempt?.attemptStartedAt??command.attemptStartedAt,attemptFinishedAt=attempt?.attemptFinishedAt??command.attemptFinishedAt;
     const candidates=await driver.findReplyEvidence(command);
-    const start=Date.parse(command.attemptStartedAt),finish=Date.parse(command.attemptFinishedAt);
-    const match=Array.isArray(candidates)&&candidates.find(item=>item?.canonicalTarget===command.canonicalTarget&&item?.targetId===command.targetId&&item?.senderId===command.senderId&&
+    const start=Date.parse(attemptStartedAt),finish=Date.parse(attemptFinishedAt);
+    const match=Array.isArray(candidates)&&candidates.find(item=>item?.canonicalTarget===command.canonicalTarget&&item?.targetId===command.targetId&&item?.senderId===senderId&&
       typeof item.text==='string'&&digest(item.text)===command.textHash&&Number.isFinite(Date.parse(item.observedAt))&&Date.parse(item.observedAt)>=start&&Date.parse(item.observedAt)<=finish);
     const now=clock(),state=match?'sent':'not_found',remoteId=match?.remoteId??null;
-    const body={...common(command,now),kind:'ReconcileResult',state,senderId:command.senderId,attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,remoteId};
+    const body={...common(command,now),kind:'ReconcileResult',attemptOperationId:command.attemptOperationId,state,senderId,attemptStartedAt,attemptFinishedAt,remoteId};
     body.evidenceHash=digest(canonicalSerialize([body.canonicalTarget,body.targetId,body.senderId,body.textHash,body.attemptStartedAt,body.attemptFinishedAt,body.remoteId,body.state]));
     return body;
   }

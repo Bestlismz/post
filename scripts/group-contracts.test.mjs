@@ -34,7 +34,7 @@ test('reply command preserves exact text and verifies its hash without admitting
   const signed=signCommand(reply,options); assert.equal(verifyCommand(signed,verify).text,text);
   assert.throws(()=>signCommand({...reply,textHash:'0'.repeat(64)},options),/hash/i);
   assert.throws(()=>signCommand({...reply,inventory:[{rent:100}]},options));
-  const reconcile={...base,kind:'ReconcileCommand',targetId:'post-1',textHash:reply.textHash,senderId:'sender-1',attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt};
+  const reconcile={...base,kind:'ReconcileCommand',attemptOperationId:'reply-op',targetId:'post-1',textHash:reply.textHash,senderId:'sender-1',attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt};
   assert.equal(verifyCommand(signCommand(reconcile,options),verify).kind,'ReconcileCommand');
 });
 test('signed results bind observations and delivery evidence to operation and destination',()=>{
@@ -45,7 +45,7 @@ test('signed results bind observations and delivery evidence to operation and de
   assert.throws(()=>signResult({...scan,observations:[{...scan.observations[0],observedAt:'2026-10-22T13:00:00.000Z'}]},options),/time/i);
   const result={...base,kind:'GroupReplyResult',targetId:'post-1',state:'unknown',senderId:'sender',textHash:'a'.repeat(64),attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt,evidenceHash:'b'.repeat(64),remoteId:null};
   assert.equal(verifyResult(signResult(result,options),verify).state,'unknown');
-  const reconcile={...result,kind:'ReconcileResult',state:'not_found'};
+  const reconcile={...result,kind:'ReconcileResult',attemptOperationId:'reply-op',state:'not_found'};
   assert.equal(verifyResult(signResult(reconcile,options),verify).state,'not_found');
 });
 

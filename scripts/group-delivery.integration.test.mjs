@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {createHash, randomUUID} from 'node:crypto';
-import {mkdtemp, rm} from 'node:fs/promises';
+import {mkdtemp, readFile, readdir, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import test from 'node:test';
@@ -50,10 +50,31 @@ test('browser delivery classifies pre-click rejection as failed and a possible c
   } finally {await rm(directory,{recursive:true,force:true});}
 });
 
+test('browser ledger durably records sender and real attempt bounds before a possible click',async()=>{
+  const {createGroupDeliveryBoundary}=await import('../src/group-worker/delivery.mjs');
+  const directory=await mkdtemp(join(tmpdir(),'group-abrupt-'));let sends=0;
+  const command=baseCommand({operationId:'abrupt'});
+  try {
+    const crashing=createGroupDeliveryBoundary({ledgerPath:directory,clock:()=>instant,driver:{
+      locateExactTarget:async()=>({canonicalTarget:command.canonicalTarget,targetId:command.targetId}),identifySender:async()=> 'sender-real',
+      sendExact:async()=>{sends++;const [name]=await readdir(directory);const record=JSON.parse(await readFile(join(directory,name),'utf8'));
+        assert.equal(record.phase,'possible_send');assert.equal(record.senderId,'sender-real');assert.equal(record.attemptStartedAt,instant.toISOString());
+        const error=Error('abrupt process death');error.abrupt=true;throw error;},
+    }});
+    await assert.rejects(crashing.deliver(command),/abrupt/);
+    const restarted=createGroupDeliveryBoundary({ledgerPath:directory,clock:()=>new Date('2026-10-22T12:00:10.000Z'),driver:{sendExact:async()=>{sends++;},findReplyEvidence:async()=>[{canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:'sender-real',text:command.text,observedAt:'2026-10-22T12:00:05.000Z',remoteId:'remote-abrupt'}]}});
+    const recovered=await restarted.deliver(command);
+    assert.equal(recovered.state,'unknown');assert.equal(recovered.senderId,'sender-real');assert.equal(recovered.attemptStartedAt,instant.toISOString());assert.equal(sends,1);
+    const reconcile={...baseCommand({kind:'ReconcileCommand',operationId:'reconcile-abrupt',text:undefined}),attemptOperationId:'abrupt',senderId:recovered.senderId,attemptStartedAt:recovered.attemptStartedAt,attemptFinishedAt:recovered.attemptFinishedAt};delete reconcile.text;
+    const evidence=await restarted.reconcile(reconcile);
+    assert.equal(evidence.state,'sent');assert.equal(evidence.remoteId,'remote-abrupt');assert.equal(evidence.senderId,'sender-real');
+  } finally {await rm(directory,{recursive:true,force:true});}
+});
+
 test('browser reconciliation requires destination, target, sender, attempt time, and exact content',async()=>{
   const {createGroupDeliveryBoundary}=await import('../src/group-worker/delivery.mjs');
   const directory=await mkdtemp(join(tmpdir(),'group-reconcile-'));
-  const command={...baseCommand({kind:'ReconcileCommand',operationId:'reconcile-1',text:undefined}),senderId:'sender-1',attemptStartedAt:'2026-10-22T11:59:00.000Z',attemptFinishedAt:'2026-10-22T12:00:00.000Z'};
+  const command={...baseCommand({kind:'ReconcileCommand',operationId:'reconcile-1',text:undefined}),attemptOperationId:'attempt-1',senderId:'sender-1',attemptStartedAt:'2026-10-22T11:59:00.000Z',attemptFinishedAt:'2026-10-22T12:00:00.000Z'};
   delete command.text;
   try {
     let candidates=[];
@@ -93,10 +114,12 @@ async function databaseFixture(fn) {
     await pool.query("INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision) VALUES($1,'org_default',$2,$3,1)",[workItemId,conversationId,messageId]);
     await pool.query("INSERT INTO jobs(id,organization_id,kind,payload,retry_safe) VALUES('analysis-job','org_default','analyze_group_work_item',$1,true)",[JSON.stringify({workItemId,conversationId,messageId,processingRevision:1})]);
     const actor={id:'operator',role:'operator',organizationId:'org_default'};
-    await fn({pool,actor,workItemId,conversationId,observationId});
+    await fn({pool,admin,schema,actor,workItemId,conversationId,observationId});
   } finally {await pool?.end();await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);await admin.end();}
 }
 const dbtest=(name,fn)=>test(name,{skip:!process.env.TEST_DATABASE_URL},()=>databaseFixture(fn));
+const failCommitOnConnection=(pool,target)=>{let connections=0;return {query:(...args)=>pool.query(...args),connect:async()=>{const client=await pool.connect(),number=++connections;return {release:(...args)=>client.release(...args),query:async(...args)=>{const result=await client.query(...args);if(number===target&&args[0]==='COMMIT')throw Error('lost COMMIT acknowledgement');return result;}};}};};
+const failSettlementOnConnection=(pool,target)=>{let connections=0;return {query:(...args)=>pool.query(...args),connect:async()=>{const client=await pool.connect(),number=++connections;return {release:(...args)=>client.release(...args),query:async(...args)=>{if(number===target&&String(args[0]).startsWith('INSERT INTO group_send_receipts'))throw Error('settlement write failed');return client.query(...args);}};}};};
 
 dbtest('group analysis uses DB-owned format and source policy, then authorization creates the shared immutable intent ledger',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');
@@ -158,4 +181,81 @@ dbtest('group delivery re-evaluates DB policy at the final dispatch instant',asy
   const service=createInboxService({pool,clock:()=>instant});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
   const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;throw Error('must not dispatch');}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>new Date('2026-10-23T12:00:00.000Z')});
   const result=await worker.deliverGroupIntent(intent.id);assert.equal(result.state,'cancelled');assert.equal(result.code,'FINAL_POLICY_GATE');assert.equal(calls,0);
+});
+
+dbtest('aged interrupted attempts become audited terminal unknown without dispatch and direct rerun cannot reclaim them',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);
+  const command=signCommand({...baseCommand({operationId:'interrupted',sourceId:'group-source'}),text:reply.content.text,textHash:hash(reply.content.text)},{key,keyId,now:instant});
+  await pool.query("INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES('interrupted','org_default','group-source','GroupReplyCommand',$1)",[command]);
+  await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at) VALUES('attempt-interrupted','org_default',$1,'attempting',now()-interval '3 minutes')",[intent.id]);
+  await pool.query(`INSERT INTO group_delivery_attempts(organization_id,delivery_intent_id,delivery_attempt_id,operation_id,target_id,text_hash,canonical_target,attempt_started_at,attempt_deadline_at)
+    VALUES('org_default',$1,'attempt-interrupted','interrupted','comment:456:789',$2,'https://www.facebook.com/groups/123',now()-interval '3 minutes',now()-interval '2 minutes')`,[intent.id,hash(reply.content.text)]);
+  let calls=0;const worker=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId});
+  assert.equal(await worker.recoverInterruptedAttempts(),1);
+  assert.deepEqual((await pool.query("SELECT state,outcome_code FROM delivery_attempts WHERE id='attempt-interrupted'")).rows[0],{state:'unknown',outcome_code:'ATTEMPT_INTERRUPTED'});
+  assert.deepEqual((await pool.query("SELECT status,last_error FROM jobs WHERE kind='deliver_group_reply'")).rows[0],{status:'failed',last_error:'ATTEMPT_INTERRUPTED'});
+  assert.equal((await pool.query("SELECT count(*)::int n FROM audit_entries WHERE action='delivery.unknown' AND entity_id=$1",[intent.id])).rows[0].n,1);
+  assert.equal((await worker.deliverGroupIntent(intent.id)).state,'unknown');assert.equal(calls,0);
+});
+
+dbtest('lost gate COMMIT acknowledgement is recovered to terminal unknown without dispatch',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
+  const failing=createGroupDeliveryWorker({pool:failCommitOnConnection(pool,2),client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const unresolved=await failing.deliverGroupIntent(intent.id);assert.equal(unresolved.state,'unknown');assert.equal(calls,0,'a lost gate commit acknowledgement must never dispatch');
+  assert.equal((await pool.query('SELECT state FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].state,'attempting');
+  await pool.query("UPDATE delivery_attempts SET started_at=$2 WHERE delivery_intent_id=$1",[intent.id,new Date(instant-180000)]);
+  const recovered=createGroupDeliveryWorker({pool,client:{reply:async()=>{calls++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const final=await recovered.deliverGroupIntent(intent.id);assert.equal(final.state,'unknown');assert.equal(final.code,'ATTEMPT_INTERRUPTED');assert.equal(calls,0);
+});
+
+dbtest('failed outcome settlement leaves an aging attempt that direct rerun safely finalizes',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let calls=0;
+  const client={reply:async command=>{calls++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'8'.repeat(64),remoteId:'remote-lost-settlement'},{key,keyId,now:instant});}};
+  const failing=createGroupDeliveryWorker({pool:failSettlementOnConnection(pool,3),client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const unresolved=await failing.deliverGroupIntent(intent.id);assert.equal(unresolved.state,'unknown');assert.equal(calls,1);
+  assert.equal((await pool.query('SELECT state FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0].state,'attempting');
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_send_receipts WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0,'rolled-back settlement evidence is not trusted');
+  await pool.query("UPDATE delivery_attempts SET started_at=$2 WHERE delivery_intent_id=$1",[intent.id,new Date(instant-180000)]);
+  const recovered=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+  const final=await recovered.deliverGroupIntent(intent.id);assert.equal(final.state,'unknown');assert.equal(final.code,'ATTEMPT_INTERRUPTED');assert.equal(calls,1,'direct rerun must not redispatch');
+});
+
+dbtest('lost or unsigned transport outcome keeps an untrusted reconciliation seed and can reconcile without resend',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);let replies=0,now=instant;
+  const client={reply:async()=>{replies++;throw Error('lost signed response');},reconcile:async command=>{
+    assert.equal(command.senderId,null);assert.equal(typeof command.attemptOperationId,'string');
+    return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>name!=='signature')),kind:'ReconcileResult',state:'sent',senderId:'sender-recovered',attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'9'.repeat(64),remoteId:'remote-recovered'},{key,keyId,now});
+  }};
+  const worker=createGroupDeliveryWorker({pool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>now});
+  assert.equal((await worker.deliverGroupIntent(intent.id)).state,'unknown');
+  const seed=(await pool.query('SELECT * FROM group_delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rows[0];
+  assert.equal(seed.canonical_target,'https://www.facebook.com/groups/123');assert.equal(seed.sender_id,null);assert.ok(seed.attempt_started_at);assert.ok(seed.attempt_deadline_at);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_send_receipts WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0,'unsigned failure is not trusted receipt evidence');
+  now=new Date('2026-10-22T12:06:00.000Z');
+  assert.equal((await worker.reconcileGroupIntent(intent.id)).state,'sent');assert.equal(replies,1);
+});
+
+dbtest('only the restricted worker role can write immutable group attempt evidence',async({pool,admin,schema,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');const {provisionRuntime}=await import('./provision-runtime.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);
+  const suffix=randomUUID().replaceAll('-','').slice(0,12),workerRole=`gd_worker_${suffix}`,webRole=`gd_web_${suffix}`,password='runtime-test-password-123';let workerPool,webPool;
+  try {
+    await provisionRuntime(pool,{role:workerRole,password,profile:'worker'});await provisionRuntime(pool,{role:webRole,password,profile:'web'});
+    const runtimeUrl=role=>{const url=new URL(process.env.TEST_DATABASE_URL);url.username=role;url.password=password;url.searchParams.set('options',`-c search_path=${schema}`);return url.href;};
+    workerPool=createPool({databaseUrl:runtimeUrl(workerRole)});webPool=createPool({databaseUrl:runtimeUrl(webRole)});
+    const client={reply:async command=>signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-role',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'7'.repeat(64),remoteId:'remote-role'},{key,keyId,now:instant})};
+    const worker=createGroupDeliveryWorker({pool:workerPool,client,keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant});
+    assert.equal((await worker.deliverGroupIntent(intent.id)).state,'sent','worker role writes attempt seed and signed receipt');
+    assert.equal((await webPool.query('SELECT count(*)::int n FROM group_delivery_attempts')).rows[0].n,1);assert.equal((await webPool.query('SELECT count(*)::int n FROM group_send_receipts')).rows[0].n,1);
+    for(const statement of ['INSERT INTO group_delivery_attempts DEFAULT VALUES','UPDATE group_delivery_attempts SET sender_id=sender_id','DELETE FROM group_delivery_attempts','INSERT INTO group_send_receipts DEFAULT VALUES','UPDATE group_send_receipts SET state=state','DELETE FROM group_send_receipts']) {
+      await assert.rejects(webPool.query(statement),error=>error.code==='42501',statement);
+    }
+  } finally {
+    await workerPool?.end();await webPool?.end();
+    for(const role of [workerRole,webRole]) {await admin.query(`DROP OWNED BY "${role}"`);await admin.query(`DROP ROLE "${role}"`);}
+  }
 });

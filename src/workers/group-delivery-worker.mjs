@@ -70,6 +70,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
   async function deliverGroupIntent(intentId,claim) {
     const intent=(await pool.query('SELECT * FROM delivery_intents WHERE id=$1',[intentId])).rows[0];
     if(!intent||!intent.group_source_id||intent.source_id)return {state:'failed',code:'INTENT_NOT_FOUND',retrySafe:false};
+    await recoverInterruptedAttempts(intent.id);
     const prior=await withTransaction(pool,async tx=>{await lockIntent(tx,intent);return existing(tx,intent);});if(prior)return prior;
     claim??=await claimJob(intent.id);if(!claim)return {state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true};
     const attemptId=randomUUID(),operationId=randomUUID();let attempted=false,operation;
@@ -110,8 +111,9 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
           const textHash=digest(intent.content.text);
           const command=signCommand({version:1,kind:'GroupReplyCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:target.target_id,text:intent.content.text,textHash,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
           await tx.query('INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,$4,$5)',[operationId,intent.organization_id,source.id,'GroupReplyCommand',JSON.stringify(command)]);
-          await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state) VALUES($1,$2,$3,'attempting')",[attemptId,intent.organization_id,intent.id]);
-          await tx.query('INSERT INTO group_delivery_attempts(organization_id,delivery_intent_id,delivery_attempt_id,operation_id,target_id,text_hash) VALUES($1,$2,$3,$4,$5,$6)',[intent.organization_id,intent.id,attemptId,operationId,target.target_id,textHash]);
+          await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at) VALUES($1,$2,$3,'attempting',$4)",[attemptId,intent.organization_id,intent.id,now]);
+          await tx.query(`INSERT INTO group_delivery_attempts(organization_id,delivery_intent_id,delivery_attempt_id,operation_id,target_id,text_hash,canonical_target,sender_id,attempt_started_at,attempt_deadline_at)
+            VALUES($1,$2,$3,$4,$5,$6,$7,NULL,$8,$9)`,[intent.organization_id,intent.id,attemptId,operationId,target.target_id,textHash,source.canonical_url,now,command.expiresAt]);
           await tx.query("UPDATE jobs SET lease_owner=$3,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[claim.id,claim.lease_owner,attemptId]);
           await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.attempting',entityType:'delivery_intent',entityId:intent.id,details:{attemptId,operationId,replyVersionId:reply.id,channel:'facebook_group'}});
           attempted=true;return {command,operation:{id:operationId}};
@@ -126,9 +128,9 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       catch {result=null;}
       try {if(!result)throw new Error();assertResultBoundToCommand(result,gate.command);}
       catch {
-        return settle(intent,attemptId,operation,{...Object.fromEntries(Object.entries(gate.command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'unknown',attemptStartedAt:clock().toISOString(),attemptFinishedAt:clock().toISOString(),evidenceHash:digest(`unknown:${operationId}`),remoteId:null},{trusted:false});
+        return await settle(intent,attemptId,operation,{...Object.fromEntries(Object.entries(gate.command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'unknown',senderId:'unknown',attemptStartedAt:clock().toISOString(),attemptFinishedAt:clock().toISOString(),evidenceHash:digest(`unknown:${operationId}`),remoteId:null},{trusted:false});
       }
-      return settle(intent,attemptId,operation,result);
+      return await settle(intent,attemptId,operation,result);
     } catch {
       return {state:attempted?'unknown':'failed',code:attempted?'ATTEMPT_UNRESOLVED':'PRE_DISPATCH_FAILED',retrySafe:!attempted};
     }
@@ -140,10 +142,12 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       const attempt=(await tx.query('SELECT * FROM delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2 FOR UPDATE',[intent.organization_id,intent.id])).rows[0];
       if(!attempt||!['attempting','unknown'].includes(attempt.state))throw new Error('Unresolved attempt required');
       const initial=(await tx.query("SELECT * FROM group_send_receipts WHERE organization_id=$1 AND delivery_intent_id=$2 AND kind='GroupReplyResult' ORDER BY created_at DESC LIMIT 1",[intent.organization_id,intent.id])).rows[0];
-      if(!initial)throw new Error('Attempt evidence unavailable');
+      const seed=(await tx.query('SELECT * FROM group_delivery_attempts WHERE organization_id=$1 AND delivery_intent_id=$2',[intent.organization_id,intent.id])).rows[0];
+      if(!seed)throw new Error('Attempt evidence unavailable');
       const source=(await tx.query('SELECT * FROM group_sources WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.group_source_id])).rows[0];
       const operationId=randomUUID(),now=clock();
-      const command=signCommand({version:1,kind:'ReconcileCommand',operationId,sourceId:source.id,groupId:source.group_id,canonicalTarget:source.canonical_url,targetId:initial.target_id,textHash:initial.text_hash,senderId:initial.sender_id,attemptStartedAt:initial.attempt_started_at.toISOString(),attemptFinishedAt:initial.attempt_finished_at.toISOString(),issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
+      const command=signCommand({version:1,kind:'ReconcileCommand',operationId,attemptOperationId:seed.operation_id,sourceId:source.id,groupId:source.group_id,canonicalTarget:seed.canonical_target,targetId:seed.target_id,textHash:seed.text_hash,senderId:initial?.sender_id??seed.sender_id,
+        attemptStartedAt:(initial?.attempt_started_at??seed.attempt_started_at).toISOString(),attemptFinishedAt:(initial?.attempt_finished_at??seed.attempt_deadline_at).toISOString(),issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
       await tx.query('INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES($1,$2,$3,$4,$5)',[operationId,intent.organization_id,source.id,'ReconcileCommand',JSON.stringify(command)]);
       return {attempt,command,operation:{id:operationId}};
     });
@@ -165,6 +169,21 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
       return outcome(saved);
     });
   }
-  async function runOnce(){const job=await claimJob();return job?deliverGroupIntent(job.payload.deliveryIntentId,job):null;}
-  return {deliverGroupIntent,reconcileGroupIntent,runOnce};
+  async function recoverInterruptedAttempts(intentId=null) {
+    const cutoff=new Date(clock().valueOf()-120000);
+    const candidates=(await pool.query(`SELECT d.* FROM delivery_intents d JOIN delivery_attempts a ON a.organization_id=d.organization_id AND a.delivery_intent_id=d.id
+      WHERE d.group_source_id IS NOT NULL AND ($2::text IS NULL OR d.id=$2) AND a.state='attempting' AND a.started_at<$1 ORDER BY a.started_at LIMIT 100`,[cutoff,intentId])).rows;
+    let recovered=0;
+    for(const intent of candidates)await withTransaction(pool,async tx=>{
+      await lockIntent(tx,intent);
+      const {rows:[attempt]}=await tx.query("UPDATE delivery_attempts SET state='unknown',outcome_code='ATTEMPT_INTERRUPTED',finished_at=now() WHERE organization_id=$1 AND delivery_intent_id=$2 AND state='attempting' AND started_at<$3 RETURNING id",[intent.organization_id,intent.id,cutoff]);
+      if(!attempt)return;
+      await finishJobs(tx,intent,'failed','ATTEMPT_INTERRUPTED');
+      await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.unknown',entityType:'delivery_intent',entityId:intent.id,details:{attemptId:attempt.id,code:'ATTEMPT_INTERRUPTED',channel:'facebook_group'}});
+      recovered++;
+    });
+    return recovered;
+  }
+  async function runOnce(){await recoverInterruptedAttempts();const job=await claimJob();return job?deliverGroupIntent(job.payload.deliveryIntentId,job):null;}
+  return {deliverGroupIntent,reconcileGroupIntent,recoverInterruptedAttempts,runOnce};
 }
