@@ -22,6 +22,7 @@ import { decideReplyAction, renderReplyProfile, validateReplyProfile } from "./r
 import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } from "./state.mjs";
 import { createInboxWorkspaceFixture } from "../fixture/inbox-workspace.mjs";
 import { createInventoryWorkspaceFixture } from "../fixture/inventory-workspace.mjs";
+import { createSourcesAutomationWorkspaceFixture } from "../fixture/sources-automation-workspace.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const port = Number(process.env.PORT ?? 3000);
@@ -32,6 +33,7 @@ const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
 const inventoryWorkspace = createInventoryWorkspaceFixture();
+const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture();
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {
@@ -121,6 +123,63 @@ app.patch("/api/units/:id", asyncRoute(async (request, response) => sendFixtureE
 app.post("/api/units/:id/availability", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.changeAvailability(request.params.id, request.body?.status, fixtureRevision(request)))));
 app.post("/api/units/:id/publish", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.publishUnit(request.params.id, fixtureRevision(request)))));
 app.post("/api/units/:id/archive", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.archiveUnit(request.params.id, fixtureRevision(request)))));
+
+if (mode === "fixture") {
+  app.get("/api/sources", (_request, response) => response.json(sourcesAutomationWorkspace.listSources()));
+  app.post("/api/sources/groups", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.status(201).json(sourcesAutomationWorkspace.addGroup(request.body, fixtureIdempotencyKey(request)));
+  }));
+  app.patch("/api/sources/groups/:id", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.json(sourcesAutomationWorkspace.updateGroup(request.params.id, request.body, fixtureRevision(request), fixtureIdempotencyKey(request)));
+  }));
+  app.post("/api/sources/groups/:id/scans", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.status(202).json(sourcesAutomationWorkspace.scan(request.params.id, request.body ?? {}, fixtureRevision(request), fixtureIdempotencyKey(request)));
+  }));
+  app.get("/api/sources/:id/browser-health", asyncRoute(async (request, response) => response.json(sourcesAutomationWorkspace.browserHealth(request.params.id))));
+  app.post("/api/sources/:id/recovery", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.status(201).json(sourcesAutomationWorkspace.beginRecovery(request.params.id, request.body, fixtureIdempotencyKey(request)));
+  }));
+  app.delete("/api/sources/:id/recovery/:sessionId", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    fixtureIdempotencyKey(request);
+    sourcesAutomationWorkspace.closeRecovery(request.params.id, request.params.sessionId);
+    response.status(204).end();
+  }));
+  app.get("/api/sources/:id/recovery/:sessionId/novnc/vnc.html", (request, response) => {
+    if (!sourcesAutomationWorkspace.hasRecovery(request.params.id, request.params.sessionId)) return response.status(404).send("Recovery session not found");
+    response.type("html").send(fixtureRecoveryPage());
+  });
+
+  app.get("/api/automation", (_request, response) => response.json(sourcesAutomationWorkspace.getAutomation()));
+  app.post("/api/automation/policy-preview", asyncRoute(async (request, response) => response.json(sourcesAutomationWorkspace.preview(request.body))));
+  app.post("/api/automation/pause", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.json(sourcesAutomationWorkspace.setGlobalPause(request.body, fixtureIdempotencyKey(request)));
+  }));
+  app.put("/api/automation/policy", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    const saved = sourcesAutomationWorkspace.savePolicy(request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
+    response.set("ETag", `"${saved.revision}"`).json(saved);
+  }));
+  app.put("/api/automation/reply-format", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    const saved = sourcesAutomationWorkspace.saveReplyFormat(request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
+    response.set("ETag", `"${saved.revision}"`).json(saved);
+  }));
+  app.post("/api/automation/sources/:id/pause", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    response.json(sourcesAutomationWorkspace.setSourcePause(request.params.id, request.body, fixtureIdempotencyKey(request)));
+  }));
+  app.put("/api/automation/sources/:id/schedule", asyncRoute(async (request, response) => {
+    requireFixtureCsrf(request);
+    const saved = sourcesAutomationWorkspace.saveSchedule(request.params.id, request.body, fixtureRevision(request), fixtureIdempotencyKey(request));
+    response.set("ETag", `"${saved.revision}"`).json(saved);
+  }));
+}
 
 app.get("/novnc/package.json", (_request, response) => response.json({ name: "novnc", version: "system" }));
 app.use("/novnc", (request, response) => {
@@ -565,6 +624,16 @@ function fixtureRevision(request) {
   return Number(value);
 }
 
+function requireFixtureCsrf(request) {
+  if (request.get("X-CSRF-Token") !== "fixture-csrf") throw httpError(403, "Invalid CSRF token");
+}
+
+function fixtureIdempotencyKey(request) {
+  const value = request.get("Idempotency-Key");
+  if (!value?.trim() || value.length > 200) throw httpError(422, "Invalid idempotency key");
+  return value;
+}
+
 function sendFixtureEntity(response, entity, status = 200) {
   if (!entity) throw httpError(404, "Resource not found");
   if (entity.revision) response.set("ETag", `"${entity.revision}"`);
@@ -601,6 +670,10 @@ function hasFixtureSession(request) {
 
 function fixtureLogin() {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/fixture/assets/fixture.css"><title>Fixture login</title></head><body class="fixture-shell"><main class="login-card"><span class="fixture-mark">f</span><h1>Facebook fixture</h1><p>This page simulates manual authentication. The cookie lives in the persistent Chromium profile.</p><form method="post" action="/fixture/login"><button type="submit">Continue as Fixture Admin</button></form></main></body></html>`;
+}
+
+function fixtureRecoveryPage() {
+  return `<!doctype html><html lang="th"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Facebook session recovery</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#eef4ff;color:#15213a;font-family:system-ui,sans-serif}.card{width:min(520px,calc(100% - 40px));padding:32px;border:1px solid #d7e1f2;border-radius:22px;background:white;box-shadow:0 24px 60px rgba(27,61,125,.14)}span{display:inline-grid;width:44px;height:44px;place-items:center;border-radius:14px;background:#1b74e4;color:white;font-size:24px;font-weight:800}h1{font-size:22px;margin:18px 0 8px}p{line-height:1.6;color:#5d6b84}</style></head><body><main class="card"><span>f</span><h1>Fixture browser session พร้อมใช้งาน</h1><p>หน้าจอนี้จำลองช่องทางกู้คืน session สำหรับเดโมเท่านั้น ไม่มีการเข้าสู่ระบบหรือส่งข้อมูลไป Facebook จริง</p></main></body></html>`;
 }
 
 function fixtureGroup(groupId, replies) {

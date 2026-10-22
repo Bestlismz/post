@@ -12,6 +12,7 @@
     "provision:worker": "node scripts/provision-runtime.mjs --worker",
     "import:legacy": "node scripts/import-json-state.mjs",
     "test": "node --test scripts/*.test.mjs",
+    "test:e2e:fixture": "npm run build && playwright test --config=playwright.fixture.config.mjs",
     "verify": "node scripts/verify-poc.mjs",
     "verify:command-center": "node scripts/verify-command-center.mjs",
     "verify:messenger": "node scripts/verify-messenger.mjs"
