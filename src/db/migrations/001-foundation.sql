@@ -60,11 +60,21 @@ CREATE TABLE audit_entries (
 );
 CREATE INDEX audit_entries_organization_created_idx ON audit_entries (organization_id, created_at, id);
 
+CREATE FUNCTION reject_audit_mutation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  RAISE EXCEPTION 'Audit entries are append-only';
+END;
+$$;
+CREATE TRIGGER audit_entries_append_only
+  BEFORE UPDATE OR DELETE OR TRUNCATE ON audit_entries
+  FOR EACH STATEMENT EXECUTE FUNCTION reject_audit_mutation();
+
 CREATE TABLE jobs (
   id text PRIMARY KEY,
   organization_id text NOT NULL REFERENCES organizations(id),
   kind text NOT NULL,
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+  retry_safe boolean NOT NULL DEFAULT false,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'running', 'attempting', 'completed', 'failed')),
   attempts integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
   available_at timestamptz NOT NULL DEFAULT now(),
