@@ -24,7 +24,8 @@ test("durable Messenger ingress filters, deduplicates, orders and commits before
     url.searchParams.set("options", `-c search_path=${schema}`);
     pool = createPool({ databaseUrl: url.href });
     await migrate(pool);
-    const accept = (rawBody, extra = {}) => module.acceptMetaWebhook({ pool, organizationId: "org_default", pageId: "page", appSecret: secret, rawBody, signature: signature(rawBody), ...extra });
+    await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('source','org_default','page','Page','connected')");
+    const accept = (rawBody, extra = {}) => module.acceptMetaWebhook({ pool, appSecret: secret, rawBody, signature: signature(rawBody), ...extra });
     const count = async (table) => (await pool.query(`SELECT count(*)::int AS n FROM ${table}`)).rows[0].n;
     await t.test("authentication precedes parsing and exact bytes are signed", async () => {
       assert.equal((await accept(Buffer.from("{"), { signature: "sha256=bad" })).status, 403);
@@ -55,8 +56,9 @@ test("durable Messenger ingress filters, deduplicates, orders and commits before
       assert.equal((await pool.query("SELECT provider_timestamp_ms FROM messages WHERE mid='older'")).rows[0].provider_timestamp_ms, "1");
       assert.equal((await pool.query("SELECT processing_revision FROM conversations")).rows[0].processing_revision, 3);
       await pool.query("INSERT INTO organizations(id,name) VALUES ('other','Other')");
-      await accept(body([message("mid_1")]), { organizationId: "other" });
-      await accept(body([{ ...message("mid_1"), recipient: { id: "page2" } }], "page2"), { pageId: "page2" });
+      await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('other-source','other','page-other','Other Page','connected'),('source2','org_default','page2','Page 2','connected')");
+      await accept(body([{ ...message("mid_1"), recipient: { id: "page-other" } }], "page-other"));
+      await accept(body([{ ...message("mid_1"), recipient: { id: "page2" } }], "page2"));
       assert.equal(await count("conversations"), 3);
     });
     await t.test("job failure rolls back the entire batch and permits retry", async () => {
@@ -70,7 +72,7 @@ test("durable Messenger ingress filters, deduplicates, orders and commits before
     });
     await t.test("raw HTTP route commits before 200 and safe challenge rejects invalid tokens", async () => {
       const app = express();
-      app.use(createMetaRouter({ pool, organizationId: "org_default", pageId: "page", appSecret: secret, verifyToken: "verify" }));
+      app.use(createMetaRouter({ pool, appSecret: secret, verifyToken: "verify" }));
       app.use(express.json());
       server = app.listen(0, "127.0.0.1");
       await new Promise((resolve) => server.once("listening", resolve));

@@ -12,10 +12,10 @@ export function createMetaCredentialRepository({ pool, keys, keyVersion }) {
     const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
     return { version: keyVersion, nonce: nonce.toString("base64"), tag: cipher.getAuthTag().toString("base64"), ciphertext: ciphertext.toString("base64") };
   }
-  async function withCredential(organizationId, id, callback, { db = pool, actorId, kind, now = Date.now() } = {}) {
+  async function withCredential(organizationId, id, callback, { db = pool, actorId, kind, now = Date.now(), allowExpired = false } = {}) {
     const { rows: [row] } = await db.query("SELECT * FROM meta_credential_read($1,$2)", [organizationId, id]);
     if (!row || (actorId && row.actor_id !== actorId) || (kind && row.kind !== kind)) throw httpError(404, "Connection not found");
-    if (row.expires_at && row.expires_at.getTime() <= now) throw httpError(410, "Connection expired");
+    if (!allowExpired && row.expires_at && row.expires_at.getTime() <= now) throw httpError(410, "Connection expired");
     let value;
     try {
       const envelope = row.envelope, key = keys?.[envelope.version];
@@ -32,6 +32,11 @@ export function createMetaCredentialRepository({ pool, keys, keyVersion }) {
       await db.query("SELECT meta_credential_write($1,$2,$3,$4,$5,$6)", [organizationId, id, actorId, kind, envelope, expiresAt]);
     },
     async remove(organizationId, id, db = pool) { await db.query("SELECT meta_credential_delete($1,$2)", [organizationId, id]); },
+    async updateExpiry(organizationId, id, expiresAt, db = pool) {
+      const { rows: [row] } = await db.query("SELECT * FROM meta_credential_read($1,$2)", [organizationId, id]);
+      if (!row || row.kind !== "page") return;
+      await db.query("SELECT meta_credential_write($1,$2,$3,$4,$5,$6)", [organizationId, id, row.actor_id, row.kind, row.envelope, expiresAt]);
+    },
     async withPageToken(organizationId, sourceId, callback) {
       const { rows: [source] } = await pool.query("SELECT health,expires_at FROM meta_page_sources WHERE organization_id=$1 AND id=$2", [organizationId, sourceId]);
       if (!source || source.health === "disconnected") throw httpError(404, "Connection not found");

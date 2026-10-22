@@ -18,11 +18,12 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const frontend = next({ dev: false, dir: root });
 let frontendReady;
 const app = express();
+const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env });
 app.disable("x-powered-by");
-app.use(createMetaRouter({ pool, organizationId: process.env.META_ORGANIZATION_ID, pageId: process.env.META_PAGE_ID, appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
+app.use(createMetaRouter({ pool, environmentSource: (pageId) => metaConnection.inspectEnvironmentSource(pageId), appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
 app.use(express.json({ limit: "32kb" }));
 app.use(createApplicationRouter({ pool, config }));
-app.use(createMetaConnectionRouter({ pool, config, connection: createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env }) }));
+app.use(createMetaConnectionRouter({ pool, config, connection: metaConnection }));
 app.get("/health", (_request, response) => response.json({ ok: true }));
 app.use(["/api", "/fixture", "/novnc"], (_request, response) => response.status(404).json({ error: "Resource not found", fieldErrors: {} }));
 app.use(async (request, response) => {

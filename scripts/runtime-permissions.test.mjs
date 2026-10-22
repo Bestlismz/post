@@ -74,7 +74,8 @@ test("runtime role supports authenticated API writes but cannot administer schem
     const { acceptMetaWebhook } = await import("../src/channels/meta/ingress.mjs");
     const { createHmac } = await import("node:crypto");
     const rawBody = Buffer.from(JSON.stringify({ object: "page", entry: [{ id: "page", messaging: [{ sender: { id: "psid" }, recipient: { id: "page" }, message: { mid: "mid", text: "hello" } }] }] }));
-    const accepted = await acceptMetaWebhook({ pool: runtime, organizationId: "org_default", pageId: "page", appSecret: "secret", rawBody, signature: `sha256=${createHmac("sha256", "secret").update(rawBody).digest("hex")}` });
+    await runtime.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('runtime-source','org_default','page','Runtime Page','connected')");
+    const accepted = await acceptMetaWebhook({ pool: runtime, appSecret: "secret", rawBody, signature: `sha256=${createHmac("sha256", "secret").update(rawBody).digest("hex")}` });
     assert.equal(accepted.status, 200);
     assert.equal(accepted.acceptedEventIds.length, 1);
     for (const table of ["conversations", "messages", "work_items"]) {

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import test from "node:test";
 import express from "express";
 import { createPool } from "../src/db/pool.mjs";
@@ -22,7 +22,7 @@ test("official Meta connection protects state, Page selection, credentials and t
     const userId = (await pool.query("SELECT id FROM users")).rows[0].id;
     const actor = { id: userId, organizationId: "org_default", role: "admin" };
     const config = { appId: "app", appSecret: "app-private", redirectUri: "https://radar.example/settings/meta/callback", graphVersion: "v24.0", keyVersion: "k1", keys: { k1: Buffer.alloc(32, 7) } };
-    let permissions = ["pages_show_list", "pages_manage_metadata", "pages_messaging"], revoked = false, failCleanup = false, cleanupSawLocalRevocation = false, pageToken = "private-page-one", now = Date.now(), tokenExpires = 0;
+    let permissions = ["pages_show_list", "pages_manage_metadata", "pages_messaging"], revoked = false, failCleanup = false, cleanupSawLocalRevocation = false, pageToken = "private-page-one", now = Date.now(), tokenExpires = 0, providerPage = "page1";
     const http = async (input, options = {}) => {
       const url = new URL(input), token = options.headers?.Authorization;
       assert.equal(url.origin, "https://graph.facebook.com");
@@ -35,14 +35,14 @@ test("official Meta connection protects state, Page selection, credentials and t
         assert.equal(token, "Bearer private-user");
         return Response.json({ data: permissions.map((permission) => ({ permission, status: "granted" })) });
       }
-      if (url.pathname.endsWith("/me/accounts")) return Response.json({ data: [{ id: "page1", name: "Rental Page", access_token: pageToken, tasks: ["MESSAGING", "MANAGE"] }, { id: "ineligible", name: "No messaging", access_token: "private-ineligible", tasks: ["ANALYZE"] }] });
-      if (url.pathname.endsWith("/debug_token")) return Response.json({ data: { app_id: "app", is_valid: !revoked, profile_id: "page1", scopes: permissions, expires_at: tokenExpires } });
+      if (url.pathname.endsWith("/me/accounts")) return Response.json({ data: [{ id: providerPage, name: "Rental Page", access_token: pageToken, tasks: ["MESSAGING", "MANAGE"] }, { id: "ineligible", name: "No messaging", access_token: "private-ineligible", tasks: ["ANALYZE"] }] });
+      if (url.pathname.endsWith("/debug_token")) return Response.json({ data: { app_id: "app", is_valid: !revoked, profile_id: providerPage, scopes: permissions, expires_at: tokenExpires } });
       if (url.pathname.endsWith("/subscribed_apps")) {
         if (options.method === "DELETE") cleanupSawLocalRevocation = (await pool.query("SELECT health FROM meta_page_sources WHERE page_id='page1'")).rows[0]?.health === "disconnected";
         if (failCleanup && options.method === "DELETE") throw new Error(pageToken);
         return Response.json({ success: true });
       }
-      if (url.pathname.endsWith("/me")) return revoked ? Response.json({ error: { code: 190, message: pageToken } }, { status: 400 }) : Response.json({ id: "page1", name: "Rental Page" });
+      if (url.pathname.endsWith("/me")) return revoked ? Response.json({ error: { code: 190, message: pageToken } }, { status: 400 }) : Response.json({ id: providerPage, name: "Rental Page" });
       throw new Error("Unexpected provider request");
     };
     const service = module.createMetaConnection({ pool, config, http, clock: () => now });
@@ -70,6 +70,36 @@ test("official Meta connection protects state, Page selection, credentials and t
       source = await service.selectPage(actor, connection.id, "page1");
       assert.equal(source.health, "connected"); assert.equal(source.pageId, "page1");
       await assert.rejects(service.selectPage(actor, connection.id, "page1"), { status: 404 });
+    });
+    await t.test("OAuth-selected Pages route signed webhooks to their durable tenant bindings", async () => {
+      const { createMetaRouter } = await import("../src/http/meta-routes.mjs");
+      await pool.query("INSERT INTO organizations(id,name) VALUES('org_second','Second tenant')");
+      await pool.query("INSERT INTO memberships(organization_id,user_id,role) VALUES('org_second',$1,'admin')", [actor.id]);
+      const secondActor = { ...actor, organizationId: "org_second" };
+      providerPage = "page2";
+      const begun = await service.beginMetaConnection(secondActor);
+      const next = await service.completeMetaConnection(secondActor, { code: "official-code", state: new URL(begun.authorizationUrl).searchParams.get("state") });
+      const secondSource = await service.selectPage(secondActor, next.id, "page2");
+      providerPage = "page1";
+      const app = express(); app.use(createMetaRouter({ pool, appSecret: "app-private", verifyToken: "verify" }));
+      const listener = app.listen(0, "127.0.0.1"); await new Promise((resolve) => listener.once("listening", resolve));
+      try {
+        const send = async (rawBody, signature = `sha256=${createHmac("sha256", "app-private").update(rawBody).digest("hex")}`) => fetch(`http://127.0.0.1:${listener.address().port}/webhooks/meta`, { method: "POST", headers: { "x-hub-signature-256": signature, "Content-Type": "application/json" }, body: rawBody });
+        assert.equal((await send(Buffer.from("{"), "sha256=bad")).status, 403);
+        assert.equal((await send(Buffer.from("{"))).status, 400);
+        const entry = (page, mid) => ({ id: page, organizationId: "attacker-chosen", messaging: [{ sender: { id: "customer" }, recipient: { id: page }, organizationId: "attacker-chosen", message: { mid, text: "A room please" } }] });
+        const raw = Buffer.from(JSON.stringify({ object: "page", organizationId: "attacker-chosen", entry: [entry("page1", "oauth-1"), entry("page2", "oauth-2"), entry("unknown-page", "wrong-page")] }));
+        assert.equal((await send(raw)).status, 200);
+        assert.deepEqual((await pool.query("SELECT organization_id,page_id,mid FROM messages ORDER BY page_id")).rows, [{ organization_id: "org_default", page_id: "page1", mid: "oauth-1" }, { organization_id: "org_second", page_id: "page2", mid: "oauth-2" }]);
+        for (const table of ["conversations", "jobs"]) assert.deepEqual((await pool.query(`SELECT organization_id,count(*)::int AS n FROM ${table} GROUP BY organization_id ORDER BY organization_id`)).rows, [{ organization_id: "org_default", n: 1 }, { organization_id: "org_second", n: 1 }]);
+        await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('ambiguous-source','org_second','page1','Ambiguous Page','connected')");
+        assert.equal((await send(Buffer.from(JSON.stringify({ object: "page", entry: [entry("page1", "ambiguous-page")] })))).status, 200);
+        assert.equal((await pool.query("SELECT count(*)::int AS n FROM messages")).rows[0].n, 2);
+        await pool.query("DELETE FROM meta_page_sources WHERE id='ambiguous-source'");
+        await service.disconnectPage(secondActor, secondSource.id);
+        assert.equal((await send(Buffer.from(JSON.stringify({ object: "page", entry: [entry("page2", "disconnected")] })))).status, 200);
+        assert.equal((await pool.query("SELECT count(*)::int AS n FROM messages")).rows[0].n, 2);
+      } finally { await new Promise((resolve) => listener.close(resolve)); }
     });
     await t.test("stored secrets are authenticated ciphertext and public health and audit are redacted", async () => {
       const stored = (await pool.query("SELECT envelope FROM meta_credentials")).rows;
@@ -142,6 +172,46 @@ test("official Meta connection protects state, Page selection, credentials and t
       setTimeout(release, 20);
       await rotation; await pendingHealth;
       assert.equal((await pool.query("SELECT health FROM meta_page_sources WHERE id=$1", [source.id])).rows[0].health, "connected");
+    });
+    await t.test("health refresh atomically persists provider expiry changes at the credential boundary", async () => {
+      const { createMetaCredentialRepository } = await import("../src/channels/meta/credentials.mjs");
+      const repository = createMetaCredentialRepository({ pool, keys: config.keys, keyVersion: "k1" });
+      for (const seconds of [120, 300, 0, -1]) {
+        tokenExpires = seconds ? Math.floor(now / 1000) + seconds : 0;
+        const expiry = tokenExpires ? new Date(tokenExpires * 1000).toISOString() : null;
+        const health = await service.inspectPageHealth(actor, source.id);
+        assert.equal(health.expiresAt, expiry);
+        assert.equal(health.health, seconds < 0 ? "expired" : "connected");
+        const sourceExpiry = (await pool.query("SELECT expires_at FROM meta_page_sources WHERE id=$1", [source.id])).rows[0].expires_at;
+        const credentialExpiry = (await pool.query("SELECT expires_at FROM meta_credentials WHERE id=$1", [source.id])).rows[0].expires_at;
+        assert.equal(sourceExpiry?.toISOString() ?? null, expiry);
+        assert.equal(credentialExpiry?.toISOString() ?? null, expiry);
+      }
+      await assert.rejects(repository.withPageToken(actor.organizationId, source.id, () => assert.fail("expired authorization")), { status: 410 });
+      tokenExpires = Math.floor(now / 1000) + 120;
+      assert.equal((await service.inspectPageHealth(actor, source.id)).health, "connected");
+      await repository.withPageToken(actor.organizationId, source.id, (token) => assert.equal(token, pageToken));
+      tokenExpires = 0;
+      const saved = (await pool.query("SELECT * FROM meta_credentials WHERE id=$1", [source.id])).rows[0];
+      await pool.query("DELETE FROM meta_credentials WHERE id=$1", [source.id]);
+      try { assert.equal((await service.inspectPageHealth(actor, source.id)).health, "unavailable"); }
+      finally { await pool.query("INSERT INTO meta_credentials(id,organization_id,actor_id,kind,envelope,expires_at) VALUES($1,$2,$3,$4,$5,$6)", [saved.id, saved.organization_id, saved.actor_id, saved.kind, saved.envelope, saved.expires_at]); }
+    });
+    await t.test("environment webhook fallback uses verified health and cannot override disconnected durable sources", async () => {
+      const { acceptMetaWebhook } = await import("../src/channels/meta/ingress.mjs");
+      providerPage = "environment-page";
+      const fallback = module.createMetaConnection({ pool, config, http, env: { META_ORGANIZATION_ID: "org_default", META_PAGE_ID: providerPage, META_PAGE_ACCESS_TOKEN: "environment-private" } });
+      const body = (mid) => Buffer.from(JSON.stringify({ object: "page", entry: [{ id: providerPage, messaging: [{ sender: { id: "customer" }, recipient: { id: providerPage }, message: { mid, text: "Environment request" } }] }] }));
+      const accept = (rawBody, signature = `sha256=${createHmac("sha256", "app-private").update(rawBody).digest("hex")}`) => acceptMetaWebhook({ pool, rawBody, signature, appSecret: "app-private", environmentSource: (pageId) => fallback.inspectEnvironmentSource(pageId) });
+      assert.equal((await accept(body("unsigned"), "sha256=bad")).status, 403);
+      assert.equal((await accept(body("environment-1"))).acceptedEventIds.length, 1);
+      revoked = true;
+      assert.equal((await accept(body("revoked-environment"))).acceptedEventIds.length, 0);
+      revoked = false;
+      await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('disabled-env','org_default','environment-page','Disabled Page','disconnected')");
+      assert.equal((await accept(body("disabled-environment"))).acceptedEventIds.length, 0);
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM meta_credentials WHERE id='disabled-env'")).rows[0].n, 0);
+      providerPage = "page1";
     });
     await t.test("HTTP requires authentication, admin role, Origin and CSRF; source access is tenant-scoped", async () => {
       const { createMetaConnectionRouter } = await import("../src/http/meta-connection-routes.mjs");

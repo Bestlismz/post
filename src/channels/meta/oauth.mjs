@@ -40,16 +40,24 @@ export function createMetaConnection({ pool, config, http = fetch, clock = Date.
     const expiresAt = expiry.length ? new Date(Math.min(...expiry) * 1000) : null;
     return { health: expiresAt && expiresAt.getTime() <= clock() ? "expired" : "connected", expiresAt };
   }
-  async function health(token, pageId, expiresAt) {
-    if (expiresAt && new Date(expiresAt).getTime() <= clock()) return "expired";
+  async function health(token, pageId, expiresAt, refresh = false) {
+    const previousExpiry = expiresAt ? new Date(expiresAt) : null;
+    if (!refresh && previousExpiry && previousExpiry.getTime() <= clock()) return { health: "expired", expiresAt: previousExpiry };
     try {
       const authorization = await tokenAuthorization(token, pageId);
-      if (authorization.health !== "connected") return authorization.health;
-      const page = await graph("me", { token, query: { fields: "id" } }); return page.id === pageId ? "connected" : "revoked";
+      if (!refresh && previousExpiry && (!authorization.expiresAt || previousExpiry < authorization.expiresAt)) authorization.expiresAt = previousExpiry;
+      if (authorization.health !== "connected") return authorization;
+      const page = await graph("me", { token, query: { fields: "id" } });
+      return { ...authorization, health: page.id === pageId ? "connected" : "revoked" };
     }
-    catch (error) { return error.status === 410 ? "revoked" : "unavailable"; }
+    catch (error) { return { health: error.status === 410 ? "revoked" : previousExpiry && previousExpiry.getTime() <= clock() ? "expired" : "unavailable", expiresAt: previousExpiry }; }
   }
   const service = {
+    async inspectEnvironmentSource(pageId) {
+      if (!env.META_ORGANIZATION_ID || !env.META_PAGE_ID || env.META_PAGE_ID !== pageId || !env.META_PAGE_ACCESS_TOKEN) return null;
+      const authorization = await health(env.META_PAGE_ACCESS_TOKEN, pageId, env.META_TOKEN_EXPIRES_AT);
+      return { id: "environment", organizationId: env.META_ORGANIZATION_ID, pageId, name: "Environment Page", health: authorization.health, expiresAt: authorization.expiresAt?.toISOString() ?? null };
+    },
     async beginMetaConnection(actor) {
       authorize(actor);
       if (!config.appId || !config.appSecret || !config.redirectUri || !config.keys?.[config.keyVersion] || config.keys[config.keyVersion].length !== 32) throw httpError(503, "Meta connection is not configured");
@@ -94,7 +102,7 @@ export function createMetaConnection({ pool, config, http = fetch, clock = Date.
           if (!page) throw httpError(422, "Page is not eligible");
           const authorization = await tokenAuthorization(page.token, page.id);
           if (authorization.health !== "connected") throw httpError(422, "Page authorization is not healthy");
-          if (await health(page.token, page.id) !== "connected") throw httpError(422, "Page authorization is not healthy");
+          if ((await health(page.token, page.id)).health !== "connected") throw httpError(422, "Page authorization is not healthy");
           await graph(`${encodeURIComponent(page.id)}/subscribed_apps`, { method: "POST", token: page.token, body: { subscribed_fields: "messages,messaging_postbacks" } });
           const { rows: [row] } = await tx.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health,expires_at) VALUES($1,$2,$3,$4,'connected',$5) ON CONFLICT(organization_id,page_id) DO UPDATE SET name=EXCLUDED.name,health='connected',expires_at=EXCLUDED.expires_at,updated_at=now() RETURNING id,page_id,name,health,expires_at", [randomUUID(), actor.organizationId, page.id, page.name, authorization.expiresAt]);
           await repository.store({ organizationId: actor.organizationId, actorId: actor.id, id: row.id, kind: "page", value: { token: page.token }, expiresAt: authorization.expiresAt }, tx);
@@ -106,14 +114,20 @@ export function createMetaConnection({ pool, config, http = fetch, clock = Date.
     },
     async inspectPageHealth(actor, sourceId) {
       authorize(actor);
-      if (sourceId === "environment" && env.META_ORGANIZATION_ID === actor.organizationId && env.META_PAGE_ID && env.META_PAGE_ACCESS_TOKEN) return { id: "environment", pageId: env.META_PAGE_ID, name: "Environment Page", health: await health(env.META_PAGE_ACCESS_TOKEN, env.META_PAGE_ID, env.META_TOKEN_EXPIRES_AT), expiresAt: env.META_TOKEN_EXPIRES_AT ?? null };
+      if (sourceId === "environment" && env.META_ORGANIZATION_ID === actor.organizationId) {
+        const source = await service.inspectEnvironmentSource(env.META_PAGE_ID);
+        if (!source) throw httpError(404, "Connection not found");
+        const { organizationId: _organizationId, ...safe } = source;
+        return safe;
+      }
       return withTransaction(pool, async (tx) => {
         await tx.query("SELECT id FROM organizations WHERE id=$1 FOR UPDATE", [actor.organizationId]);
         const row = await getSource(actor, sourceId, tx);
         if (row.health === "disconnected") return project(row);
-        const status = await repository.withCredential(actor.organizationId, sourceId, ({ token }) => health(token, row.page_id, row.expires_at), { db: tx, kind: "page", now: clock() }).catch((error) => error.status === 410 ? "expired" : "unavailable");
-        await tx.query("UPDATE meta_page_sources SET health=$3,updated_at=now() WHERE organization_id=$1 AND id=$2", [actor.organizationId, sourceId, status]);
-        return project({ ...row, health: status });
+        const authorization = await repository.withCredential(actor.organizationId, sourceId, ({ token }) => health(token, row.page_id, row.expires_at, true), { db: tx, kind: "page", now: clock(), allowExpired: true }).catch(() => ({ health: "unavailable", expiresAt: row.expires_at }));
+        await repository.updateExpiry(actor.organizationId, sourceId, authorization.expiresAt, tx);
+        await tx.query("UPDATE meta_page_sources SET health=$3,expires_at=$4,updated_at=now() WHERE organization_id=$1 AND id=$2", [actor.organizationId, sourceId, authorization.health, authorization.expiresAt]);
+        return project({ ...row, health: authorization.health, expires_at: authorization.expiresAt });
       });
     },
     async disconnectPage(actor, sourceId) {
