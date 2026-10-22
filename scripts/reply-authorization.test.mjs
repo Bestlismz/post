@@ -197,6 +197,8 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       assert.equal(await worker.runOnce(),'order-1');
       assert.equal(await worker.runOnce(),'order-2');
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM reply_versions WHERE work_item_id='ordered'")).rows[0].n,0);
+      assert.equal((await pool.query("SELECT status FROM work_items WHERE id='ordered'")).rows[0].status,'superseded');
+      assert.equal((await pool.query("SELECT last_error FROM jobs WHERE id='order-1'")).rows[0].last_error,'CONVERSATION_SUPERSEDED');
     });
     await t.test('one authorization decision uses one clock instant at the hours boundary', async () => {
       await pool.query(`UPDATE organizations SET automation_policy='{"mode":"automatic","minimumConfidence":0,"businessHours":{"timeZone":"UTC","days":[0,1,2,3,4,5,6],"start":"09:00","end":"17:00"}}'`);
@@ -228,6 +230,91 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
         const current=(await pool.query("SELECT status,lease_owner FROM jobs WHERE id='fenced-job'")).rows[0];
         assert.equal(current.status,'running'); assert.notEqual(current.lease_owner,oldOwner);
       } finally {releaseAgain();await second;}
+    });
+    await t.test('policy changes replace an unapproved stale draft once under concurrency', async () => {
+      await seed('refresh-policy');
+      const old=await service.prepareReply('refresh-policy',1,actor);
+      await pool.query('UPDATE organizations SET automation_policy_revision=automation_policy_revision+1');
+      await assert.rejects(service.editReply(old.id,1,old.content.text,actor),{code:'POLICY_CHANGED'});
+      const [first,second]=await Promise.all([service.prepareReply('refresh-policy',1,actor),service.prepareReply('refresh-policy',1,actor)]);
+      assert.notEqual(first.id,old.id); assert.equal(first.id,second.id); assert.equal(first.version,2);
+      assert.equal((await pool.query('SELECT replacement_id FROM reply_supersessions WHERE reply_version_id=$1',[old.id])).rows[0].replacement_id,first.id);
+      await assert.rejects(service.approveAndQueue(old.id,1,actor),/superseded/i);
+      await service.approveAndQueue(first.id,1,actor);
+      await pool.query('UPDATE organizations SET automation_policy_revision=automation_policy_revision+1');
+      assert.equal((await service.prepareReply('refresh-policy',1,actor)).id,first.id,'approved history must not be replaced');
+    });
+    await t.test('inventory and project revisions refresh stale drafts into usable immutable versions', async () => {
+      await seed('refresh-inventory');
+      let draft=await service.prepareReply('refresh-inventory',1,actor);
+      const oldId=draft.id;
+      await pool.query('UPDATE units SET revision=revision+1,monthly_rent_thb=19001');
+      const [first,second]=await Promise.all([service.prepareReply('refresh-inventory',1,actor),service.prepareReply('refresh-inventory',1,actor)]);
+      assert.notEqual(first.id,oldId); assert.equal(first.id,second.id); assert.equal(first.version,2);
+      await pool.query('UPDATE projects SET revision=revision+1');
+      draft=await service.prepareReply('refresh-inventory',1,actor);
+      assert.equal(draft.version,3); assert.notEqual(draft.id,first.id);
+      await service.approveAndQueue(draft.id,1,actor);
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM reply_versions WHERE work_item_id='refresh-inventory'")).rows[0].n,3);
+    });
+    await t.test('source, profile and format evidence refresh drafts instead of copying stale context', async () => {
+      await seed('refresh-settings'); let draft=await service.prepareReply('refresh-settings',1,actor);
+      for (const sql of ["UPDATE meta_page_sources SET health='expired' WHERE id='source'", "UPDATE organizations SET profile_revision=profile_revision+1", "UPDATE organizations SET reply_format_revision=reply_format_revision+1"]) {
+        const previous=draft;
+        await pool.query(sql);
+        draft=await service.prepareReply('refresh-settings',1,actor);
+        assert.notEqual(draft.id,previous.id); assert.equal(draft.version,previous.version+1);
+        assert.equal((await service.prepareReply('refresh-settings',1,actor)).id,draft.id);
+      }
+      await pool.query("UPDATE meta_page_sources SET health='connected' WHERE id='source'");
+      draft=await service.prepareReply('refresh-settings',1,actor);
+      await service.approveAndQueue(draft.id,1,actor);
+    });
+    for (const [kind,phase,sql,code] of [
+      ['policy','rental_requirements','UPDATE organizations SET automation_policy_revision=automation_policy_revision+1','POLICY_CHANGED'],
+      ['inventory','grounded_reply_selections','UPDATE units SET revision=revision+1','INVENTORY_CHANGED'],
+    ]) await t.test(`worker retries a ${kind} freshness race and reclaims its crashed retry`, async () => {
+      const id=`retry-${kind}`; await seed(id);
+      await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe) VALUES($1,'org_default','analyze_work_item',$2,true)`,[id,JSON.stringify({workItemId:id,conversationId:id,processingRevision:1})]);
+      let changed=false;
+      const racingClient={responses:{create:async request=>{
+        if (!changed && request.text.format.name===phase) {changed=true;await pool.query(sql);}
+        return client.responses.create(request);
+      }}};
+      const worker=createAutomationWorker({pool,service:createInboxService({pool,client:racingClient}),workerId:`retry-${kind}`});
+      try {
+        assert.equal(await worker.runOnce(),id);
+        const row=(await pool.query('SELECT * FROM jobs WHERE id=$1',[id])).rows[0];
+        assert.equal(row.status,'pending'); assert.equal(row.last_error,code);
+        assert.equal(row.attempts,1); assert.equal(row.lease_owner,null);
+        assert.ok(row.available_at>new Date());
+        assert.equal(await worker.runOnce(),null,'backoff must prevent immediate retry');
+        assert.equal((await pool.query('SELECT count(*)::int AS n FROM reply_versions WHERE work_item_id=$1',[id])).rows[0].n,0);
+        await pool.query("UPDATE jobs SET status='running',lease_owner='crashed',lease_expires_at=now()-interval '1 second' WHERE id=$1",[id]);
+        await worker.runOnce();
+        assert.equal((await pool.query('SELECT status FROM jobs WHERE id=$1',[id])).rows[0].status,'completed');
+        assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[id])).rows[0].status,'needs_review');
+      } finally {await pool.query("UPDATE jobs SET status='completed' WHERE id=$1",[id]);}
+    });
+    await t.test('repeated freshness races exhaust retries into an atomic failure receipt', async () => {
+      const id='retry-exhausted';await seed(id);
+      await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe) VALUES($1,'org_default','analyze_work_item',$2,true)`,[id,JSON.stringify({workItemId:id,conversationId:id,processingRevision:1})]);
+      const racingClient={responses:{create:async request=>{
+        if(request.text.format.name==='rental_requirements') await pool.query('UPDATE organizations SET profile_revision=profile_revision+1');
+        return client.responses.create(request);
+      }}};
+      const worker=createAutomationWorker({pool,service:createInboxService({pool,client:racingClient}),workerId:'exhaustion',maxAttempts:2,retryBaseSeconds:1,maxRetrySeconds:2});
+      try {
+        await worker.runOnce();
+        assert.equal((await pool.query('SELECT status FROM jobs WHERE id=$1',[id])).rows[0].status,'pending');
+        await pool.query('UPDATE jobs SET available_at=now() WHERE id=$1',[id]);
+        await worker.runOnce();
+        const job=(await pool.query('SELECT * FROM jobs WHERE id=$1',[id])).rows[0];
+        assert.equal(job.status,'failed');assert.equal(job.attempts,2);assert.equal(job.last_error,'PROFILE_CHANGED');
+        assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[id])).rows[0].status,'failed');
+        const receipts=(await pool.query("SELECT details FROM audit_entries WHERE action='reply.preparation_failed' AND entity_id=$1",[id])).rows;
+        assert.equal(receipts.length,1);assert.equal(receipts[0].details.errorCode,'PROFILE_CHANGED');assert.equal(receipts[0].details.attempts,2);
+      } finally {await pool.query("UPDATE jobs SET status='completed' WHERE id=$1",[id]);}
     });
   } finally { await pool?.end(); await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); }
 });
