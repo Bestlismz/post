@@ -1,0 +1,121 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const projectRoot = new URL("../", import.meta.url);
+
+test("production shell removes the legacy top-level navigation", async () => {
+  const page = await readFile(new URL("app/page.jsx", projectRoot), "utf8");
+
+  assert.doesNotMatch(
+    page,
+    /Lead inbox|Reply review|Messenger|Facebook login|Overview|Activity/,
+  );
+});
+
+test("shell exposes one five-destination route manifest", async () => {
+  const { routes } = await import("../app/lib/routes.mjs");
+
+  assert.deepEqual(
+    routes.map((route) => route.id),
+    ["inbox", "properties", "sources", "automations", "settings"],
+  );
+  assert.deepEqual(
+    routes.map((route) => route.mobileLabel),
+    ["Inbox", "Properties", "Sources", "Automations", "Settings"],
+  );
+  assert.equal(
+    routes.some((route) => /Overview|Messenger|Browser|Activity/.test(route.label)),
+    false,
+  );
+});
+
+test("route state restores from a URL and browser popstate", async () => {
+  const { createRouteStore } = await import("../app/lib/routes.mjs");
+  const listeners = new Map();
+  const browser = {
+    location: { href: "https://radar.test/properties?status=available" },
+    history: {
+      pushState(_state, _unused, href) {
+        browser.location.href = new URL(href, browser.location.href).href;
+      },
+      replaceState(_state, _unused, href) {
+        browser.location.href = new URL(href, browser.location.href).href;
+      },
+    },
+    addEventListener(type, listener) {
+      listeners.set(type, listener);
+    },
+    removeEventListener(type) {
+      listeners.delete(type);
+    },
+  };
+  const seen = [];
+  const store = createRouteStore(browser, (state) => seen.push(state));
+
+  assert.equal(store.getSnapshot().route, "properties");
+  store.navigate({ route: "sources", query: { source: "group-12" } });
+  assert.equal(browser.location.href, "https://radar.test/sources?source=group-12");
+  browser.location.href = "https://radar.test/inbox?view=table&item=lead-7";
+  listeners.get("popstate")();
+  assert.deepEqual(seen.at(-1), {
+    route: "inbox",
+    query: { item: "lead-7", view: "table" },
+  });
+  store.destroy();
+});
+
+test("shell exposes active-route and mobile labels accessibly", async () => {
+  const shell = await readFile(
+    new URL("app/components/app-shell.jsx", projectRoot),
+    "utf8",
+  );
+  const layout = await readFile(
+    new URL("app/styles/layout.css", projectRoot),
+    "utf8",
+  );
+
+  assert.match(shell, /aria-current=.*page/);
+  assert.match(shell, /rr-nav__mobile-label/);
+  assert.match(layout, /min-height:\s*44px/);
+  assert.match(layout, /prefers-reduced-motion:\s*reduce/);
+});
+
+test("API client maps untrusted failures to safe typed errors", async () => {
+  const { ApiError, createApiClient } = await import("../app/lib/api-client.mjs");
+  const api = createApiClient(async () =>
+    new Response(
+      JSON.stringify({
+        error: "password=super-secret; SELECT * FROM sessions",
+        code: "INTERNAL_QUERY_FAILURE",
+      }),
+      { status: 500, headers: { "content-type": "application/json" } },
+    ),
+  );
+
+  await assert.rejects(
+    api.request("/api/inbox"),
+    (error) =>
+      error instanceof ApiError &&
+      error.status === 500 &&
+      error.code === "server_error" &&
+      error.message === "ระบบขัดข้องชั่วคราว กรุณาลองอีกครั้ง" &&
+      !JSON.stringify(error).includes("super-secret"),
+  );
+});
+
+test("API client distinguishes a retryable network failure", async () => {
+  const { createApiClient } = await import("../app/lib/api-client.mjs");
+  const api = createApiClient(async () => {
+    throw new Error("ECONNRESET at internal-db.example");
+  });
+
+  await assert.rejects(
+    api.request("/health"),
+    (error) =>
+      error.status === 0 &&
+      error.code === "network_error" &&
+      error.retryable === true &&
+      !error.message.includes("internal-db"),
+  );
+});
