@@ -74,23 +74,53 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
   async function ownedEditors(target) {
     return directOwned(target,'[contenteditable="true"][role="textbox"]','editor');
   }
+  async function editorRecords(target) {
+    const locators=await ownedEditors(target),records=[];
+    for(const locator of locators) {
+      const handle=await locator.elementHandle();if(!handle)continue;
+      const state=await handle.evaluate(node=>{
+        const label=[node.getAttribute('aria-label'),node.getAttribute('placeholder'),node.getAttribute('data-placeholder')].filter(Boolean).join(' ').trim();
+        const role=/edit|แก้ไข/i.test(label)?'edit':/reply|respond|ตอบกลับ|เขียน.*ตอบ/i.test(label)?'reply':'other';
+        return {id:node.id||null,label,role,focused:document.activeElement===node};
+      });
+      records.push({locator,handle,...state,signature:JSON.stringify(state)});
+    }
+    return records;
+  }
+  async function priorRecord(record,before) {
+    for(const prior of before) {try {if(await record.handle.evaluate((node,old)=>node===old,prior.handle))return prior;}catch{}}
+    return null;
+  }
   async function sendExact(target,text,{signal,deadline=Date.now()+10000}={}) {
     if(!target?.scope||typeof text!=='string'||!text)throw Error('Exact Facebook send unavailable');
     assertActive({signal,deadline});
     senderId??=await identifySender();
     let activeTarget=await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId});
+    let editor;
     if(activeTarget.identity?.kind==='comment') {
+      const before=await editorRecords(activeTarget);
       const controls=await ownedReplyControls(activeTarget);if(controls.length!==1)throw Error('Exact Facebook Reply control unavailable');
-      assertActive({signal,deadline});await controls[0].click();
+      const controlledId=await controls[0].getAttribute('aria-controls');assertActive({signal,deadline});await controls[0].click();
+      do {
+        assertActive({signal,deadline});const after=await editorRecords(activeTarget),candidates=[];
+        for(const record of after) {
+          const prior=await priorRecord(record,before),changed=!prior||prior.signature!==record.signature;
+          const associated=!prior||record.focused||(controlledId&&record.id===controlledId);
+          if(record.role==='reply'&&changed&&associated)candidates.push(record.locator);
+        }
+        if(candidates.length>1)throw Error('Exact Facebook composer ambiguous');
+        if(candidates.length===1){editor=candidates[0];break;}
+        await page.waitForTimeout(25);
+      } while(Date.now()<deadline);
+      if(!editor)throw Error('Exact Facebook activated reply composer unavailable');
+    } else {
+      const editors=await ownedEditors(activeTarget);if(editors.length!==1)throw Error('Exact Facebook composer unavailable');editor=editors[0];
     }
-    let editors=[];
-    do {assertActive({signal,deadline});editors=await ownedEditors(activeTarget);if(editors.length===1)break;if(editors.length>1)throw Error('Exact Facebook composer ambiguous');await page.waitForTimeout(25);} while(Date.now()<deadline);
-    if(editors.length!==1)throw Error('Exact Facebook composer unavailable');
-    const editor=editors[0];await editor.fill(text);assertActive({signal,deadline});
+    await editor.fill(text);assertActive({signal,deadline});
     activeTarget=await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId});
     const stillOwned=(await ownedEditors(activeTarget));
     if(stillOwned.length!==1||await stillOwned[0].textContent()!==text)throw Error('Exact Facebook composer changed');
-    await stillOwned[0].press('Enter');
+    try {await stillOwned[0].press('Enter');}catch(error){error.possibleClick=true;throw error;}
     try {do {assertActive({signal,deadline});const matches=(await findReplyEvidence({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId})).filter(item=>item.text===text);if(matches.length===1)return {state:'sent',visible:true,remoteId:matches[0].remoteId};await page.waitForTimeout(250);} while(Date.now()<deadline);}
     catch(error) {error.possibleClick=true;throw error;}
     return {state:'unknown',visible:false,remoteId:null,possibleClick:true,observedAt:clock().toISOString()};

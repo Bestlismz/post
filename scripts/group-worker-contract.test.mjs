@@ -168,12 +168,39 @@ test('comment reply fails closed for missing or ambiguous owned Reply controls a
   const controller=new AbortController();controller.abort();
   await assert.rejects(driver.sendExact(target,'No send',{signal:controller.signal,deadline:Date.now()+250}),/cancel/i);
   await assert.rejects(driver.sendExact(target,'No send',{deadline:Date.now()-1}),/deadline/i);
-  const ambiguousEditor=await fixturePage(t,html('<button onclick="this.insertAdjacentHTML(\'afterend\',\'<div contenteditable=true role=textbox></div><div contenteditable=true role=textbox></div>\')">Reply</button>'));
+  const ambiguousEditor=await fixturePage(t,html('<button onclick="this.insertAdjacentHTML(\'afterend\',\'<div contenteditable=true role=textbox aria-label=Reply></div><div contenteditable=true role=textbox aria-label=Reply></div>\')">Reply</button>'));
   const ambiguousDriver=createFacebookGroupDriver(ambiguousEditor),ambiguousTarget=await ambiguousDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
   await assert.rejects(ambiguousDriver.sendExact(ambiguousTarget,'No send',{deadline:Date.now()+250}),/composer ambiguous/);
   const cancelledPage=await fixturePage(t,html('<button>Reply</button>')),cancelledDriver=createFacebookGroupDriver(cancelledPage),cancelledTarget=await cancelledDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
   const waiting=new AbortController();setTimeout(()=>waiting.abort(),30);
   await assert.rejects(cancelledDriver.sendExact(cancelledTarget,'No send',{signal:waiting.signal,deadline:Date.now()+500}),/cancel/i);
+});
+
+test('a no-op Reply never reuses or types into a pre-existing card-owned textbox',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><div data-ad-preview="message">Interested</div><button>Reply</button><div contenteditable="true" role="textbox" aria-label="Reply to Ann"></div></div></div><script>window.keydowns=0;document.querySelector('[contenteditable]').addEventListener('keydown',()=>window.keydowns++);</script>`);
+  const driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  await assert.rejects(driver.sendExact(target,'Must never be typed',{deadline:Date.now()+250}));
+  assert.equal(await page.locator('[contenteditable]').textContent(),'');assert.equal(await page.evaluate(()=>window.keydowns),0);
+  const editPage=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><button id="edit-reply">Reply</button></div></div><script>document.querySelector('#edit-reply').onclick=event=>{const editor=document.createElement('div');editor.contentEditable='true';editor.setAttribute('role','textbox');editor.setAttribute('aria-label','Edit comment');event.currentTarget.after(editor);};</script>`);
+  const editDriver=createFacebookGroupDriver(editPage),editTarget=await editDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  await assert.rejects(editDriver.sendExact(editTarget,'Must never be typed',{deadline:Date.now()+250}));assert.ok((await editPage.locator('[contenteditable]').allTextContents()).every(text=>text===''));
+  const unrelatedPage=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><button id="unrelated">Other</button><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><button onclick="document.querySelector('#unrelated').focus()">Reply</button><div contenteditable="true" role="textbox" aria-label="Reply to Ann"></div></div></div>`);
+  const unrelatedDriver=createFacebookGroupDriver(unrelatedPage),unrelatedTarget=await unrelatedDriver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  await assert.rejects(unrelatedDriver.sendExact(unrelatedTarget,'Must never be typed',{deadline:Date.now()+250}));assert.equal(await unrelatedPage.locator('[contenteditable]').textContent(),'');
+});
+
+test('page close during Enter is a possible send and the durable ledger prevents automatic retry',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const {createGroupDeliveryBoundary}=await import('../src/group-worker/delivery.mjs');
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><div data-ad-preview="message">Interested</div><button onclick="const e=document.createElement('div');e.contentEditable='true';e.setAttribute('role','textbox');e.setAttribute('aria-label','Reply to Ann');this.after(e);e.focus();e.addEventListener('keydown',event=>{if(event.key==='Enter')window.closeFixture();})">Reply</button></div></div>`);
+  await page.exposeFunction('closeFixture',()=>page.close());
+  const now=new Date(),input=signCommand({version:1,kind:'GroupReplyCommand',operationId:'close-on-enter',sourceId:'source-1',groupId:'100',canonicalTarget:'https://www.facebook.com/groups/100',targetId:'comment:900:901',text:'Exact reply',textHash:createHash('sha256').update('Exact reply').digest('hex'),keyId:'current',issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString()},{key,keyId:'current'});
+  const directory=await mkdtemp(`${tmpdir()}/group-close-enter-`);t.after(()=>rm(directory,{recursive:true,force:true}));let retrySends=0;
+  const boundary=createGroupDeliveryBoundary({ledgerPath:directory,driver:createFacebookGroupDriver(page)});
+  const result=await boundary.deliver(input);assert.equal(result.state,'unknown');assert.equal(result.code,'POSSIBLE_SEND');
+  const restarted=createGroupDeliveryBoundary({ledgerPath:directory,driver:{sendExact:async()=>{retrySends++;}}});
+  assert.equal((await restarted.deliver(input)).state,'unknown');assert.equal(retrySends,0);
 });
 
 test('sender identity comes only from an unambiguous session-owned account surface',async t=>{

@@ -85,3 +85,11 @@ The comment reply driver now re-locates the exact stable comment card, requires 
 Authenticated sender identity now comes only from explicit session-owned account surfaces (banner, account menu, or composer-owned identity hook), normalized and deduplicated through a replaceable driver boundary. Feed authors and unrelated global profile links are ignored; missing or conflicting account identities fail closed.
 
 RED fixtures demonstrated that the old driver failed a collapsed composer and mixed the logged-in identity with numeric post authors. GREEN isolated-Chromium fixtures cover collapsed composers, multiple comment cards/editors, missing and ambiguous Reply controls, ambiguous card-owned editors, cancellation/deadline, numeric user and Page identities, author-link exclusion, and an ambiguous account menu. Final verification: focused browser contracts 29/29, PostgreSQL-backed suite 365/365, production build, Compose config, group-worker image build, real container replacement dedupe test, and diff check passed. No external Facebook action was performed.
+
+## Causal composer and dispatch-boundary review follow-up
+
+Before clicking Reply, the driver snapshots handles and semantic state for every visible editor directly owned by the exact comment card. After the click it accepts exactly one reply-semantic editor only when it newly appeared or changed and is causally card-bound through local mutation, focus, or `aria-controls`. Pre-existing no-op editors, edit composers, unrelated focus, missing activation, and ambiguous candidates fail before any fill or keypress.
+
+The irreversible boundary now starts immediately before invoking Enter. Any press rejection, browser/context closure, timeout, or cancellation after invocation carries `possibleClick`, settles the durable operation as unknown, and can only proceed through reconciliation. An isolated Chromium page-close-on-keydown fixture proves the replacement worker reads the terminal ledger and performs no second send.
+
+Adversarial RED showed the old driver reused a pre-existing card textbox after a no-op Reply. GREEN verification: PostgreSQL-backed suite 367/367, production build, Compose config, group-worker image build, real container replacement dedupe test, and diff check passed. No external Facebook action was performed.
