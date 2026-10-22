@@ -28,6 +28,17 @@ test('Meta client bounds dispatch and classifies outcomes without exposing custo
   assert.throws(()=>createMetaSendClient({baseUrl:'http://example.com'}));
 });
 
+test('Meta accepts a valid provider message ID containing the short reply text',async()=>{
+  const {createMetaSendClient}=await import('../src/channels/meta/client.mjs');
+  const client=createMetaSendClient({fetchImpl:async()=>new Response(JSON.stringify({message_id:'m_AbC1Def'}))});
+  const result=await client.sendText({pageId:'page',recipientId:'customer',text:'1',token:'token',attemptId:'attempt'});
+  assert.equal(result.state,'sent');assert.equal(result.messageId,'m_AbC1Def');
+  for(const message_id of ['',1,'bad id','bad\nID','bad<id>','x'.repeat(513)]) {
+    const malformed=createMetaSendClient({fetchImpl:async()=>new Response(JSON.stringify({message_id}))});
+    assert.equal((await malformed.sendText({pageId:'page',recipientId:'customer',text:'1',token:'token',attemptId:'attempt'})).state,'unknown');
+  }
+});
+
 test('Messenger final delivery gate and durable attempts', {skip:!process.env.TEST_DATABASE_URL}, async t=>{
   const {createMetaDeliveryWorker}=await import('../src/workers/meta-delivery-worker.mjs');
   const {createMetaSendClient}=await import('../src/channels/meta/client.mjs');
@@ -66,6 +77,56 @@ test('Messenger final delivery gate and durable attempts', {skip:!process.env.TE
       const audits=(await pool.query("SELECT details FROM audit_entries WHERE action LIKE 'delivery.%' AND entity_id=$1",[intent.id])).rows;
       assert.equal(audits.length,2);assert.ok(!JSON.stringify(audits).includes('private-token'));
     });
+    await t.test('five concurrent workers charge one pre-dispatch failure and retain backoff',async()=>{
+      const intent=await seed('retry-race');const before=calls;
+      let release,allSelected,selected=0,credentialCalls=0;
+      const barrier=new Promise(resolve=>{release=resolve;});
+      const selections=new Promise(resolve=>{allSelected=resolve;});
+      const observedPool={connect:()=>pool.connect(),query:async(...args)=>{
+        const result=await pool.query(...args);
+        if(args[0].includes("kind='deliver_reply'") && /LIMIT 1\b/.test(args[0]) && ++selected===5) allSelected();
+        return result;
+      }};
+      const unavailable={withPageToken:async()=>{credentialCalls++;await barrier;throw Error('Temporary credential read failure');}};
+      const workers=Array.from({length:5},()=>createMetaDeliveryWorker({pool:observedPool,credentials:unavailable,client}));
+      const pending=workers.map(candidate=>candidate.runOnce());
+      let timer;
+      try {await Promise.race([selections,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Workers did not select jobs')),3000);})]);}
+      finally {clearTimeout(timer);release();}
+      await Promise.all(pending);
+      const job=(await pool.query("SELECT attempts,status,available_at,lease_owner FROM jobs WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id])).rows[0];
+      assert.equal(job.attempts,1);assert.equal(job.status,'pending');assert.ok(job.available_at.valueOf()>Date.now());assert.equal(job.lease_owner,null);
+      assert.equal(credentialCalls,1);assert.equal(calls,before);
+      assert.equal((await pool.query('SELECT * FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rowCount,0);
+    });
+    await t.test('an expired pre-dispatch owner cannot charge or reschedule its replacement',async()=>{
+      const intent=await seed('lease-failure');let entered,release;
+      const waiting=new Promise(resolve=>{entered=resolve;});const barrier=new Promise(resolve=>{release=resolve;});
+      const slow=createMetaDeliveryWorker({pool,client,credentials:{withPageToken:async()=>{entered();await barrier;throw Error('Old credential lookup failed');}}});
+      const first=slow.deliverMessengerIntent(intent.id);await waiting;
+      await pool.query("UPDATE jobs SET lease_expires_at=now()-interval '1 second' WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id]);
+      const replacement=createMetaDeliveryWorker({pool,client,credentials:{withPageToken:async()=>{throw Error('Replacement credential lookup failed');}}});
+      await replacement.deliverMessengerIntent(intent.id);
+      const read=async()=>(await pool.query("SELECT attempts,status,available_at,lease_owner FROM jobs WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id])).rows[0];
+      const replaced=await read();assert.equal(replaced.attempts,2);assert.equal(replaced.status,'pending');
+      release();await first;assert.deepEqual(await read(),replaced);
+    });
+    await t.test('only a pre-dispatch expired lease can be reclaimed and its old owner cannot send',async()=>{
+      const intent=await seed('lease-before-attempt');const before=calls;let entered,release;
+      const waiting=new Promise(resolve=>{entered=resolve;});const barrier=new Promise(resolve=>{release=resolve;});
+      const slowCredentials={withPageToken:async(org,source,callback,options)=>credentials.withPageToken(org,source,async token=>{
+        if(!options) {entered();await barrier;}
+        return callback(token);
+      },options)};
+      const slow=createMetaDeliveryWorker({pool,credentials:slowCredentials,client});
+      const first=slow.deliverMessengerIntent(intent.id);await waiting;
+      await pool.query("UPDATE jobs SET lease_expires_at=now()-interval '1 second' WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id]);
+      try {assert.equal((await worker.runOnce()).state,'sent');}
+      finally {release();}
+      assert.equal((await first).state,'sent');assert.equal(calls,before+1);
+      const job=(await pool.query("SELECT attempts,lease_expires_at FROM jobs WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id])).rows[0];
+      assert.equal(job.attempts,2);assert.equal(job.lease_expires_at,null);
+    });
     for(const [name,change] of [
       ['human takeover',async i=>service.requestHandoff('takeover','Agent required',actor)],
       ['opt-out',async i=>pool.query('UPDATE conversations SET opted_out=true WHERE id=$1',[i.conversation_id])],
@@ -87,7 +148,10 @@ test('Messenger final delivery gate and durable attempts', {skip:!process.env.TE
       assert.equal((await pool.query('SELECT * FROM delivery_attempts WHERE delivery_intent_id=$1',[intent.id])).rowCount,0);
       const job=(await pool.query("SELECT attempts,available_at FROM jobs WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id])).rows[0];
       assert.equal(job.attempts,1);assert.ok(job.available_at.valueOf()>Date.now());
-      await storeToken(null);assert.equal((await worker.deliverMessengerIntent(intent.id)).state,'sent');
+      await storeToken(null);
+      assert.equal((await worker.deliverMessengerIntent(intent.id)).code,'DELIVERY_NOT_CLAIMED');
+      await pool.query("UPDATE jobs SET available_at=now() WHERE kind='deliver_reply' AND payload->>'deliveryIntentId'=$1",[intent.id]);
+      assert.equal((await worker.deliverMessengerIntent(intent.id)).state,'sent');
     });
     await t.test('takeover during credential resolution wins before the final transaction',async()=>{
       const intent=await seed('credential-race');const before=calls;

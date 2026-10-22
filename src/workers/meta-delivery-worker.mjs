@@ -13,6 +13,25 @@ const reject=code=>{throw Object.assign(new Error(code),{code});};
 const finalGateCodes=new Set(['INVALID_AUTHORIZATION','DELIVERY_STATE_CHANGED','OPT_OUT','REPLY_SUPERSEDED','CREDENTIAL_CHANGED','FINAL_POLICY_GATE','LOCAL_INVALID_REQUEST']);
 
 export function createMetaDeliveryWorker({pool,credentials,client=createMetaSendClient(),clock=()=>new Date()}) {
+  async function claimJob(intentId=null) {
+    const leaseOwner=randomUUID();
+    const {rows:[job]}=await pool.query(`WITH candidate AS (
+      SELECT j.id FROM jobs j WHERE j.kind='deliver_reply'
+      AND ($2::text IS NULL OR j.payload->>'deliveryIntentId'=$2)
+      AND ((j.status='pending' AND j.available_at<=now())
+        OR (j.status='running' AND j.lease_expires_at<=now()))
+      AND NOT EXISTS (SELECT 1 FROM delivery_attempts a WHERE a.organization_id=j.organization_id AND a.delivery_intent_id=j.payload->>'deliveryIntentId')
+      AND NOT EXISTS (SELECT 1 FROM delivery_cancellations c WHERE c.organization_id=j.organization_id AND c.delivery_intent_id=j.payload->>'deliveryIntentId')
+      ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE SKIP LOCKED)
+      UPDATE jobs j SET status='running',lease_owner=$1,lease_expires_at=now()+interval '60 seconds',attempts=attempts+1,updated_at=now()
+      FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner,intentId]);
+    return job;
+  }
+  async function ownsClaim(tx,claim,intent) {
+    return (await tx.query(`SELECT id FROM jobs WHERE id=$1 AND organization_id=$2 AND kind='deliver_reply'
+      AND payload->>'deliveryIntentId'=$3 AND status='running' AND lease_owner=$4 AND lease_expires_at>now() FOR UPDATE`,[claim.id,intent.organization_id,intent.id,claim.lease_owner])).rowCount>0;
+  }
+  const unclaimed=()=>({state:'failed',code:'DELIVERY_NOT_CLAIMED',retrySafe:true});
   async function lockIntent(tx,intent) {
     await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[intent.organization_id]);
     await tx.query('SELECT id FROM delivery_intents WHERE organization_id=$1 AND id=$2 FOR UPDATE',[intent.organization_id,intent.id]);
@@ -45,13 +64,20 @@ export function createMetaDeliveryWorker({pool,credentials,client=createMetaSend
       return outcome(saved);
     });
   }
-  async function deliverMessengerIntent(intentId) {
+  async function deliverMessengerIntent(intentId) {return deliverIntent(intentId);}
+  async function deliverIntent(intentId,claim) {
     const intent=(await pool.query('SELECT * FROM delivery_intents WHERE id=$1',[intentId])).rows[0];
     if(!intent) return {state:'failed',code:'INTENT_NOT_FOUND',retrySafe:false};
     const prior=await withTransaction(pool,async tx=>{await lockIntent(tx,intent);return existing(tx,intent);});
     if(prior) return prior;
+    claim??=await claimJob(intentId);
+    if(!claim) return unclaimed();
     const source=(await pool.query('SELECT health FROM meta_page_sources WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.source_id])).rows[0];
-    if(source?.health!=='connected') return withTransaction(pool,async tx=>{await lockIntent(tx,intent);return await existing(tx,intent)??cancel(tx,intent,'SOURCE_UNAVAILABLE');});
+    if(source?.health!=='connected') return withTransaction(pool,async tx=>{
+      await lockIntent(tx,intent);
+      const prior=await existing(tx,intent);if(prior) return prior;
+      return await ownsClaim(tx,claim,intent)?cancel(tx,intent,'SOURCE_UNAVAILABLE'):unclaimed();
+    });
     let attempted=false;
     try {
       return await credentials.withPageToken(intent.organization_id,intent.source_id,async token=>{
@@ -59,6 +85,7 @@ export function createMetaDeliveryWorker({pool,credentials,client=createMetaSend
         const gate=await withTransaction(pool,async tx=>{
           await lockIntent(tx,intent);
           const prior=await existing(tx,intent);if(prior) return {prior};
+          if(!await ownsClaim(tx,claim,intent)) return {prior:unclaimed()};
           const reply=(await tx.query('SELECT * FROM reply_versions WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.reply_version_id])).rows[0];
           const authorization=(await tx.query('SELECT * FROM reply_authorizations WHERE organization_id=$1 AND id=$2',[intent.organization_id,intent.authorization_id])).rows[0];
           let context;
@@ -95,7 +122,9 @@ export function createMetaDeliveryWorker({pool,credentials,client=createMetaSend
             return {prior:await cancel(tx,intent,error.code)};
           }
           await tx.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state) VALUES($1,$2,$3,'attempting')",[attemptId,intent.organization_id,intent.id]);
-          await tx.query("UPDATE jobs SET status='running',lease_owner=$3,lease_expires_at=NULL,attempts=attempts+1,updated_at=now() WHERE organization_id=$1 AND kind='deliver_reply' AND payload->>'deliveryIntentId'=$2",[intent.organization_id,intent.id,attemptId]);
+          // The pre-dispatch owner becomes an irreversible attempt owner.
+          // Clearing expiry prevents either generic or delivery-specific reclaim.
+          await tx.query("UPDATE jobs SET lease_owner=$3,lease_expires_at=NULL,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[claim.id,claim.lease_owner,attemptId]);
           await appendAudit(tx,{organizationId:intent.organization_id,action:'delivery.attempting',entityType:'delivery_intent',entityId:intent.id,details:{attemptId,replyVersionId:reply.id}});
           // COMMIT acknowledgement can be lost after PostgreSQL commits. Treat
           // that as uncertain too, even though remote I/O has not started.
@@ -114,13 +143,13 @@ export function createMetaDeliveryWorker({pool,credentials,client=createMetaSend
       // Re-entry returns unknown and never sends again.
       if(!attempted) await withTransaction(pool,async tx=>{
         await lockIntent(tx,intent);
-        if(await existing(tx,intent)) return;
+        if(await existing(tx,intent) || !await ownsClaim(tx,claim,intent)) return;
         // Local credential/configuration failures back off without monopolizing
         // the queue. This path cannot run after an attempt has been committed.
-        await tx.query(`UPDATE jobs SET status=CASE WHEN attempts>=4 THEN 'failed' ELSE 'pending' END,
-          attempts=attempts+1,available_at=now()+interval '30 seconds',last_error='PRE_DISPATCH_FAILED',
+        await tx.query(`UPDATE jobs SET status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,
+          available_at=now()+interval '30 seconds',last_error='PRE_DISPATCH_FAILED',
           lease_owner=NULL,lease_expires_at=NULL,updated_at=now()
-          WHERE organization_id=$1 AND kind='deliver_reply' AND payload->>'deliveryIntentId'=$2`,[intent.organization_id,intent.id]);
+          WHERE id=$1 AND lease_owner=$2 AND status='running'`,[claim.id,claim.lease_owner]);
       });
       return {state:attempted?'unknown':'failed',code:attempted?'ATTEMPT_UNRESOLVED':'PRE_DISPATCH_FAILED',retrySafe:!attempted};
     }
@@ -146,8 +175,8 @@ export function createMetaDeliveryWorker({pool,credentials,client=createMetaSend
   }
   async function runOnce() {
     await recoverInterruptedAttempts();
-    const job=(await pool.query("SELECT payload FROM jobs WHERE kind='deliver_reply' AND status='pending' AND available_at<=now() ORDER BY created_at,id LIMIT 1")).rows[0];
-    return job?deliverMessengerIntent(job.payload.deliveryIntentId):null;
+    const job=await claimJob();
+    return job?deliverIntent(job.payload.deliveryIntentId,job):null;
   }
   async function recoverInterruptedAttempts() {
     // The client timeout is capped at 60 seconds. Wait twice that duration,

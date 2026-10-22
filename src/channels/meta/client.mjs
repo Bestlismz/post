@@ -45,7 +45,7 @@ export function createMetaSendClient({fetchImpl=fetch,graphVersion='v24.0',timeo
               : response.status===403 || [10,200].includes(body?.error?.code) ? 'PROVIDER_PERMISSION' : 'PROVIDER_INVALID_REQUEST';
             return {state:'failed',code,httpStatus:response.status,dispatched:true,retrySafe:false};
           }
-          if(!response.ok || typeof body?.message_id!=='string' || !body.message_id || body.message_id.length>512 || /[\x00-\x20\x7f]/.test(body.message_id) || [token,recipientId,text].some(secret=>body.message_id.includes(secret))) return uncertain('PROVIDER_MALFORMED');
+          if(!response.ok || !body || typeof body!=='object' || Array.isArray(body) || body.error!==undefined || typeof body.message_id!=='string' || !/^[A-Za-z0-9_.:$-]{1,512}$/.test(body.message_id)) return uncertain('PROVIDER_MALFORMED');
           return {state:'sent',code:'PROVIDER_ACCEPTED',messageId:body.message_id,dispatched:true,retrySafe:false};
         })(),
         new Promise(resolve=>{timer=setTimeout(()=>{controller.abort();resolve(uncertain('PROVIDER_TIMEOUT'));},timeoutMs);}),
