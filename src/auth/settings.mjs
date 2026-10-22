@@ -63,7 +63,45 @@ export async function changeSetting(pool, kind, command) {
   }))).body;
 }
 export async function readAudit(pool, organizationId, input) {
-  const filters = z.strictObject({ action: z.string().min(1).max(100).optional(), actorId: z.string().min(1).max(200).optional(), entityId: z.string().min(1).max(200).optional(), before: z.iso.datetime().optional(), limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(input);
-  const result = await pool.query("SELECT * FROM audit_entries WHERE organization_id=$1 AND ($2::text IS NULL OR action=$2) AND ($3::text IS NULL OR actor_id=$3) AND ($4::text IS NULL OR entity_id=$4) AND ($5::timestamptz IS NULL OR created_at<$5) ORDER BY created_at DESC,id DESC LIMIT $6", [organizationId, filters.action ?? null, filters.actorId ?? null, filters.entityId ?? null, filters.before ?? null, filters.limit]);
-  return { entries: result.rows };
+  const filters = z.strictObject({
+    action: z.string().trim().min(1).max(100).optional(),
+    actorId: z.string().trim().min(1).max(200).optional(),
+    entityId: z.string().trim().min(1).max(200).optional(),
+    correlationId: z.string().trim().min(1).max(200).optional(),
+    before: z.iso.datetime().optional(),
+    cursor: z.string().min(1).max(1000).regex(/^[A-Za-z0-9_-]+$/).optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  }).refine((value) => !(value.before && value.cursor), { message: "Use either before or cursor", path: ["cursor"] }).parse(input);
+  let cursorTime = filters.before ?? null;
+  let cursorId = null;
+  if (filters.cursor) {
+    try {
+      const decoded = Buffer.from(filters.cursor, "base64url").toString("utf8");
+      const separator = decoded.indexOf("\0");
+      cursorTime = decoded.slice(0, separator);
+      cursorId = decoded.slice(separator + 1);
+      if (separator < 1 || !z.iso.datetime().safeParse(cursorTime).success || !cursorId || cursorId.length > 200) throw new Error("invalid");
+    } catch {
+      throw httpError(422, "Invalid audit cursor", { cursor: ["Cursor is invalid or expired"] });
+    }
+  }
+  const result = await pool.query(`
+    SELECT a.*,u.display_name AS actor_name
+    FROM audit_entries a LEFT JOIN users u ON u.id=a.actor_id
+    WHERE a.organization_id=$1
+      AND ($2::text IS NULL OR a.action=$2)
+      AND ($3::text IS NULL OR a.actor_id=$3)
+      AND ($4::text IS NULL OR a.entity_id=$4)
+      AND ($5::text IS NULL OR a.id=$5 OR a.entity_id=$5
+        OR a.details->>'correlationId'=$5 OR a.details->>'jobId'=$5
+        OR a.details->>'attemptId'=$5 OR a.details->>'operationId'=$5
+        OR a.details->>'receiptId'=$5 OR a.details->>'replyVersionId'=$5)
+      AND ($6::timestamptz IS NULL OR ($7::text IS NULL AND a.created_at<$6) OR ($7::text IS NOT NULL AND (a.created_at,a.id)<($6::timestamptz,$7)))
+    ORDER BY a.created_at DESC,a.id DESC LIMIT $8
+  `, [organizationId, filters.action ?? null, filters.actorId ?? null, filters.entityId ?? null, filters.correlationId ?? null, cursorTime, cursorId, filters.limit + 1]);
+  const hasMore = result.rows.length > filters.limit;
+  const entries = result.rows.slice(0, filters.limit);
+  const last = entries.at(-1);
+  const nextCursor = hasMore && last ? Buffer.from(`${new Date(last.created_at).toISOString()}\0${last.id}`).toString("base64url") : null;
+  return { entries, nextCursor };
 }

@@ -23,6 +23,7 @@ import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } fro
 import { createInboxWorkspaceFixture } from "../fixture/inbox-workspace.mjs";
 import { createInventoryWorkspaceFixture } from "../fixture/inventory-workspace.mjs";
 import { createSourcesAutomationWorkspaceFixture } from "../fixture/sources-automation-workspace.mjs";
+import { createSettingsWorkspaceFixture } from "../fixture/settings-workspace.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const port = Number(process.env.PORT ?? 3000);
@@ -34,6 +35,7 @@ const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
 const inventoryWorkspace = createInventoryWorkspaceFixture();
 const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({ operationalClock: fixtureOperationalClock(process.env) });
+const settingsWorkspace = createSettingsWorkspaceFixture();
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {
@@ -128,6 +130,23 @@ app.post("/api/units/:id/publish", asyncRoute(async (request, response) => sendF
 app.post("/api/units/:id/archive", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.archiveUnit(request.params.id, fixtureRevision(request)))));
 
 if (mode === "fixture") {
+  app.get("/api/settings/users", (request, response) => { requireFixtureRole(request, "admin"); response.json(settingsWorkspace.users()); });
+  app.get("/api/settings/business-profile", (request, response) => { requireFixtureRole(request, "admin"); sendFixtureEntity(response, settingsWorkspace.profile()); });
+  app.get("/api/settings/retention", (request, response) => { requireFixtureRole(request, "admin"); sendFixtureEntity(response, settingsWorkspace.retention()); });
+  app.get("/api/settings/readiness", (request, response) => { requireFixtureRole(request, "admin"); response.json(settingsWorkspace.readiness()); });
+  app.get("/api/settings/audit", (request, response) => { requireFixtureRole(request, "admin"); response.json(settingsWorkspace.audit(request.query)); });
+  app.patch("/api/settings/users/:id", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin"); requireFixtureCsrf(request);
+    sendFixtureEntity(response, settingsWorkspace.changeRole(request.params.id, request.body, fixtureRevision(request), fixtureIdempotencyKey(request), fixtureActor(request)));
+  }));
+  app.patch("/api/settings/business-profile", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin"); requireFixtureCsrf(request);
+    sendFixtureEntity(response, settingsWorkspace.saveProfile(request.body, fixtureRevision(request), fixtureIdempotencyKey(request), fixtureActor(request)));
+  }));
+  app.patch("/api/settings/retention", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin"); requireFixtureCsrf(request);
+    sendFixtureEntity(response, settingsWorkspace.saveRetention(request.body, fixtureRevision(request), fixtureIdempotencyKey(request), fixtureActor(request)));
+  }));
   app.get("/api/sources", (request, response) => response.json(sourcesAutomationWorkspace.listSources(fixtureActor(request).role)));
   app.post("/api/sources/groups", asyncRoute(async (request, response) => {
     requireFixtureRole(request, "admin");
@@ -647,7 +666,7 @@ function requireFixtureCsrf(request) {
 
 function fixtureActor(request) {
   const role = request.get("X-Fixture-Role") || "admin";
-  if (!["admin", "operator", "viewer"].includes(role)) throw httpError(401, "Invalid fixture identity");
+  if (!["admin", "operator", "inventory_manager", "viewer"].includes(role)) throw httpError(401, "Invalid fixture identity");
   return { id: `fixture-${role}`, displayName: role === "admin" ? "ณัฐวุฒิ" : `Fixture ${role}`, role };
 }
 

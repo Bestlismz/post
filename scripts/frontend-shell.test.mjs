@@ -76,6 +76,7 @@ test("every navigation destination is backed by a real App Router page", async (
     else if (route.id === "properties") assert.match(page, /UnitTable/);
     else if (route.id === "sources") assert.match(page, /SourceRow/);
     else if (route.id === "automations") assert.match(page, /PolicyEditor/);
+    else if (route.id === "settings") assert.match(page, /AuditView/);
     else assert.match(page, /RoutePlaceholder/);
   }
 

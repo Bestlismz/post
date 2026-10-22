@@ -78,3 +78,34 @@ test("user administration is idempotent, tenant scoped, audited atomically and p
   assert.equal((await request("/api/settings/retention", admin)).body.revision, 1);
   assert.equal((await request("/api/settings/audit?action=settings.retention_changed", admin)).body.entries.length, 0);
 }));
+
+test("audit search uses an exact correlation across durable identifiers and paginates without gaps", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, login, request }) => {
+  await bootstrap();
+  const admin = await login();
+  const actorId = (await request("/api/me", admin)).body.user.id;
+  const createdAt = "2026-10-22T10:00:00.000Z";
+  const rows = [
+    ["audit-a", "delivery.attempting", "intent-a", { attemptId: "corr-attempt" }],
+    ["audit-b", "group.scan_received", "operation-b", { operationId: "corr-operation" }],
+    ["audit-c", "reply.prepared", "reply-c", { jobId: "corr-job" }],
+  ];
+  for (const [id, action, entityId, details] of rows) {
+    await pool.query("INSERT INTO audit_entries(id,organization_id,actor_id,action,entity_type,entity_id,details,created_at) VALUES($1,'org_default',$2,$3,'fixture',$4,$5::jsonb,$6)", [id, actorId, action, entityId, JSON.stringify(details), createdAt]);
+  }
+
+  for (const correlationId of ["audit-a", "intent-a", "corr-attempt", "corr-operation", "corr-job"]) {
+    const result = await request(`/api/settings/audit?correlationId=${encodeURIComponent(correlationId)}`, admin);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.entries.length, 1, correlationId);
+  }
+  assert.equal((await request("/api/settings/audit?correlationId=corr", admin)).body.entries.length, 0);
+
+  const first = await request("/api/settings/audit?limit=2", admin);
+  assert.equal(first.status, 200);
+  assert.equal(first.body.entries.length, 2);
+  assert.equal(typeof first.body.nextCursor, "string");
+  assert.ok(first.body.nextCursor.length > 10);
+  const second = await request(`/api/settings/audit?limit=2&cursor=${encodeURIComponent(first.body.nextCursor)}`, admin);
+  assert.equal(second.status, 200);
+  assert.equal(new Set([...first.body.entries, ...second.body.entries].map((entry) => entry.id)).size, 4);
+}));

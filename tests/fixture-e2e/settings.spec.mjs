@@ -1,0 +1,36 @@
+import { expect, test } from "@playwright/test";
+
+test("fixture Settings uses stateful production-shaped APIs without exposing secrets", async ({ page, request }) => {
+  const readiness = await request.get("/api/settings/readiness");
+  expect(readiness.status()).toBe(200);
+  const readinessBody = await readiness.json();
+  expect(readinessBody.integrations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: "openai", status: "configured" }),
+    expect.objectContaining({ id: "messenger", status: "missing" }),
+  ]));
+  expect(readinessBody.configuration.secretReadback).toBe(false);
+  expect(JSON.stringify(readinessBody)).not.toMatch(/sk-proj-|fixture-token|fixture-secret/);
+
+  await page.goto("/settings");
+  await expect(page.getByRole("heading", { name: "การตั้งค่าระบบ" })).toBeVisible();
+  await expect(page.getByText("OpenAI configured")).toBeVisible();
+  await expect(page.getByText("Messenger missing")).toBeVisible();
+  await page.getByLabel("ชื่อธุรกิจ").fill("Rental Radar Customer Demo");
+  await page.getByRole("button", { name: "บันทึกข้อมูลธุรกิจ" }).click();
+  await expect(page.getByText("บันทึกข้อมูลธุรกิจแล้ว")).toBeVisible();
+
+  const saved = await request.get("/api/settings/business-profile");
+  expect((await saved.json()).name).toBe("Rental Radar Customer Demo");
+  const audit = await request.get("/api/settings/audit?correlationId=corr-send-18");
+  expect((await audit.json()).entries).toEqual([expect.objectContaining({ action: "delivery.sent" })]);
+});
+
+test("fixture Settings validates retention and enforces role visibility", async ({ request }) => {
+  const invalid = await request.patch("/api/settings/retention", {
+    headers: { "X-CSRF-Token": "fixture-csrf", "Idempotency-Key": "fixture-invalid-retention", "If-Match": '"1"' },
+    data: { rawPayloadDays: 0, screenshotDays: 7 },
+  });
+  expect(invalid.status()).toBe(422);
+  const forbidden = await request.get("/api/settings/users", { headers: { "X-Fixture-Role": "viewer" } });
+  expect(forbidden.status()).toBe(403);
+});

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireRole } from "../auth/authorize.mjs";
 import { changeSetting, readAudit, readSetting } from "../auth/settings.mjs";
+import { groupCommandKeyConfig } from "../channels/groups/keys.mjs";
 import { commandFor, sendEntity } from "./boundary.mjs";
 
 export function settingsRoutes({ pool, write, env }) {
@@ -16,7 +17,25 @@ export function settingsRoutes({ pool, write, env }) {
   router.get("/api/settings/readiness", (_request, response) => {
     const meta = ["META_PAGE_ID", "META_PAGE_ACCESS_TOKEN", "META_APP_SECRET", "META_VERIFY_TOKEN"];
     const required = ["OPENAI_API_KEY", ...meta];
-    response.json({ databaseConfigured: true, openaiConfigured: Boolean(env.OPENAI_API_KEY), messengerConfigured: meta.every((name) => Boolean(env[name])), missing: required.filter((name) => !env[name]) });
+    const openaiConfigured = Boolean(env.OPENAI_API_KEY);
+    const messengerConfigured = meta.every((name) => Boolean(env[name]));
+    let groupWorkerConfigured = false;
+    try { groupWorkerConfigured = Boolean(env.GROUP_WORKER_URL && groupCommandKeyConfig(env, { optional: true })); } catch { /* readiness stays redacted and fail-closed */ }
+    const groupWorkerMissing = ["GROUP_WORKER_URL", "GROUP_COMMAND_KEY_ID", "GROUP_COMMAND_KEYS"].filter((name) => !env[name]);
+    response.json({
+      databaseConfigured: true,
+      openaiConfigured,
+      messengerConfigured,
+      groupWorkerConfigured,
+      missing: required.filter((name) => !env[name]),
+      integrations: [
+        { id: "database", label: "Database", status: "configured" },
+        { id: "openai", label: "OpenAI", status: openaiConfigured ? "configured" : "missing", ...(!openaiConfigured ? { missing: ["OPENAI_API_KEY"] } : {}) },
+        { id: "messenger", label: "Messenger", status: messengerConfigured ? "configured" : "missing", ...(!messengerConfigured ? { missing: meta.filter((name) => !env[name]) } : {}) },
+        { id: "group-worker", label: "Group worker", status: groupWorkerConfigured ? "configured" : "missing", ...(!groupWorkerConfigured ? { missing: groupWorkerMissing.length ? groupWorkerMissing : ["GROUP_COMMAND_KEYS"] } : {}) },
+      ],
+      configuration: { method: "deployment_environment", secretReadback: false },
+    });
   });
   return router;
 }
