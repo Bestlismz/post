@@ -6,6 +6,8 @@
     "build": "next build",
     "start": "NODE_ENV=production node src/server.mjs",
     "create:admin": "node scripts/create-admin.mjs",
+    "migrate": "node scripts/migrate.mjs",
+    "import:legacy": "node scripts/import-json-state.mjs",
     "test": "node --test scripts/*.test.mjs",
     "verify": "node scripts/verify-poc.mjs",
     "verify:command-center": "node scripts/verify-command-center.mjs",
