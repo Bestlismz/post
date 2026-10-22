@@ -75,6 +75,24 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       assert.equal((await inbox.listInbox({ sourceId: "source2" }, actor)).items.length, 1);
       await pool.query("UPDATE meta_page_sources SET health='connected' WHERE id='source'");
     });
+    await t.test("table filters are enforced by the production query and return an authoritative result count", async () => {
+      await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+        SELECT 'table-filter-reply',w.organization_id,w.id,w.conversation_id,w.processing_revision,1,'{"text":"safe"}',
+          '{"snapshot":{"requirements":{"geography":{"districts":["อโศก"]},"budgetMax":20000}}}'::jsonb
+        FROM work_items w JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id
+        WHERE w.organization_id='org_default' AND m.mid='second'`);
+      const result = await inbox.listInbox({
+        channel: "messenger", status: "pending", location: "อโศก", budgetMin: 15000, budgetMax: 22000,
+        assignee: "unassigned", search: "second",
+      }, actor);
+      assert.equal(result.resultCount, 1);
+      assert.equal(result.items.length, 1);
+      assert.equal(result.items[0].summary.location, "อโศก");
+      assert.equal(result.items[0].summary.budgetMax, 20000);
+      assert.equal((await inbox.listInbox({ status: "completed" }, actor)).resultCount, 0);
+      assert.equal((await inbox.listInbox({ budgetMin: 20001 }, actor)).resultCount, 0);
+      assert.equal((await inbox.listInbox({ budgetMax: 19999, location: "อโศก" }, actor)).resultCount, 0);
+    });
     await t.test("invalid cursors and actor scopes fail closed at query boundary", async () => {
       for (const cursor of ["!", "e30", first.nextCursor + "=", Buffer.from(JSON.stringify({ v: 1, at: "invalid", id: "x" })).toString("base64url")]) await assert.rejects(inbox.listInbox({ cursor }, actor), { status: 400 });
       const position = JSON.parse(Buffer.from(first.nextCursor, "base64url"));
@@ -85,6 +103,9 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       await assert.rejects(inbox.listInbox({ cursor: first.nextCursor, search: "different" }, actor), { status: 400 });
       for (const limit of [0, -1, 101, 1.5, "2"]) await assert.rejects(inbox.listInbox({ limit }, actor), { status: 400 });
       await assert.rejects(inbox.listInbox({ channel: "other" }, actor), { status: 400 });
+      await assert.rejects(inbox.listInbox({ status: "other" }, actor), { status: 400 });
+      await assert.rejects(inbox.listInbox({ assignee: "someone" }, actor), { status: 400 });
+      await assert.rejects(inbox.listInbox({ budgetMin: 30000, budgetMax: 20000 }, actor), { status: 400 });
       await assert.rejects(inbox.listInbox({}, null), { status: 401 });
       await assert.rejects(inbox.listInbox({}, { ...actor, role: "intruder" }), { status: 403 });
       await assert.rejects(inbox.listInbox({}, { ...actor, organizationId: "" }), { status: 401 });

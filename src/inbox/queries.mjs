@@ -4,6 +4,7 @@ import { authorizeInboxActor } from "./repository.mjs";
 import { validateInboxText } from "./validation.mjs";
 
 const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
+  w.created_at AS sort_created_at,
   to_char(w.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
   c.channel,m.id AS message_id,m.text AS message_text,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS author_label,
@@ -19,6 +20,10 @@ const relations = `FROM work_items w
   LEFT JOIN LATERAL (SELECT rv.context FROM reply_versions rv
     WHERE rv.organization_id=w.organization_id AND rv.work_item_id=w.id
     ORDER BY rv.version DESC LIMIT 1) latest_reply ON true`;
+const locationSql = `coalesce(latest_reply.context#>>'{snapshot,requirements,geography,districts,0}',latest_reply.context#>>'{snapshot,requirements,district}',latest_reply.context#>>'{extraction,requirements,geography,districts,0}',latest_reply.context#>>'{extraction,requirements,district}',latest_reply.context#>>'{extraction,fields,district,value}')`;
+const budgetTextSql = `coalesce(latest_reply.context#>>'{snapshot,requirements,budgetMax}',latest_reply.context#>>'{extraction,requirements,budgetMax}',latest_reply.context#>>'{extraction,fields,budgetMax,value}')`;
+const budgetSql = `(CASE WHEN ${budgetTextSql} ~ '^\\d{1,10}$' THEN (${budgetTextSql})::bigint END)`;
+const authorSql = `(CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END)`;
 
 function safeSummaryLocation(context) {
   const snapshot = context?.snapshot?.requirements;
@@ -55,13 +60,19 @@ function itemDto(row) {
 
 function parseQuery(query, organizationId) {
   if (!query || typeof query !== "object" || Array.isArray(query)) throw httpError(400, "Invalid Inbox query");
-  const { limit = 25, channel = null, sourceId = null, search = "", cursor = null } = query;
+  const { limit = 100, channel = null, status = null, sourceId = null, location = "", budgetMin = null, budgetMax = null, assignee = null, q, search = q ?? "", cursor = null } = query;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw httpError(400, "Page size must be between 1 and 100");
   if (channel !== null && !['messenger','facebook_group'].includes(channel)) throw httpError(400, "Invalid channel");
+  if (status !== null && !['pending','pending_or_updated','preparing','needs_review','ready','completed','superseded','handoff','failed'].includes(status)) throw httpError(400, "Invalid status");
+  if (assignee !== null && assignee !== 'unassigned') throw httpError(400, "Invalid assignee");
   if (sourceId !== null) validateInboxText(sourceId, "source");
+  validateInboxText(location, "location", { maxLength: 160, allowEmpty: true });
   validateInboxText(search, "search", { maxLength: 500, allowEmpty: true });
+  for (const value of [budgetMin,budgetMax]) if (value !== null && (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000_000)) throw httpError(400, "Invalid budget");
+  if (budgetMin !== null && budgetMax !== null && budgetMin > budgetMax) throw httpError(400, "Invalid budget range");
   const normalizedSearch = search.trim();
-  const scope = createHash("sha256").update(JSON.stringify([organizationId, channel, sourceId, normalizedSearch])).digest("hex");
+  const normalizedLocation = location.trim();
+  const scope = createHash("sha256").update(JSON.stringify([organizationId, channel, status, sourceId, normalizedLocation, budgetMin, budgetMax, assignee, normalizedSearch])).digest("hex");
   let position = null;
   if (cursor !== null) {
     try {
@@ -84,7 +95,7 @@ function parseQuery(query, organizationId) {
       if (!validShape || !validId || !validTimestamp) throw new Error();
     } catch { throw httpError(400, "Invalid Inbox cursor"); }
   }
-  return { limit, channel, sourceId, search: normalizedSearch, scope, position };
+  return { limit, channel, status, sourceId, location: normalizedLocation, budgetMin, budgetMax, assignee, search: normalizedSearch, scope, position };
 }
 
 export function createInboxQueries({ pool }) {
@@ -97,17 +108,23 @@ export function createInboxQueries({ pool }) {
 export async function listInbox(pool, query = {}, actor) {
   const organizationId = authorizeInboxActor(actor);
   const parsed = parseQuery(query, organizationId);
-  const { rows } = await pool.query(`SELECT ${columns} ${relations}
+  const { rows } = await pool.query(`WITH filtered AS (SELECT ${columns} ${relations}
     WHERE w.organization_id=$1 AND ($2::text IS NULL OR c.channel=$2)
-      AND ($3::text IS NULL OR coalesce(s.id,g.id)=$3)
-      AND ($4::text='' OR strpos(lower(m.text),lower($4))>0 OR strpos(lower(CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE coalesce(s.name,'') END),lower($4))>0)
-      AND ($5::timestamptz IS NULL OR (w.created_at,w.id)<($5::timestamptz,$6::text))
-    ORDER BY w.created_at DESC,w.id DESC LIMIT $7`,
-  [organizationId, parsed.channel, parsed.sourceId, parsed.search, parsed.position?.at ?? null, parsed.position?.id ?? null, parsed.limit + 1]);
+      AND ($3::text IS NULL OR ($3='pending_or_updated' AND w.status IN ('pending','superseded')) OR w.status=$3)
+      AND ($4::text IS NULL OR coalesce(s.id,g.id)=$4)
+      AND ($5::text='' OR strpos(lower(coalesce(${locationSql},'')),lower($5))>0)
+      AND ($6::bigint IS NULL OR ${budgetSql}>=$6)
+      AND ($7::bigint IS NULL OR ${budgetSql}<=$7)
+      AND ($8::text IS NULL OR $8='unassigned')
+      AND ($9::text='' OR strpos(lower(m.text),lower($9))>0 OR strpos(lower(CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE coalesce(s.name,'') END),lower($9))>0 OR strpos(lower(coalesce(${authorSql},'')),lower($9))>0))
+    SELECT filtered.*,(SELECT count(*)::int FROM filtered) AS total_count FROM filtered
+      WHERE ($10::timestamptz IS NULL OR (sort_created_at,id)<($10::timestamptz,$11::text))
+    ORDER BY sort_created_at DESC,id DESC LIMIT $12`,
+  [organizationId, parsed.channel, parsed.status, parsed.sourceId, parsed.location, parsed.budgetMin, parsed.budgetMax, parsed.assignee, parsed.search, parsed.position?.at ?? null, parsed.position?.id ?? null, parsed.limit + 1]);
   const selected = rows.slice(0, parsed.limit);
   const last = selected.at(-1);
   const nextCursor = rows.length > parsed.limit ? Buffer.from(JSON.stringify({ v: 1, at: last.created_at, id: last.id, scope: parsed.scope })).toString("base64url") : null;
-  return { items: selected.map(itemDto), nextCursor };
+  return { items: selected.map(itemDto), resultCount: Number(rows[0]?.total_count ?? 0), nextCursor };
 }
 
 export async function getInboxItem(pool, id, actor) {

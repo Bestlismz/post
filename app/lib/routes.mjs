@@ -7,30 +7,49 @@ const manifest = [
 ];
 
 export const routes = Object.freeze(manifest.map((route) => Object.freeze(route)));
-export const inboxViews = Object.freeze(["workspace", "table"]);
-export const inboxStates = Object.freeze(["all", "needs_review"]);
+export const inboxStatuses = Object.freeze(["pending", "pending_or_updated", "preparing", "needs_review", "ready", "completed", "superseded", "handoff", "failed"]);
+export const inboxChannels = Object.freeze(["messenger", "facebook_group"]);
 const routeById = new Map(routes.map((route) => [route.id, route]));
 const routeByPath = new Map(routes.map((route) => [route.path, route]));
 
 export function readInboxRouteState(search) {
   const params = search instanceof URLSearchParams ? search : new URLSearchParams(search ?? "");
-  const requestedView = params.get("view");
-  const requestedState = params.get("state");
+  const status = inboxStatuses.includes(params.get("status")) ? params.get("status") : params.get("state") === "needs_review" ? "needs_review" : "";
+  const numeric = (name) => /^\d{1,10}$/.test(params.get(name) ?? "") ? params.get(name) : "";
   return {
-    view: inboxViews.includes(requestedView) ? requestedView : "workspace",
-    state: requestedState === "needs_review" ? "needs_review" : "all",
     item: params.get("item") || null,
+    filters: {
+      channel: inboxChannels.includes(params.get("channel")) ? params.get("channel") : "",
+      status,
+      location: (params.get("location") ?? "").slice(0, 160),
+      budgetMin: numeric("budgetMin"),
+      budgetMax: numeric("budgetMax"),
+      assignee: params.get("assignee") === "unassigned" ? "unassigned" : "",
+      search: (params.get("q") ?? "").slice(0, 500),
+    },
   };
 }
 
 export function inboxHref(search, patch = {}) {
   const params = new URLSearchParams(search ?? "");
+  params.delete("view");
+  params.delete("state");
   for (const [key, value] of Object.entries(patch)) {
     if (value === undefined) continue;
-    if (value === null || value === "" || (key === "state" && value === "all")) params.delete(key);
+    if (value === null || value === "") params.delete(key);
     else params.set(key, String(value));
   }
   return `/inbox${params.size ? `?${params.toString()}` : ""}`;
+}
+
+export function canonicalInboxHref(search) {
+  const { item, filters } = readInboxRouteState(search);
+  const params = new URLSearchParams();
+  if (item) params.set("item", item);
+  for (const [key, value] of Object.entries({ channel: filters.channel, status: filters.status, location: filters.location, budgetMin: filters.budgetMin, budgetMax: filters.budgetMax, assignee: filters.assignee, q: filters.search })) {
+    if (value) params.set(key, value);
+  }
+  return `/inbox${params.size ? `?${params}` : ""}`;
 }
 
 function locationUrl(location) {

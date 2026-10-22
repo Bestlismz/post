@@ -33,7 +33,7 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
 
   await page.goto("/sources");
   await expect(page.getByRole("heading", { name: "แหล่งข้อมูล Facebook" })).toBeVisible();
-  await expect(page.getByText("Rental Radar Thailand")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Facebook Page" }).getByText("Rental Radar Thailand")).toBeVisible();
   await expect(page.locator(".source-row")).toHaveCount(2);
   await expect(page.getByText("สแกนครบแล้ว")).toBeVisible();
   await expect(page.getByText("สแกนได้บางส่วน")).toBeVisible();

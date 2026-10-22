@@ -9,9 +9,12 @@ import {withTransaction,runIdempotent} from '../db/transaction.mjs';
 import {enqueueJob} from '../jobs/queue.mjs';
 import {operationReceipt} from '../inbox/receipts.mjs';
 
+const amount=z.string().regex(/^\d{1,10}$/).transform(Number).pipe(z.number().int().min(0).max(1_000_000_000));
 const querySchema=z.strictObject({limit:z.string().regex(/^[1-9]\d*$/).transform(Number).pipe(z.number().int().max(100)).optional(),
-  channel:z.enum(['messenger','facebook_group']).optional(),sourceId:z.string().min(1).max(200).optional(),
-  search:z.string().max(500).optional(),cursor:z.string().min(1).max(2048).optional()});
+  channel:z.enum(['messenger','facebook_group']).optional(),status:z.enum(['pending','pending_or_updated','preparing','needs_review','ready','completed','superseded','handoff','failed']).optional(),
+  sourceId:z.string().min(1).max(200).optional(),location:z.string().max(160).optional(),budgetMin:amount.optional(),budgetMax:amount.optional(),assignee:z.literal('unassigned').optional(),
+  q:z.string().max(500).optional(),search:z.string().max(500).optional(),cursor:z.string().min(1).max(2048).optional()
+}).refine(value=>value.budgetMin===undefined||value.budgetMax===undefined||value.budgetMin<=value.budgetMax,{message:'Invalid budget range'});
 const empty=z.strictObject({});
 const edit=z.strictObject({text:z.string().trim().min(1).max(4000)});
 const receiptResponse=result=>({operation:result.operation});

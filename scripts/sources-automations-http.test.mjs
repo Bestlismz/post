@@ -142,6 +142,26 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   assert.equal(afterMode.body.groups[0].latestReceipt.operationId, pending.body.operationId, "mode mutation cannot erase immutable scan evidence");
 }));
 
+dbtest("Facebook session summary exposes only safe identity and connection health", async () => fixture(async ({ pool, request }) => {
+  await pool.query(`INSERT INTO group_sources(id,organization_id,group_id,canonical_url,session_health,selector_health)
+    VALUES('summary-group','org_default','1742522453522327','https://www.facebook.com/groups/1742522453522327','auth_required','healthy')`);
+  const summary = await request("/api/facebook/session-summary");
+  assert.equal(summary.status, 200);
+  assert.deepEqual(summary.body, {
+    state: "connected",
+    identity: { displayName: "Rental Radar Page", avatarUrl: null, kind: "page" },
+    connections: { pages: 1, groups: 1, pageState: "connected", groupState: "auth_required" },
+    canRecover: true,
+  });
+  const serialized = JSON.stringify(summary.body);
+  for (const secret of ["page-private-id", "1742522453522327", "admin@radar.test", "canonicalUrl", "token", "cookie"]) assert.equal(serialized.includes(secret), false, secret);
+
+  await pool.query("UPDATE meta_page_sources SET health='expired'; UPDATE group_sources SET session_health='auth_required'");
+  const reauth = await request("/api/facebook/session-summary");
+  assert.equal(reauth.body.state, "reauth_required");
+  assert.equal(reauth.body.identity, null, "stale Page names are not presented as the active Facebook identity");
+}));
+
 dbtest("Automations API persists exact format and policy revisions and exposes immutable receipts", async () => fixture(async ({ pool, request }) => {
   await pool.query(`INSERT INTO group_sources(id,organization_id,group_id,canonical_url,mode,allow_listed,session_health,selector_health,selector_version)
     VALUES('source-1','org_default','123','https://www.facebook.com/groups/123','approval',true,'healthy','healthy','facebook-dom-v2');

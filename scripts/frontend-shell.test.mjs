@@ -65,6 +65,25 @@ test("route state restores from a URL and browser popstate", async () => {
   store.destroy();
 });
 
+test("Inbox route is table-only and canonicalizes legacy workspace state into authoritative filters", async () => {
+  const { canonicalInboxHref, inboxHref, readInboxRouteState } = await import("../app/lib/routes.mjs");
+
+  assert.deepEqual(readInboxRouteState("?view=workspace&state=needs_review&channel=facebook_group&location=%E0%B8%AD%E0%B9%82%E0%B8%A8%E0%B8%81&budgetMin=10000&budgetMax=25000&assignee=unassigned&q=%E0%B8%AB%E0%B9%89%E0%B8%AD%E0%B8%87&item=lead-7"), {
+    item: "lead-7",
+    filters: {
+      channel: "facebook_group",
+      status: "needs_review",
+      location: "อโศก",
+      budgetMin: "10000",
+      budgetMax: "25000",
+      assignee: "unassigned",
+      search: "ห้อง",
+    },
+  });
+  assert.equal(canonicalInboxHref("?view=workspace&state=needs_review&item=lead-7"), "/inbox?item=lead-7&status=needs_review");
+  assert.equal(inboxHref("?status=needs_review&channel=messenger", { status: null, channel: null }), "/inbox");
+});
+
 test("every navigation destination is backed by a real App Router page", async () => {
   const { routes } = await import("../app/lib/routes.mjs");
   for (const route of routes) {
@@ -72,7 +91,10 @@ test("every navigation destination is backed by a real App Router page", async (
       new URL(`app/${route.id}/page.jsx`, projectRoot),
       "utf8",
     );
-    if (route.id === "inbox") assert.match(page, /InboxQueue/);
+    if (route.id === "inbox") {
+      assert.match(page, /InboxTable/);
+      assert.doesNotMatch(page, /InboxQueue|InboxViewSwitch|view\s*===\s*["']workspace["']/);
+    }
     else if (route.id === "properties") assert.match(page, /UnitTable/);
     else if (route.id === "sources") assert.match(page, /SourceRow/);
     else if (route.id === "automations") assert.match(page, /PolicyEditor/);
@@ -132,6 +154,9 @@ test("shell exposes active-route and mobile labels accessibly", async () => {
   assert.match(shell, /rr-nav__mobile-label/);
   assert.match(layout, /min-height:\s*44px/);
   assert.match(layout, /prefers-reduced-motion:\s*reduce/);
+  assert.match(shell, /role=["']menu["']/);
+  assert.match(shell, /api\/auth\/logout/);
+  assert.match(shell, /router\.push\(.*\/inbox/);
 });
 
 test("API client maps untrusted failures to safe typed errors", async () => {

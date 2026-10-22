@@ -92,6 +92,30 @@ function publicSource(entity) {
 export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sourceService}) {
   const router=Router(),write=[requireRole('admin'),checkOrigin(config),checkCsrf],scanWrite=[requireRole('admin','operator'),checkOrigin(config),checkCsrf];
   router.use('/api/sources',authenticate(pool));
+  router.get('/api/facebook/session-summary',authenticate(pool),requireRole('admin','operator','viewer'),async(request,response,next)=>{
+    try {
+      const {rows:[summary]}=await pool.query(`SELECT
+        count(*) FILTER (WHERE kind='page')::int AS pages,
+        count(*) FILTER (WHERE kind='group')::int AS groups,
+        bool_or(kind='page' AND health='connected') AS page_connected,
+        bool_or(kind='page' AND health IN ('revoked','expired')) AS page_reauth,
+        bool_or(kind='group' AND health='healthy') AS group_connected,
+        bool_or(kind='group' AND health='auth_required') AS group_reauth,
+        (array_agg(name ORDER BY updated_at DESC) FILTER (WHERE kind='page' AND health='connected'))[1] AS display_name
+        FROM (
+          SELECT 'page'::text AS kind,name,health,updated_at FROM meta_page_sources WHERE organization_id=$1
+          UNION ALL
+          SELECT 'group','',session_health,updated_at FROM group_sources WHERE organization_id=$1 AND NOT archived
+        ) sources`,[request.actor.organizationId]);
+      const connected=summary.page_connected===true||summary.group_connected===true,reauth=summary.page_reauth===true||summary.group_reauth===true;
+      response.json({
+        state:connected?'connected':reauth?'reauth_required':'disconnected',
+        identity:summary.display_name?{displayName:summary.display_name,avatarUrl:null,kind:'page'}:null,
+        connections:{pages:summary.pages,groups:summary.groups,pageState:summary.page_connected?'connected':summary.page_reauth?'reauth_required':'disconnected',groupState:summary.group_connected?'healthy':summary.group_reauth?'auth_required':'disconnected'},
+        canRecover:request.actor.role==='admin',
+      });
+    } catch(error){next(error);}
+  });
   async function sourceFor(request,lock=false,tx=pool) {
     const {rows:[source]}=await tx.query(`SELECT id,group_id,kill_switch,session_health,selector_health,session_circuit,selector_circuit
       FROM group_sources WHERE organization_id=$1 AND id=$2 AND NOT archived${lock?' FOR UPDATE':''}`,[request.actor.organizationId,request.params.id]);

@@ -102,15 +102,29 @@ app.use("/fixture/assets", express.static(path.join(root, "fixture"), { index: f
 
 app.get("/health", (_request, response) => response.json({ ok: true, mode }));
 app.get("/api/me", (request, response) => {
+  if (request.headers.cookie?.includes("fixture_session=logged_out")) return response.status(401).json({ error: "Authentication required" });
   const actor = fixtureActor(request);
   response.json({ user: { id: actor.id, displayName: actor.displayName, role: actor.role } });
 });
 app.post("/api/auth/csrf", (_request, response) => response.json({ csrfToken: "fixture-csrf" }));
+app.post("/api/auth/logout", (request, response) => {
+  requireFixtureCsrf(request);
+  response.set("Set-Cookie", "fixture_session=logged_out; Path=/; HttpOnly; SameSite=Strict; Max-Age=43200").json({ ok: true });
+});
+app.get("/api/facebook/session-summary", (request, response) => {
+  const role = fixtureActor(request).role;
+  response.json({
+    state: "connected",
+    identity: { displayName: "Rental Radar Thailand", avatarUrl: null, kind: "page" },
+    connections: { pages: 1, groups: 2, pageState: "connected", groupState: "healthy" },
+    canRecover: role === "admin",
+  });
+});
 app.get("/api/inbox/events", (_request, response) => {
   response.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no" });
   response.flushHeaders(); inboxWorkspace.stream(response);
 });
-app.get("/api/inbox", (_request, response) => response.json(inboxWorkspace.list()));
+app.get("/api/inbox", (request, response) => response.json(inboxWorkspace.list(request.query)));
 app.get("/api/inbox/:id", (request, response) => { const item=inboxWorkspace.get(request.params.id);if(!item)return response.status(404).json({error:"Inbox item not found"});response.json(item); });
 app.post("/api/inbox/:id/prepare", (request, response) => { const operation=inboxWorkspace.prepare(request.params.id);if(!operation)return response.status(404).json({error:"Inbox item not found"});response.status(202).json({operation}); });
 app.post("/api/inbox/:id/handoff", (request, response) => { const operation=inboxWorkspace.handoff(request.params.id);if(!operation)return response.status(404).json({error:"Inbox item not found"});response.status(202).json({operation}); });

@@ -17,7 +17,16 @@ export function createInboxWorkspaceFixture() {
   const details=new Map(queue.map(item=>[item.id,detail(item)])),streams=new Set();let position=0;
   const emit=(resourceId,resourceType,state)=>{const event={receiptId:`fixture-${++position}`,resourceId,resourceType,state};for(const response of streams)response.write(`id: ${position}\nevent: inbox\ndata: ${JSON.stringify(event)}\n\n`);return event;};
   return {
-    list(){return {items:queue.map(item=>details.get(item.id)),nextCursor:null};},
+    list(query={}){const normalized={...query,search:query.q??query.search??""};const filtered=queue.map(item=>details.get(item.id)).filter(item=>{
+      const budget=item.summary?.budgetMax,haystack=`${item.participant?.label??""} ${item.message?.text??""} ${item.source?.name??""}`.toLocaleLowerCase("th");
+      return (!normalized.channel||item.channel===normalized.channel)
+        && (!normalized.status||(normalized.status==="pending_or_updated"?["pending","superseded"].includes(item.status):item.status===normalized.status))
+        && (!normalized.location||(item.summary?.location??"").toLocaleLowerCase("th").includes(String(normalized.location).toLocaleLowerCase("th")))
+        && (!normalized.budgetMin||(budget!=null&&budget>=Number(normalized.budgetMin)))
+        && (!normalized.budgetMax||(budget!=null&&budget<=Number(normalized.budgetMax)))
+        && (!normalized.assignee||normalized.assignee==="unassigned"&&item.summary?.assignee==null)
+        && (!normalized.search||haystack.includes(String(normalized.search).toLocaleLowerCase("th")));
+    });return {items:filtered,resultCount:filtered.length,nextCursor:null};},
     get(id){return details.get(id)??null;},
     stream(response){streams.add(response);response.write(": fixture workspace connected\n\n");response.on("close",()=>streams.delete(response));},
     prepare(id){const value=details.get(id);if(!value)return null;value.replies=[{id:`fixture-reply-${id}`,version:1,processingRevision:value.processingRevision,text:"สวัสดีค่ะ ขอบคุณที่ติดต่อมา ทีมงานกำลังตรวจสอบห้องที่ตรงกับความต้องการจากรายการปัจจุบันให้นะคะ"}];value.status="needs_review";return emit(id,"work_item","needs_review");},
