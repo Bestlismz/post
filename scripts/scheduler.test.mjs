@@ -6,6 +6,12 @@ import {migrate} from '../src/db/migrate.mjs';
 import {signCommand,verifyCommand} from '../src/channels/groups/contracts.mjs';
 
 const key='s'.repeat(32),keyId='schedule-test';
+async function dropConcurrentTestRole(client,role) {
+  for(let attempt=0;attempt<10;attempt++) {
+    try {await client.query(`DROP OWNED BY "${role}"`);await client.query(`DROP ROLE "${role}"`);return;}
+    catch(error) {if(error.code!=='XX000'||!/tuple concurrently updated/i.test(error.message)||attempt===9)throw error;await new Promise(resolve=>setTimeout(resolve,25*(attempt+1)));}
+  }
+}
 
 async function fixture(fn) {
   const admin=createPool({databaseUrl:process.env.TEST_DATABASE_URL});
@@ -167,7 +173,7 @@ integration('restricted worker can schedule but cannot administer schedules cont
     await assert.rejects(runtime.query('SELECT * FROM automation_control_receipts'),error=>error.code==='42501');
     await assert.rejects(runtime.query("UPDATE group_scan_dispatches SET reason_code='COMMAND_REFRESHED'"),error=>error.code==='42501');
   } finally {
-    await runtime?.end();const client=await admin.connect();try {await client.query(`DROP OWNED BY "${role}"`);await client.query(`DROP ROLE "${role}"`);}finally{client.release();}
+    await runtime?.end();const client=await admin.connect();try {await dropConcurrentTestRole(client,role);}finally{client.release();}
   }
 });
 
