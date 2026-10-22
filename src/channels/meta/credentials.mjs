@@ -37,11 +37,13 @@ export function createMetaCredentialRepository({ pool, keys, keyVersion }) {
       if (!row || row.kind !== "page") return;
       await db.query("SELECT meta_credential_write($1,$2,$3,$4,$5,$6)", [organizationId, id, row.actor_id, row.kind, row.envelope, expiresAt]);
     },
-    async withPageToken(organizationId, sourceId, callback) {
-      const { rows: [source] } = await pool.query("SELECT health,expires_at FROM meta_page_sources WHERE organization_id=$1 AND id=$2", [organizationId, sourceId]);
+    async withPageToken(organizationId, sourceId, callback, { db = pool, now = Date.now() } = {}) {
+      const { rows: [source] } = await db.query("SELECT health,expires_at FROM meta_page_sources WHERE organization_id=$1 AND id=$2", [organizationId, sourceId]);
       if (!source || source.health === "disconnected") throw httpError(404, "Connection not found");
       if (["revoked", "expired"].includes(source.health)) throw httpError(410, "Connection authorization expired");
-      return withCredential(organizationId, sourceId, ({ token }) => callback(token), { kind: "page" });
+      if (source.health !== 'connected') throw httpError(503, 'Connection unavailable');
+      if (source.expires_at && source.expires_at.getTime() <= now) throw httpError(410, 'Connection authorization expired');
+      return withCredential(organizationId, sourceId, ({ token }) => callback(token), { kind: "page", db, now });
     },
   };
 }

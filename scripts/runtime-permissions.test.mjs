@@ -98,7 +98,14 @@ test("runtime role supports authenticated API writes but cannot administer schem
     const item=(await runtime.query('SELECT * FROM work_items LIMIT 1')).rows[0];
     const inbox=createInboxService({pool:runtime});
     const draft=await inbox.prepareReply(item.id,item.processing_revision,session.user);
-    await inbox.approveAndQueue(draft.id,item.processing_revision,session.user);
+    const deliveryIntent=await inbox.approveAndQueue(draft.id,item.processing_revision,session.user);
+    await credentials.store({organizationId:'org_default',actorId:session.user.id,id:'runtime-source',kind:'page',value:{token:'runtime-private-token'}});
+    const {createMetaDeliveryWorker}=await import('../src/workers/meta-delivery-worker.mjs');
+    const {createMetaSendClient}=await import('../src/channels/meta/client.mjs');
+    const delivery=createMetaDeliveryWorker({pool:runtime,credentials,client:createMetaSendClient({fetchImpl:async()=>new Response(JSON.stringify({message_id:'runtime-remote'}))})});
+    assert.equal((await delivery.deliverMessengerIntent(deliveryIntent.id)).state,'sent');
+    assert.equal((await runtime.query('SELECT state FROM delivery_attempts')).rows[0].state,'sent');
+    for(const sql of ["UPDATE delivery_attempts SET id='tampered'",'DELETE FROM delivery_attempts',"UPDATE delivery_intents SET content='{}'"]) await assert.rejects(runtime.query(sql),error=>error.code==='42501');
     await inbox.requestHandoff(item.id,'Runtime handoff',session.user);
     const { createAutomationWorker } = await import('../src/workers/automation-worker.mjs');
     await runtime.query("UPDATE jobs SET status='pending',lease_owner=NULL,lease_expires_at=NULL WHERE kind='analyze_work_item'");

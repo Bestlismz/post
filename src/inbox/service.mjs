@@ -32,7 +32,7 @@ function assertEvidence(stored, context) {
   ]) if (keys.some(key=>!isDeepStrictEqual(stored[key],current[key]))) fail(`${label} evidence stale`,code);
 }
 
-async function loadContext(tx, id, revision, organizationId) {
+export async function loadContext(tx, id, revision, organizationId) {
   validateInboxText(id,'work item ID');
   if (!Number.isSafeInteger(revision) || revision < 1) throw httpError(400,'Invalid processing revision');
   // Ingress and source management use the same organization -> conversation order.
@@ -64,7 +64,7 @@ async function checkInventory(tx, organizationId, watermark) {
   return units;
 }
 
-async function assertReplyFresh(tx,reply,context) {
+export async function assertReplyFresh(tx,reply,context) {
   assertEvidence(reply.context.evidence,context);
   await checkInventory(tx,context.org.id,reply.context.snapshot.inventoryWatermark);
 }
