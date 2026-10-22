@@ -41,6 +41,15 @@ Focused comparison was required because table typography, column rhythm, status 
 
 ## Comparison history
 
+### Iteration 3 — editable Inbox composer passed
+
+- Source issue evidence: `/var/folders/b1/5txgbtk55zj60l4482s3v7pc0000gn/T/codex-clipboard-d3c47dcb-d502-4629-b434-141647e451fd.png` and `/var/folders/b1/5txgbtk55zj60l4482s3v7pc0000gn/T/codex-clipboard-90fd588d-8484-497a-b471-22d39fc4252f.png` showed disabled composers for a Messenger lead without an AI reply and for a superseded Group target.
+- Browser evidence: `/tmp/rental-radar-inbox-messenger-draft.png` and `/tmp/rental-radar-inbox-stale-draft.png`.
+- Same-image comparison: `/tmp/inbox-compose-design-qa-comparison.png`.
+- The composer now accepts text in both states, reports an unsaved draft and character count, and preserves the safety boundary: a superseded Group target cannot be handed off, prepared, approved, or sent until current target data is loaded.
+- The updated top bar removes the redundant global search, queue shortcut, and connection chip; the Inbox retains one compact search and one filter popover.
+- Automated browser checks typed Thai drafts into both cases and asserted that the stale-target send action remains disabled.
+
 ### Iteration 1 — blocked
 
 - P2: mobile rendered both the shell's `Inbox` title and the page's `Inbox` heading.

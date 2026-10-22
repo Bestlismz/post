@@ -41,6 +41,32 @@ button:disabled {
   cursor: not-allowed;
 }
 
+.rr-select-control {
+  position: relative;
+  display: block;
+  min-width: 0;
+}
+
+.rr-select-control > select {
+  width: 100%;
+  padding-right: 42px !important;
+  appearance: none;
+}
+
+.rr-select-control > svg {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  z-index: 1;
+  color: var(--rr-text-soft);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.rr-select-control > select:disabled + svg {
+  opacity: .48;
+}
+
 ::selection {
   color: var(--rr-text);
   background: #dfe3ff;

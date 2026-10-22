@@ -156,7 +156,8 @@ test("shell exposes active-route and mobile labels accessibly", async () => {
   assert.match(layout, /prefers-reduced-motion:\s*reduce/);
   assert.match(shell, /role=["']menu["']/);
   assert.match(shell, /api\/auth\/logout/);
-  assert.match(shell, /router\.push\(.*\/inbox/);
+  assert.match(shell, /className="rr-brand" href="\/inbox"/);
+  assert.doesNotMatch(shell, /rr-search|rr-review-filter|rr-connection/);
 });
 
 test("API client maps untrusted failures to safe typed errors", async () => {

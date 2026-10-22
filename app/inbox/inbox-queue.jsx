@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Inbox, MessageCircleMore, RotateCcw, Search, SlidersHorizontal, UsersRound, X } from "lucide-react";
+import { SelectControl } from "../components/select-control";
 
 const statusLabels = { pending: "ใหม่", pending_or_updated: "ใหม่หรืออัปเดต", preparing: "กำลังวิเคราะห์", needs_review: "ต้องตรวจ", ready: "รอส่ง", completed: "เสร็จแล้ว", superseded: "มีข้อมูลใหม่", handoff: "ทีมดูแล", failed: "ต้องแก้ไข" };
 function timeLabel(value) {
@@ -17,24 +18,41 @@ function InboxRefreshError({ state, hasItems, onRetry }) {
 }
 
 function InboxFilterBar({ filters, onChange, resultCount }) {
-  const [draft, setDraft] = useState({ search: filters.search, location: filters.location, budgetMin: filters.budgetMin, budgetMax: filters.budgetMax });
-  useEffect(() => setDraft({ search: filters.search, location: filters.location, budgetMin: filters.budgetMin, budgetMax: filters.budgetMax }), [filters.search, filters.location, filters.budgetMin, filters.budgetMax]);
-  const clear = () => onChange({ channel: null, status: null, location: null, budgetMin: null, budgetMax: null, assignee: null, q: null });
-  const submit = (event) => { event.preventDefault(); onChange({ q: draft.search.trim() || null, location: draft.location.trim() || null, budgetMin: draft.budgetMin || null, budgetMax: draft.budgetMax || null }); };
+  const [draft, setDraft] = useState({ ...filters }), [open, setOpen] = useState(false);
+  const popoverRef = useRef(null), triggerRef = useRef(null);
+  useEffect(() => setDraft({ ...filters }), [filters]);
+  useEffect(() => {
+    if (!open) return undefined;
+    const onPointer = (event) => { if (!popoverRef.current?.contains(event.target) && !triggerRef.current?.contains(event.target)) setOpen(false); };
+    const onKey = (event) => { if (event.key === "Escape") { setOpen(false); triggerRef.current?.focus(); } };
+    document.addEventListener("pointerdown", onPointer); document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("pointerdown", onPointer); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const clear = () => { setDraft({ search: "", channel: "", status: "", location: "", budgetMin: "", budgetMax: "", assignee: "" }); onChange({ channel: null, status: null, location: null, budgetMin: null, budgetMax: null, assignee: null, q: null }); setOpen(false); };
+  const submitSearch = (event) => { event.preventDefault(); onChange({ q: draft.search.trim() || null }); };
+  const submitFilters = (event) => { event.preventDefault(); onChange({ channel: draft.channel || null, status: draft.status || null, location: draft.location.trim() || null, budgetMin: draft.budgetMin || null, budgetMax: draft.budgetMax || null, assignee: draft.assignee || null }); setOpen(false); };
+  const activeFilterCount = [filters.channel, filters.status, filters.location, filters.budgetMin, filters.budgetMax, filters.assignee].filter(Boolean).length;
   const active = Object.values(filters).some(Boolean);
   return <div className="inbox-filter-shell">
-    <form className="inbox-filter-bar" onSubmit={submit} aria-label="ตัวกรอง Inbox">
-      <label className="inbox-filter-search"><Search size={17} /><span className="rr-sr-only">ค้นหา</span><input aria-label="ค้นหา" type="search" value={draft.search} onChange={(event) => setDraft((value) => ({ ...value, search: event.target.value }))} placeholder="ค้นหาลูกค้า ข้อความ หรือแหล่งที่มา" /><button type="submit" aria-label="ค้นหา Inbox">ค้นหา</button></label>
-      <label><span>ช่องทาง</span><select aria-label="ช่องทาง" value={filters.channel} onChange={(event) => onChange({ channel: event.target.value || null })}><option value="">ทุกช่องทาง</option><option value="facebook_group">Facebook Group</option><option value="messenger">Messenger</option></select></label>
-      <label><span>สถานะ</span><select aria-label="สถานะ" value={filters.status} onChange={(event) => onChange({ status: event.target.value || null })}><option value="">ทุกสถานะ</option>{Object.entries(statusLabels).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</select></label>
-      <label><span>ทำเล</span><input aria-label="ทำเล" value={draft.location} onChange={(event) => setDraft((value) => ({ ...value, location: event.target.value }))} placeholder="เช่น อโศก" /></label>
-      <label><span>งบต่ำสุด</span><input aria-label="งบต่ำสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMin} onChange={(event) => setDraft((value) => ({ ...value, budgetMin: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="฿0" /></label>
-      <label><span>งบสูงสุด</span><input aria-label="งบสูงสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMax} onChange={(event) => setDraft((value) => ({ ...value, budgetMax: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="ไม่จำกัด" /></label>
-      <label><span>ผู้ดูแล</span><select aria-label="ผู้ดูแล" value={filters.assignee} onChange={(event) => onChange({ assignee: event.target.value || null })}><option value="">ทุกคน</option><option value="unassigned">ยังไม่มอบหมาย</option></select></label>
-      <button className="inbox-filter-apply" type="submit"><SlidersHorizontal size={16} />ใช้ตัวกรอง</button>
-      {active ? <button className="inbox-filter-clear" type="button" onClick={clear}><X size={16} />ล้างตัวกรอง</button> : null}
-    </form>
-    <p className="inbox-filter-result" role="status"><strong>{new Intl.NumberFormat("th-TH").format(resultCount)}</strong> รายการ</p>
+    <div className="inbox-filter-compact">
+      <form className="inbox-filter-search" role="search" onSubmit={submitSearch}><Search size={17} /><input aria-label="ค้นหา" type="search" value={draft.search} onChange={(event) => setDraft((value) => ({ ...value, search: event.target.value }))} placeholder="ค้นหาลูกค้า ข้อความ หรือแหล่งที่มา" /><button type="submit" aria-label="ค้นหา Inbox">ค้นหา</button></form>
+      <div className="inbox-filter-popover-anchor">
+        <button className={`inbox-filter-trigger${activeFilterCount ? " is-active" : ""}`} type="button" ref={triggerRef} aria-haspopup="dialog" aria-expanded={open} onClick={() => setOpen((value) => !value)}><SlidersHorizontal size={17}/><span>ตัวกรอง</span>{activeFilterCount ? <strong>{activeFilterCount}</strong> : null}</button>
+        {open ? <form className="inbox-filter-popover" ref={popoverRef} role="dialog" aria-modal="false" aria-labelledby="inbox-filter-title" onSubmit={submitFilters}>
+          <header><div><strong id="inbox-filter-title">ตัวกรอง Inbox</strong><span>เลือกหลายเงื่อนไขพร้อมกันได้</span></div><button type="button" aria-label="ปิดตัวกรอง" onClick={() => setOpen(false)}><X size={18}/></button></header>
+          <div className="inbox-filter-grid">
+            <label><span>ช่องทาง</span><SelectControl aria-label="ช่องทาง" value={draft.channel} onChange={(event) => setDraft((value) => ({ ...value, channel: event.target.value }))}><option value="">ทุกช่องทาง</option><option value="facebook_group">Facebook Group</option><option value="messenger">Messenger</option></SelectControl></label>
+            <label><span>สถานะ</span><SelectControl aria-label="สถานะ" value={draft.status} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value }))}><option value="">ทุกสถานะ</option>{Object.entries(statusLabels).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</SelectControl></label>
+            <label className="inbox-filter-wide"><span>ทำเล</span><input aria-label="ทำเล" value={draft.location} onChange={(event) => setDraft((value) => ({ ...value, location: event.target.value }))} placeholder="เช่น อโศก" /></label>
+            <label><span>งบต่ำสุด</span><input aria-label="งบต่ำสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMin} onChange={(event) => setDraft((value) => ({ ...value, budgetMin: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="฿0" /></label>
+            <label><span>งบสูงสุด</span><input aria-label="งบสูงสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMax} onChange={(event) => setDraft((value) => ({ ...value, budgetMax: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="ไม่จำกัด" /></label>
+            <label className="inbox-filter-wide"><span>ผู้ดูแล</span><SelectControl aria-label="ผู้ดูแล" value={draft.assignee} onChange={(event) => setDraft((value) => ({ ...value, assignee: event.target.value }))}><option value="">ทุกคน</option><option value="unassigned">ยังไม่มอบหมาย</option></SelectControl></label>
+          </div>
+          <footer>{active ? <button className="inbox-filter-clear" type="button" onClick={clear}>ล้างทั้งหมด</button> : <span/>}<button className="inbox-filter-apply" type="submit">ใช้ตัวกรอง</button></footer>
+        </form> : null}
+      </div>
+      <p className="inbox-filter-result" role="status"><strong>{new Intl.NumberFormat("th-TH").format(resultCount)}</strong> รายการ</p>
+    </div>
   </div>;
 }
 

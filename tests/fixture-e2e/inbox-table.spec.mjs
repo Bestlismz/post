@@ -24,6 +24,22 @@ test("fixture Inbox uses the production table URL filters and one focus sheet", 
   await expect(page.getByRole("textbox", { name: "ข้อความตอบกลับ" })).toHaveCount(1);
 });
 
+test("Messenger and stale group items both accept a manual reply draft", async ({ page }) => {
+  await page.goto("/inbox?item=messenger_1");
+  const messengerDraft = page.getByRole("textbox", { name: "ข้อความตอบกลับ" });
+  await expect(messengerDraft).toBeEnabled();
+  await messengerDraft.fill("ขอตรวจสอบห้องว่างให้สักครู่นะครับ");
+  await expect(messengerDraft).toHaveValue("ขอตรวจสอบห้องว่างให้สักครู่นะครับ");
+
+  await page.getByRole("button", { name: "ปิดรายละเอียดลีด" }).click();
+  await page.getByRole("row", { name: /Ployphailin/ }).click();
+  const staleDraft = page.getByRole("textbox", { name: "ข้อความตอบกลับ" });
+  await expect(staleDraft).toBeEnabled();
+  await staleDraft.fill("รับทราบค่ะ ขอเช็กข้อมูลล่าสุดก่อนตอบนะคะ");
+  await expect(staleDraft).toHaveValue("รับทราบค่ะ ขอเช็กข้อมูลล่าสุดก่อนตอบนะคะ");
+  await expect(page.getByRole("button", { name: "โหลดข้อมูลล่าสุดก่อนส่ง" })).toBeDisabled();
+});
+
 test("fixture topbar exposes safe Facebook identity and revokes the fixture app session on logout", async ({ page }) => {
   await page.goto("/inbox");
   await page.getByRole("button", { name: "เปิดเมนูบัญชี" }).click();
