@@ -6,11 +6,13 @@ import { validateInboxText } from "./validation.mjs";
 const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   to_char(w.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at,
   c.channel,m.id AS message_id,m.text AS message_text,
-  s.id AS source_id,s.name AS source_name,s.health AS source_health`;
+  coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE s.name END AS source_name,
+  CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health`;
 const relations = `FROM work_items w
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
   JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id AND m.conversation_id=c.id
-  LEFT JOIN meta_page_sources s ON s.organization_id=c.organization_id AND s.page_id=c.page_id`;
+  LEFT JOIN meta_page_sources s ON c.channel='messenger' AND s.organization_id=c.organization_id AND s.page_id=c.page_id
+  LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND g.group_id=c.page_id`;
 
 function itemDto(row) {
   return {
@@ -20,7 +22,7 @@ function itemDto(row) {
     processingRevision: row.processing_revision,
     status: row.status,
     createdAt: row.created_at,
-    participant: { id: row.conversation_id, label: "Messenger customer" },
+    participant: { id: row.conversation_id, label: row.channel==='facebook_group'?'Group participant':'Messenger customer' },
     source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable" },
     message: { id: row.message_id, text: row.message_text },
   };
@@ -30,7 +32,7 @@ function parseQuery(query, organizationId) {
   if (!query || typeof query !== "object" || Array.isArray(query)) throw httpError(400, "Invalid Inbox query");
   const { limit = 25, channel = null, sourceId = null, search = "", cursor = null } = query;
   if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw httpError(400, "Page size must be between 1 and 100");
-  if (channel !== null && channel !== "messenger") throw httpError(400, "Invalid channel");
+  if (channel !== null && !['messenger','facebook_group'].includes(channel)) throw httpError(400, "Invalid channel");
   if (sourceId !== null) validateInboxText(sourceId, "source");
   validateInboxText(search, "search", { maxLength: 500, allowEmpty: true });
   const normalizedSearch = search.trim();
@@ -72,8 +74,8 @@ export async function listInbox(pool, query = {}, actor) {
   const parsed = parseQuery(query, organizationId);
   const { rows } = await pool.query(`SELECT ${columns} ${relations}
     WHERE w.organization_id=$1 AND ($2::text IS NULL OR c.channel=$2)
-      AND ($3::text IS NULL OR s.id=$3)
-      AND ($4::text='' OR strpos(lower(m.text),lower($4))>0 OR strpos(lower(coalesce(s.name,'')),lower($4))>0)
+      AND ($3::text IS NULL OR coalesce(s.id,g.id)=$3)
+      AND ($4::text='' OR strpos(lower(m.text),lower($4))>0 OR strpos(lower(CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE coalesce(s.name,'') END),lower($4))>0)
       AND ($5::timestamptz IS NULL OR (w.created_at,w.id)<($5::timestamptz,$6::text))
     ORDER BY w.created_at DESC,w.id DESC LIMIT $7`,
   [organizationId, parsed.channel, parsed.sourceId, parsed.search, parsed.position?.at ?? null, parsed.position?.id ?? null, parsed.limit + 1]);

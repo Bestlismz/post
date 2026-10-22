@@ -11,13 +11,13 @@ const id=z.string().min(1).max(200),mode=z.enum(['observe','approval','automatic
 const limits=z.strictObject({organization:z.number().int().positive(),source:z.number().int().positive(),conversation:z.number().int().positive()});
 const hours=z.strictObject({timeZone:id,days:z.array(z.number().int().min(0).max(6)).min(1),start:z.string(),end:z.string()});
 const policy=z.strictObject({rateLimits:limits,businessHours:hours});
-const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:z.strictObject({id,mode:mode.optional(),allowListed:z.boolean().optional(),policy:policy.optional(),killSwitch:z.boolean().optional(),archived:z.literal(true).optional()}),requestGroupScan:z.strictObject({id})};
+const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:z.strictObject({id,mode:mode.optional(),allowListed:z.boolean().optional(),policy:policy.optional(),killSwitch:z.boolean().optional(),archived:z.literal(true).optional()}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
 function fail(status,message){throw Object.assign(new Error(message),{status});}
 export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),supportedSelectorVersions=[]}={}) {
   async function requireAutomaticReadiness(tx,source,now) {
     const {rows:[org]}=await tx.query('SELECT group_automation_paused FROM organizations WHERE id=$1 FOR SHARE',[source.organizationId]);
     const decision=evaluatePolicy({...source.policy,mode:'automatic'},{grounded:true,automaticEligible:true,confidence:1,sourceHealth:'connected',replyWindowOpen:true,counts:{organization:0,source:0,conversation:0}},now);
-    if(!source.allowListed||source.sessionHealth!=='healthy'||source.selectorHealth!=='healthy'||!supportedSelectorVersions.includes(source.selectorVersion)||source.killSwitch||org.group_automation_paused||!source.policy.rateLimits||!source.policy.businessHours||decision.action!=='authorize') fail(409,'Automatic mode is not ready');
+    if(source.sessionCircuit||source.selectorCircuit||!source.allowListed||source.sessionHealth!=='healthy'||source.selectorHealth!=='healthy'||!supportedSelectorVersions.includes(source.selectorVersion)||source.killSwitch||org.group_automation_paused||!source.policy.rateLimits||!source.policy.businessHours||decision.action!=='authorize') fail(409,'Automatic mode is not ready');
   }
   const service={};
   for(const action of Object.keys(inputs)) service[action]=async command=>{
@@ -28,6 +28,7 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
     const response=await withTransaction(pool,async tx=>{
       const {rows:[membership]}=await tx.query('SELECT role FROM memberships WHERE organization_id=$1 AND user_id=$2 FOR SHARE',[organizationId,actorId]);
       if(!membership || !(action==='requestGroupScan'?['admin','operator']:['admin']).includes(membership.role)) fail(403,'Role does not permit this source action');
+      await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
       return runIdempotent(tx,{organizationId,actorId,route:`sources.${action}`,key:idempotencyKey,body:{input,expectedRevision:expectedRevision??null}},async()=>{
         let source;
         if(action==='addGroupSource') {
@@ -48,10 +49,11 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
           } else {
             const {rows:[org]}=await tx.query('SELECT group_automation_paused FROM organizations WHERE id=$1 FOR SHARE',[organizationId]);
             if(source.killSwitch||org.group_automation_paused) fail(409,'Source automation is paused');
+            if((source.sessionCircuit||source.selectorCircuit)&&!input.recovery) fail(409,'Source circuit requires explicit recovery');
             const now=clock();
-            if(source.mode==='automatic') await requireAutomaticReadiness(tx,source,now);
+            if(source.mode==='automatic'&&!input.recovery) await requireAutomaticReadiness(tx,source,now);
             const signed=signCommand({version:1,kind:'ScanCommand',operationId:randomUUID(),sourceId:source.id,groupId:source.groupId,canonicalTarget:source.canonicalUrl,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
-            await insertGroupOperation(tx,organizationId,signed);
+            await insertGroupOperation(tx,organizationId,signed,{recovery:input.recovery===true});
             await appendAudit(tx,{organizationId,actorId,action:'group.scan_requested',entityType:'group_operation',entityId:signed.operationId,details:{sourceId:source.id}});
             await enqueueJob(tx,{organizationId,kind:'group.scan',payload:{operationId:signed.operationId,sourceId:source.id},retrySafe:true});
             return {status:202,body:{operationId:signed.operationId,command:signed}};

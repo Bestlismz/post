@@ -30,6 +30,9 @@ const grants = {
   meta_page_sources: "SELECT, INSERT, UPDATE (name, health, expires_at, updated_at)",
   group_sources: "SELECT, INSERT, UPDATE (mode, allow_listed, policy, kill_switch, archived, revision, updated_at)",
   group_operations: "SELECT, INSERT",
+  group_scan_receipts: "SELECT",
+  group_observations: "SELECT",
+  group_targets: "SELECT",
 };
 const quote = (name) => `"${name.replaceAll('"', '""')}"`;
 
@@ -62,14 +65,16 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     await client.query(`GRANT USAGE ON SCHEMA ${quote(context.schema)} TO ${quote(role)}`);
     await client.query(`REVOKE ALL ON ALL TABLES IN SCHEMA ${quote(context.schema)} FROM ${quote(role)}`);
     const workerTables=new Set(['organizations','memberships','projects','units','project_transit','project_amenities','audit_entries','unit_fact_revisions','match_snapshots','jobs','conversations','messages','work_items','reply_versions','reply_supersessions','reply_authorizations','delivery_intents','delivery_attempts','delivery_cancellations','meta_page_sources','outbox']);
-    const workerReadOnly=new Set(['memberships','project_transit','project_amenities','unit_fact_revisions','messages']);
+    const workerReadOnly=new Set(['memberships','project_transit','project_amenities','unit_fact_revisions']);
     workerTables.add('group_sources');
     workerTables.add('group_operations');
-    workerReadOnly.add('group_sources');
-    workerReadOnly.add('group_operations');
+    for(const table of ['group_scan_receipts','group_observations','group_targets']) workerTables.add(table);
     for (const [table, webPermissions] of Object.entries(grants)) {
       if(profile==='worker' && !workerTables.has(table))continue;
       const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':
+        profile==='worker' && table==='group_sources'?'SELECT, UPDATE (session_health, selector_health, selector_version, session_circuit, selector_circuit, selector_failures, last_result_order, updated_at)':
+        profile==='worker' && ['group_scan_receipts','group_observations'].includes(table)?'SELECT, INSERT':
+        profile==='worker' && table==='group_targets'?'SELECT, INSERT, UPDATE (observation_id, operation_order)':
         profile==='worker' && ['projects','units'].includes(table)?'SELECT, UPDATE (id)':
         profile==='worker' && table==='organizations'?'SELECT, UPDATE (id)':
         profile==='worker' && table==='meta_page_sources'?'SELECT, UPDATE (id)':

@@ -132,7 +132,7 @@ integration('scan commands audit and jobs commit atomically and retry returns on
   await assert.rejects(pool.query("INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES('bad','org_default','other','bad','bad')"),/check constraint/);
 });
 
-integration('runtime web can manage sources while application worker can only read immutable commands',async({pool,command,schema,admin})=>{
+integration('runtime web manages sources while application worker cannot rewrite immutable commands or source policy',async({pool,command,schema,admin})=>{
   const {provisionRuntime}=await import('./provision-runtime.mjs');
   const suffix=randomUUID().replaceAll('-','');
   for(const profile of ['web','worker']) {
@@ -151,7 +151,7 @@ integration('runtime web can manage sources while application worker can only re
         assert.equal((await runtime.query('SELECT count(*)::int AS n FROM group_operations')).rows[0].n,1);
         await runtime.query('SELECT * FROM group_sources');
         await assert.rejects(runtime.query("UPDATE group_sources SET allow_listed=true"),e=>e.code==='42501');
-        await assert.rejects(runtime.query("INSERT INTO group_operations(id,organization_id,source_id,kind,command) SELECT 'forged',organization_id,source_id,kind,command FROM group_operations"),e=>e.code==='42501');
+        await assert.rejects(runtime.query("UPDATE group_operations SET command='{}'"),e=>e.code==='42501');
       }
       for(const table of ['group_sources','group_operations']) {
         await assert.rejects(runtime.query(`DELETE FROM ${table}`),e=>e.code==='42501');
