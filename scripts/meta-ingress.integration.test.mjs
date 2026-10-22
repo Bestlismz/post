@@ -35,7 +35,7 @@ test("durable Messenger ingress filters, deduplicates, orders and commits before
       assert.equal(await count("messages"), 0);
     });
     await t.test("unsupported envelopes and events never create generation work", async () => {
-      const cases = [body([message("wrong")], "elsewhere"), body([{ ...message("echo"), message: { mid: "echo", is_echo: true, text: "x" } }]), body([{ ...message("read"), read: {} }, { ...message("delivery"), delivery: {} }]), body([{ ...message("file"), message: { mid: "file", attachments: [{ type: "file", payload: { url: "https://private.example" } }] } }]), body([{ ...message("mixed"), message: { mid: "mixed", text: "x", attachments: [{ type: "image", payload: { url: "https://private.example" } }] } }]), body([{ ...message("no-sender"), sender: {} }]), Buffer.from('{"object":"page","entry":{}}'), Buffer.from('{"object":"page","entry":[{"id":"page","messaging":{}}]}')];
+      const cases = [body([{ ...message("echo"), message: { mid: "echo", is_echo: true, text: "x" } }]), body([{ ...message("read"), read: {} }, { ...message("delivery"), delivery: {} }]), body([{ ...message("file"), message: { mid: "file", attachments: [{ type: "file", payload: { url: "https://private.example" } }] } }]), body([{ ...message("mixed"), message: { mid: "mixed", text: "x", attachments: [{ type: "image", payload: { url: "https://private.example" } }] } }]), body([{ ...message("no-sender"), sender: {} }]), Buffer.from('{"object":"page","entry":{}}'), Buffer.from('{"object":"page","entry":[{"id":"page","messaging":{}}]}')];
       for (const raw of cases) assert.deepEqual(await accept(raw), { status: 200, acceptedEventIds: [] });
       assert.equal(await count("jobs"), 0);
     });
@@ -69,6 +69,35 @@ test("durable Messenger ingress filters, deduplicates, orders and commits before
       assert.equal((await pool.query("SELECT processing_revision FROM conversations WHERE page_id='page' AND organization_id='org_default'")).rows[0].processing_revision, 3);
       await pool.query("DROP TRIGGER reject_ingress_job ON jobs");
       assert.equal((await accept(body([message("rollback1")]))).acceptedEventIds.length, 1);
+    });
+    await t.test("selected inbound bindings survive outbound health failures and unresolved bindings request retry", async () => {
+      const before = await count("messages"), jobsBefore = await count("jobs");
+      for (const health of ["unavailable", "expired", "revoked"]) {
+        await pool.query("UPDATE meta_page_sources SET health=$1,expires_at=now()-interval '1 hour' WHERE id='source'", [health]);
+        const raw = body([message(`health-${health}`)]);
+        const accepted = await accept(raw);
+        assert.equal(accepted.status, 200);
+        assert.equal(accepted.acceptedEventIds.length, 1, health);
+        assert.deepEqual(await accept(raw), { status: 200, acceptedEventIds: [] });
+      }
+      assert.equal(await count("messages"), before + 3);
+      assert.equal(await count("jobs"), jobsBefore + 3);
+      await pool.query("UPDATE meta_page_sources SET health='disconnected' WHERE id='source'");
+      assert.deepEqual(await accept(body([message("disconnected")])), { status: 200, acceptedEventIds: [] });
+      assert.equal((await accept(body([{ ...message("unknown"), recipient: { id: "unknown-page" } }], "unknown-page"))).status, 503);
+      assert.equal(await count("messages"), before + 3);
+      await pool.query("UPDATE meta_page_sources SET health='connected',expires_at=NULL WHERE id='source'");
+      const unresolvedBatch = Buffer.from(JSON.stringify({ object: "page", entry: [
+        { id: "page", messaging: [message("retry-bound")] },
+        { id: "unknown-page", messaging: [{ ...message("retry-unbound"), recipient: { id: "unknown-page" } }] },
+      ] }));
+      assert.equal((await accept(unresolvedBatch)).status, 503);
+      assert.equal(await count("messages"), before + 3, "a retryable unresolved batch must not partially commit");
+      await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('resolved-source','org_default','unknown-page','Resolved Page','unavailable')");
+      const retried = await accept(unresolvedBatch);
+      assert.equal(retried.status, 200);
+      assert.equal(retried.acceptedEventIds.length, 2);
+      assert.equal(await count("messages"), before + 5);
     });
     await t.test("raw HTTP route commits before 200 and safe challenge rejects invalid tokens", async () => {
       const app = express();

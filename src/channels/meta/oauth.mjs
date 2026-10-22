@@ -53,6 +53,10 @@ export function createMetaConnection({ pool, config, http = fetch, clock = Date.
     catch (error) { return { health: error.status === 410 ? "revoked" : previousExpiry && previousExpiry.getTime() <= clock() ? "expired" : "unavailable", expiresAt: previousExpiry }; }
   }
   const service = {
+    resolveEnvironmentSource(pageId) {
+      if (!env.META_ORGANIZATION_ID || !env.META_PAGE_ID || env.META_PAGE_ID !== pageId) return null;
+      return { organizationId: env.META_ORGANIZATION_ID, pageId };
+    },
     async inspectEnvironmentSource(pageId) {
       if (!env.META_ORGANIZATION_ID || !env.META_PAGE_ID || env.META_PAGE_ID !== pageId || !env.META_PAGE_ACCESS_TOKEN) return null;
       const authorization = await health(env.META_PAGE_ACCESS_TOKEN, pageId, env.META_TOKEN_EXPIRES_AT);

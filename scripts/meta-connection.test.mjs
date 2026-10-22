@@ -88,12 +88,13 @@ test("official Meta connection protects state, Page selection, credentials and t
         assert.equal((await send(Buffer.from("{"), "sha256=bad")).status, 403);
         assert.equal((await send(Buffer.from("{"))).status, 400);
         const entry = (page, mid) => ({ id: page, organizationId: "attacker-chosen", messaging: [{ sender: { id: "customer" }, recipient: { id: page }, organizationId: "attacker-chosen", message: { mid, text: "A room please" } }] });
-        const raw = Buffer.from(JSON.stringify({ object: "page", organizationId: "attacker-chosen", entry: [entry("page1", "oauth-1"), entry("page2", "oauth-2"), entry("unknown-page", "wrong-page")] }));
+        const raw = Buffer.from(JSON.stringify({ object: "page", organizationId: "attacker-chosen", entry: [entry("page1", "oauth-1"), entry("page2", "oauth-2")] }));
         assert.equal((await send(raw)).status, 200);
         assert.deepEqual((await pool.query("SELECT organization_id,page_id,mid FROM messages ORDER BY page_id")).rows, [{ organization_id: "org_default", page_id: "page1", mid: "oauth-1" }, { organization_id: "org_second", page_id: "page2", mid: "oauth-2" }]);
         for (const table of ["conversations", "jobs"]) assert.deepEqual((await pool.query(`SELECT organization_id,count(*)::int AS n FROM ${table} GROUP BY organization_id ORDER BY organization_id`)).rows, [{ organization_id: "org_default", n: 1 }, { organization_id: "org_second", n: 1 }]);
+        assert.equal((await send(Buffer.from(JSON.stringify({ object: "page", entry: [entry("unknown-page", "wrong-page")] })))).status, 503);
         await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('ambiguous-source','org_second','page1','Ambiguous Page','connected')");
-        assert.equal((await send(Buffer.from(JSON.stringify({ object: "page", entry: [entry("page1", "ambiguous-page")] })))).status, 200);
+        assert.equal((await send(Buffer.from(JSON.stringify({ object: "page", entry: [entry("page1", "ambiguous-page")] })))).status, 503);
         assert.equal((await pool.query("SELECT count(*)::int AS n FROM messages")).rows[0].n, 2);
         await pool.query("DELETE FROM meta_page_sources WHERE id='ambiguous-source'");
         await service.disconnectPage(secondActor, secondSource.id);
@@ -197,20 +198,24 @@ test("official Meta connection protects state, Page selection, credentials and t
       try { assert.equal((await service.inspectPageHealth(actor, source.id)).health, "unavailable"); }
       finally { await pool.query("INSERT INTO meta_credentials(id,organization_id,actor_id,kind,envelope,expires_at) VALUES($1,$2,$3,$4,$5,$6)", [saved.id, saved.organization_id, saved.actor_id, saved.kind, saved.envelope, saved.expires_at]); }
     });
-    await t.test("environment webhook fallback uses verified health and cannot override disconnected durable sources", async () => {
+    await t.test("environment binding ingests during provider outage without an outbound health request", async () => {
       const { acceptMetaWebhook } = await import("../src/channels/meta/ingress.mjs");
       providerPage = "environment-page";
-      const fallback = module.createMetaConnection({ pool, config, http, env: { META_ORGANIZATION_ID: "org_default", META_PAGE_ID: providerPage, META_PAGE_ACCESS_TOKEN: "environment-private" } });
+      let providerCalls = 0;
+      const fallback = module.createMetaConnection({ pool, config, http: async () => { providerCalls++; throw new Error("provider down"); }, env: { META_ORGANIZATION_ID: "org_default", META_PAGE_ID: providerPage, META_PAGE_ACCESS_TOKEN: "environment-private" } });
+      assert.equal((await fallback.inspectPageHealth(actor, "environment")).health, "unavailable");
+      providerCalls = 0;
       const body = (mid) => Buffer.from(JSON.stringify({ object: "page", entry: [{ id: providerPage, messaging: [{ sender: { id: "customer" }, recipient: { id: providerPage }, message: { mid, text: "Environment request" } }] }] }));
-      const accept = (rawBody, signature = `sha256=${createHmac("sha256", "app-private").update(rawBody).digest("hex")}`) => acceptMetaWebhook({ pool, rawBody, signature, appSecret: "app-private", environmentSource: (pageId) => fallback.inspectEnvironmentSource(pageId) });
+      const accept = (rawBody, signature = `sha256=${createHmac("sha256", "app-private").update(rawBody).digest("hex")}`) => acceptMetaWebhook({ pool, rawBody, signature, appSecret: "app-private", environmentSource: (pageId) => fallback.resolveEnvironmentSource(pageId) });
       assert.equal((await accept(body("unsigned"), "sha256=bad")).status, 403);
       assert.equal((await accept(body("environment-1"))).acceptedEventIds.length, 1);
-      revoked = true;
-      assert.equal((await accept(body("revoked-environment"))).acceptedEventIds.length, 0);
-      revoked = false;
+      assert.equal(providerCalls, 0);
+      assert.equal((await accept(body("environment-1"))).acceptedEventIds.length, 0);
+      assert.equal((await accept(body("environment-2"))).acceptedEventIds.length, 1);
       await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health) VALUES('disabled-env','org_default','environment-page','Disabled Page','disconnected')");
       assert.equal((await accept(body("disabled-environment"))).acceptedEventIds.length, 0);
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM meta_credentials WHERE id='disabled-env'")).rows[0].n, 0);
+      assert.equal(providerCalls, 0);
       providerPage = "page1";
     });
     await t.test("HTTP requires authentication, admin role, Origin and CSRF; source access is tenant-scoped", async () => {

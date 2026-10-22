@@ -8,19 +8,21 @@ export async function acceptMetaWebhook({ pool, rawBody, signature, appSecret, e
   let payload;
   try { payload = JSON.parse(rawBody.toString("utf8")); }
   catch { return { status: 400, acceptedEventIds: [] }; }
-  const pageIds = [...new Set((payload?.object === "page" && Array.isArray(payload.entry) ? payload.entry : []).map((entry) => entry?.id).filter((id) => typeof id === "string" && id))].sort();
+  const candidates = [...new Set((payload?.object === "page" && Array.isArray(payload.entry) ? payload.entry : []).map((entry) => entry?.id).filter((id) => typeof id === "string" && id))].sort();
+  const pageEvents = new Map(candidates.map((pageId) => [pageId, normalizePageEvents(payload, pageId)]));
+  const pageIds = candidates.filter((pageId) => pageEvents.get(pageId).length);
   if (!pageIds.length) return { status: 200, acceptedEventIds: [] };
   const evidence = { sha256: createHash("sha256").update(rawBody).digest("hex"), byteLength: rawBody.length };
   try {
     const acceptedEventIds = await withTransaction(pool, async (tx) => {
       const accepted = [];
-      const readSources = async () => (await tx.query("SELECT organization_id,page_id,health,expires_at FROM meta_page_sources WHERE page_id=ANY($1::text[]) ORDER BY organization_id,page_id", [pageIds])).rows;
+      const readSources = async () => (await tx.query("SELECT organization_id,page_id,health FROM meta_page_sources WHERE page_id=ANY($1::text[]) ORDER BY organization_id,page_id", [pageIds])).rows;
       const initial = await readSources();
       const fallback = [];
       for (const pageId of pageIds) {
         if (initial.some((source) => source.page_id === pageId) || !environmentSource) continue;
         const source = await environmentSource(pageId);
-        if (source?.pageId === pageId && source.organizationId && source.health === "connected" && (!source.expiresAt || new Date(source.expiresAt).getTime() > Date.now())) fallback.push({ organization_id: source.organizationId, page_id: pageId, health: source.health, expires_at: source.expiresAt ? new Date(source.expiresAt) : null });
+        if (source?.pageId === pageId && source.organizationId) fallback.push({ organization_id: source.organizationId, page_id: pageId, health: "connected" });
       }
       // Match source-management lock order and recheck after waiting for rotation
       // or disconnect. The payload supplies only Page IDs, never tenant IDs.
@@ -31,10 +33,12 @@ export async function acceptMetaWebhook({ pool, rawBody, signature, appSecret, e
       const sources = [...current, ...fallback.filter((source) => !current.some((row) => row.page_id === source.page_id))];
       const events = pageIds.flatMap((pageId) => {
         const bindings = sources.filter((source) => source.page_id === pageId);
-        // Ambiguous ownership and unhealthy durable rows fail closed. A durable
-        // disconnected source must never fall back to deployment credentials.
-        if (bindings.length !== 1 || bindings[0].health !== "connected" || (bindings[0].expires_at && new Date(bindings[0].expires_at).getTime() <= Date.now())) return [];
-        return normalizePageEvents(payload, pageId).map((event) => ({ ...event, organizationId: bindings[0].organization_id }));
+        const active = bindings.filter((source) => source.health !== "disconnected");
+        // Disconnection is an explicit permanent inbound filter. Token health
+        // gates outbound delivery, never durable receipt of signed inquiries.
+        if (bindings.length && !active.length) return [];
+        if (active.length !== 1) throw new Error("Page binding requires retry");
+        return pageEvents.get(pageId).map((event) => ({ ...event, organizationId: active[0].organization_id }));
       });
       // Every transaction locks conversations in the same order, including batched webhooks.
       const ordered = [...events].sort((a, b) => a.organizationId.localeCompare(b.organizationId) || a.pageId.localeCompare(b.pageId) || a.senderId.localeCompare(b.senderId));

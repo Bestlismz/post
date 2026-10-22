@@ -20,7 +20,7 @@ let frontendReady;
 const app = express();
 const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env });
 app.disable("x-powered-by");
-app.use(createMetaRouter({ pool, environmentSource: (pageId) => metaConnection.inspectEnvironmentSource(pageId), appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
+app.use(createMetaRouter({ pool, environmentSource: (pageId) => metaConnection.resolveEnvironmentSource(pageId), appSecret: process.env.META_APP_SECRET, verifyToken: process.env.META_VERIFY_TOKEN }));
 app.use(express.json({ limit: "32kb" }));
 app.use(createApplicationRouter({ pool, config }));
 app.use(createMetaConnectionRouter({ pool, config, connection: metaConnection }));
