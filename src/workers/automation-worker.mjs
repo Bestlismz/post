@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { appendAudit, withTransaction } from '../db/transaction.mjs';
 import { freshnessConflictCodes, terminalPreparationCodes } from '../inbox/errors.mjs';
+import { findFreshPreparedReply } from '../inbox/service.mjs';
 
 export function createAutomationWorker({ pool, service, workerId, leaseSeconds = 60, maxAttempts = 5, retryBaseSeconds = 5, maxRetrySeconds = 300 }) {
   if (typeof workerId !== 'string' || !workerId.trim() || !Number.isSafeInteger(leaseSeconds) || leaseSeconds<1) throw new Error('Valid worker and lease required');
@@ -14,11 +15,19 @@ export function createAutomationWorker({ pool, service, workerId, leaseSeconds =
       let code=freshnessConflictCodes.has(error.code) || terminalPreparationCodes.has(error.code) ? error.code : 'PREPARATION_FAILED';
       const item=(await tx.query(`SELECT w.status,w.processing_revision,c.processing_revision AS current_revision,c.human_takeover
         FROM work_items w JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
-        WHERE w.organization_id=$1 AND w.id=$2 FOR UPDATE OF c`,[job.organization_id,job.payload.workItemId])).rows[0];
+        WHERE w.organization_id=$1 AND w.id=$2 FOR UPDATE OF w,c`,[job.organization_id,job.payload.workItemId])).rows[0];
       if (!item) code='WORK_ITEM_NOT_FOUND';
       else if (item.human_takeover || item.status==='handoff') code='HUMAN_TAKEOVER';
       else if (item.processing_revision!==item.current_revision || item.status==='superseded') code='CONVERSATION_SUPERSEDED';
       const terminal=terminalPreparationCodes.has(code);
+      if (!terminal) {
+        const prepared=await findFreshPreparedReply(tx,{organizationId:job.organization_id,workItemId:job.payload.workItemId,processingRevision:job.payload.processingRevision});
+        if (prepared) {
+          await tx.query("UPDATE jobs SET status='completed',lease_owner=NULL,lease_expires_at=NULL,last_error='PREPARATION_SUPERSEDED',updated_at=now() WHERE id=$1 AND lease_owner=$2 AND status='running'",[job.id,leaseOwner]);
+          await appendAudit(tx,{organizationId:job.organization_id,action:'reply.preparation_reconciled',entityType:'work_item',entityId:job.payload.workItemId,details:{jobId:job.id,replyVersionId:prepared.id,errorCode:code,attempts:job.attempts}});
+          return;
+        }
+      }
       const exhausted=!terminal && job.attempts>=maxAttempts;
       if (terminal && ['CONVERSATION_SUPERSEDED','HUMAN_TAKEOVER'].includes(code)) {
         await tx.query("UPDATE work_items SET status=$3,updated_at=now() WHERE organization_id=$1 AND id=$2 AND status NOT IN ('completed','superseded','handoff')",

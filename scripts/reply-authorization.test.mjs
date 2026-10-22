@@ -316,5 +316,38 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
         assert.equal(receipts.length,1);assert.equal(receipts[0].details.errorCode,'PROFILE_CHANGED');assert.equal(receipts[0].details.attempts,2);
       } finally {await pool.query("UPDATE jobs SET status='completed' WHERE id=$1",[id]);}
     });
+    for (const remainsFresh of [true,false]) await t.test(`final stale worker ${remainsFresh?'preserves a newer fresh draft':'does not mistake a newer stale draft for success'}`, async () => {
+      const id=remainsFresh?'final-race-fresh':'final-race-stale';await seed(id);
+      await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe,attempts) VALUES($1,'org_default','analyze_work_item',$2,true,1)`,[id,JSON.stringify({workItemId:id,conversationId:id,processingRevision:1})]);
+      let entered,release;
+      const ready=new Promise(resolve=>{entered=resolve;});const gate=new Promise(resolve=>{release=resolve;});
+      const slowClient={responses:{create:async request=>{
+        if(request.text.format.name==='rental_requirements') {entered();await gate;}
+        return client.responses.create(request);
+      }}};
+      const worker=createAutomationWorker({pool,service:createInboxService({pool,client:slowClient}),workerId:id,maxAttempts:2});
+      const running=worker.runOnce();
+      await ready;
+      try {
+        await pool.query('UPDATE organizations SET automation_policy_revision=automation_policy_revision+1');
+        const fresh=await service.prepareReply(id,1,actor);
+        assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[id])).rows[0].status,'needs_review');
+        if (!remainsFresh) await pool.query('UPDATE organizations SET profile_revision=profile_revision+1');
+        release();await running;
+        const item=(await pool.query('SELECT status FROM work_items WHERE id=$1',[id])).rows[0];
+        const job=(await pool.query('SELECT status,last_error FROM jobs WHERE id=$1',[id])).rows[0];
+        assert.equal(item.status,remainsFresh?'needs_review':'failed');
+        assert.equal(job.status,remainsFresh?'completed':'failed');
+        const failures=(await pool.query("SELECT count(*)::int AS n FROM audit_entries WHERE action='reply.preparation_failed' AND entity_id=$1",[id])).rows[0].n;
+        assert.equal(failures,remainsFresh?0:1);
+        assert.equal((await pool.query('SELECT count(*)::int AS n FROM reply_versions WHERE work_item_id=$1',[id])).rows[0].n,1);
+        if(remainsFresh) {
+          assert.equal(job.last_error,'PREPARATION_SUPERSEDED');
+          assert.equal((await service.prepareReply(id,1,actor)).id,fresh.id);
+          const receipts=(await pool.query("SELECT details FROM audit_entries WHERE action='reply.preparation_reconciled' AND entity_id=$1",[id])).rows;
+          assert.equal(receipts.length,1);assert.equal(receipts[0].details.replyVersionId,fresh.id);assert.equal(receipts[0].details.attempts,2);
+        }
+      } finally {release();await running;}
+    });
   } finally { await pool?.end(); await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`); await admin.end(); }
 });

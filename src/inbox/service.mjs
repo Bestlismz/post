@@ -37,7 +37,7 @@ async function loadContext(tx, id, revision, organizationId) {
   if (!Number.isSafeInteger(revision) || revision < 1) throw httpError(400,'Invalid processing revision');
   // Ingress and source management use the same organization -> conversation order.
   const { rows: [org] } = await tx.query('SELECT * FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
-  const { rows: [item] } = await tx.query('SELECT * FROM work_items WHERE organization_id=$1 AND id=$2',[organizationId,id]);
+  const { rows: [item] } = await tx.query('SELECT * FROM work_items WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,id]);
   if (!org || !item) throw Object.assign(httpError(404,'Work item not found'),{code:'WORK_ITEM_NOT_FOUND'});
   const { rows: [conversation] } = await tx.query('SELECT * FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,item.conversation_id]);
   if (conversation.processing_revision !== revision || item.processing_revision !== revision || item.status==='superseded') fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
@@ -64,6 +64,26 @@ async function checkInventory(tx, organizationId, watermark) {
   return units;
 }
 
+async function assertReplyFresh(tx,reply,context) {
+  assertEvidence(reply.context.evidence,context);
+  await checkInventory(tx,context.org.id,reply.context.snapshot.inventoryWatermark);
+}
+
+// Caller retains the transaction and attempt lease while reconciling its outcome.
+export async function findFreshPreparedReply(tx,{organizationId,workItemId,processingRevision}) {
+  const context=await loadContext(tx,workItemId,processingRevision,organizationId);
+  if (!['needs_review','ready','completed'].includes(context.item.status)) return null;
+  const reply=(await tx.query('SELECT * FROM reply_versions WHERE organization_id=$1 AND work_item_id=$2 ORDER BY version DESC LIMIT 1',[organizationId,workItemId])).rows[0];
+  if (!reply) return null;
+  try {
+    await assertReplyFresh(tx,reply,context);
+    return reply;
+  } catch(error) {
+    if (!freshnessConflictCodes.has(error.code)) throw error;
+    return null;
+  }
+}
+
 async function policyContext(tx, context, reply, now) {
   const { org,conversation,source,messages } = context;
   const { rows: [counts] } = await tx.query(`SELECT count(*)::int AS organization,
@@ -85,8 +105,7 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     const approved=(await tx.query('SELECT 1 FROM reply_authorizations WHERE organization_id=$1 AND reply_version_id=$2',[org.id,existing.id])).rowCount>0;
     if (approved) return {existing,reusable:existing};
     try {
-      assertEvidence(existing.context.evidence,context);
-      await checkInventory(tx,org.id,existing.context.snapshot.inventoryWatermark);
+      await assertReplyFresh(tx,existing,context);
       return {existing,reusable:existing};
     } catch(error) {
       if (!freshnessConflictCodes.has(error.code)) throw error;
