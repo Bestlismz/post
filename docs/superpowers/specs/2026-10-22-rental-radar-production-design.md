@@ -1,6 +1,6 @@
 # Rental Radar production redesign
 
-**Status:** Proposed for implementation  
+**Status:** Approved for implementation
 **Date:** 2026-10-22  
 **Visual target:** [`design/rental-radar-inbox-approved.png`](../../../design/rental-radar-inbox-approved.png)
 
