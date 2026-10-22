@@ -66,8 +66,8 @@ export function createOperationPoller({
       }
     }
     if (atCap) {
-      states.set(operation.id, "stale");
-      onFinalError(operation.id, "stale");
+      states.set(operation.id, "retry_required");
+      onFinalError(operation.id, "retry_required");
       active = null;
       return;
     }

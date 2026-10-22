@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, MessagesSquare, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
 import { BrowserRecovery } from "./browser-recovery";
 import { createOperationPoller } from "./operation-poller.mjs";
+import { operationStatusReducer } from "./operation-status.mjs";
 import { SourceRow } from "./source-row";
 import "../sources-automations.css";
 
@@ -23,39 +24,46 @@ export default function SourcesPage() {
   const [expanded, setExpanded] = useState(null);
   const [browserHealth, setBrowserHealth] = useState({});
   const [recovery, setRecovery] = useState(null);
+  const [operationIssues, dispatchOperationIssue] = useReducer(operationStatusReducer, {});
   const csrfRef = useRef("");
   const pollersRef = useRef(new Map());
-  const staleOperationsRef = useRef(new Set());
 
   const load = useCallback(async ({ quiet = false } = {}) => {
     if (!quiet) setLoadError("");
-    try { const next = await api.request("/api/sources"); setData(next); return next; }
+    try { const next = await api.request("/api/sources"); setData(next); dispatchOperationIssue({ type: "reconcile", groups: next.groups }); return next; }
     catch (error) { if (quiet) throw error; setLoadError(error.message); return null; }
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    const pending = new Set(data.groups.filter((source) => source.latestOperation?.state === "queued" && !staleOperationsRef.current.has(source.latestOperation.operationId)).map((source) => source.latestOperation.operationId));
+    const pendingSources = data.groups.filter((source) => source.latestOperation?.state === "queued" && operationIssues[source.latestOperation.operationId]?.state !== "retry_required");
+    const pending = new Set(pendingSources.map((source) => source.latestOperation.operationId));
     for (const [operationId, poller] of pollersRef.current) {
       if (!pending.has(operationId)) { poller.destroy(); pollersRef.current.delete(operationId); }
     }
-    for (const operationId of pending) {
+    for (const source of pendingSources) {
+      const operationId = source.latestOperation.operationId;
       if (pollersRef.current.has(operationId)) continue;
       const poller = createOperationPoller({ reload: async (id) => {
         const next = await load({ quiet: true });
-        return next.groups.flatMap((source) => source.latestOperation ?? []).find((operation) => operation.operationId === id)?.state ?? "replaced";
-      }, onFinalError: (id) => { staleOperationsRef.current.add(id); setLoadError("ยังยืนยันสถานะสแกนล่าสุดไม่ได้ กรุณากดโหลดอีกครั้ง"); } });
+        const state = next.groups.flatMap((entry) => entry.latestOperation ?? []).find((operation) => operation.operationId === id)?.state ?? "replaced";
+        dispatchOperationIssue({ type: "retry_succeeded", operationId: id });
+        return state;
+      }, onFinalError: (id) => dispatchOperationIssue({ type: "retry_required", sourceId: source.id, operationId: id }) });
       pollersRef.current.set(operationId, poller);
       poller.start(operationId);
     }
-  }, [data.groups, load]);
+  }, [data.groups, load, operationIssues]);
   useEffect(() => () => {
     for (const poller of pollersRef.current.values()) poller.destroy();
     pollersRef.current.clear();
   }, []);
-  async function retryLoad() {
-    staleOperationsRef.current.clear();
-    await load();
+  function retryOperation(source) {
+    const operationId = source.latestOperation?.operationId;
+    if (!operationId) return;
+    pollersRef.current.get(operationId)?.destroy();
+    pollersRef.current.delete(operationId);
+    dispatchOperationIssue({ type: "retry_started", operationId });
   }
 
   async function csrf(force = false) {
@@ -115,13 +123,13 @@ export default function SourcesPage() {
   return <div className="ops-page sources-page">
     <header className="ops-heading"><div><p>Connections &amp; health</p><h1>แหล่งข้อมูล Facebook</h1><span>เพจและกลุ่มที่ได้รับอนุญาต พร้อมสถานะสแกนและ browser session จากระบบจริง</span></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => setAddOpen(true)}><Plus size={17}/>เพิ่มกลุ่ม</button> : null}</header>
     {notice ? <div className="ops-notice" role="status"><CheckCircle2 size={17}/><span>{notice}</span><button aria-label="ปิดข้อความ" onClick={() => setNotice("")}><X size={16}/></button></div> : null}
-    {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={retryLoad}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
+    {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={() => load()}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
     <div className="ops-content">
       <section className="ops-section" aria-labelledby="page-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="page-source-title">Facebook Page</h2><p>Messenger ผ่าน Meta API ทางการ</p></div></div><span className="ops-count">{data.pages.length} เพจ</span></div>
         {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div><strong>{page.name}</strong><p>รับข้อความและส่งคำตอบผ่าน Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : "ต้องตรวจสอบการเชื่อมต่อ"}</span></article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div></div>}
       </section>
       <section className="ops-section" aria-labelledby="group-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="group-source-title">Facebook Groups</h2><p>ลิงก์ถาวรหลายกลุ่ม โหมดแยกต่อแหล่ง และหลักฐานการสแกนล่าสุด</p></div></div><span className="ops-count">{data.groups.length} กลุ่ม</span></div>
-        <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} onMode={setMode} onScan={scan} onInspect={inspect} onRecovery={beginRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
+        <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} operationIssue={operationIssues[source.latestOperation?.operationId]} onMode={setMode} onScan={scan} onRetry={retryOperation} onInspect={inspect} onRecovery={beginRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
       </section>
     </div>
     {addOpen ? <div className="ops-dialog-backdrop"><form className="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="add-group-title" onSubmit={addGroup}><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => { setAddOpen(false); setFormError(""); }}><X size={18}/></button><span className="ops-dialog__eyebrow">New source</span><h2 id="add-group-title">เพิ่ม Facebook Group</h2><p>วางลิงก์กลุ่มที่ทีมของคุณได้รับอนุญาตให้ติดตาม ระบบจะบันทึกเป็นลิงก์ถาวรให้</p><label>ลิงก์ Facebook Group<input aria-label="ลิงก์ Facebook Group" autoFocus value={groupUrl} onChange={(event) => setGroupUrl(event.target.value)} placeholder="https://www.facebook.com/groups/1742522453522327"/></label>{formError ? <div className="ops-field-error" role="alert">{formError}</div> : null}<footer><button className="ops-button ops-button--secondary" type="button" onClick={() => setAddOpen(false)}>ยกเลิก</button><button className="ops-button ops-button--primary" disabled={busy === "add"}>ยืนยันเพิ่มกลุ่ม</button></footer></form></div> : null}

@@ -102,6 +102,81 @@ test("Sources adds only canonical Groups, changes mode, and makes scan/recovery 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });
 
+test("retry-required scan state stays scoped to its group through unrelated loads and recovery", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "fake-clock lifecycle runs once in desktop Chromium");
+  await page.clock.install({ time: new Date("2026-10-22T09:00:00.000Z") });
+  const priorReceipt = { operationId: "scan-prior", coverage: "complete", health: "healthy", reason: null, createdAt: "2026-10-22T08:00:00.000Z" };
+  let groups = [
+    { ...group, id: "source-a", canonicalUrl: "https://www.facebook.com/groups/111", latestOperation: { operationId: "scan-a", state: "queued", createdAt: "2026-10-22T08:48:00.000Z" }, latestReceipt: priorReceipt, receiptHistory: [priorReceipt] },
+    { ...group, id: "source-b", canonicalUrl: "https://www.facebook.com/groups/222", latestOperation: { operationId: "scan-b", state: "completed", createdAt: "2026-10-22T08:30:00.000Z" }, latestReceipt: { ...priorReceipt, operationId: "scan-b" }, receiptHistory: [{ ...priorReceipt, operationId: "scan-b" }] },
+  ];
+  let sourceLoads = 0;
+  let failPolls = true;
+  let completeA = false;
+  await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "Admin", role: "admin" } } }));
+  await page.route("**/api/auth/csrf", (route) => route.fulfill({ json: { csrfToken: "test-csrf" } }));
+  await page.route("**/api/sources", (route) => {
+    sourceLoads += 1;
+    if (sourceLoads > 1 && failPolls) return route.fulfill({ status: 503, json: { error: "temporary" } });
+    if (completeA) {
+      const receipt = { operationId: "scan-a", coverage: "complete", health: "healthy", reason: null, createdAt: "2026-10-22T09:12:01.000Z" };
+      groups = groups.map((source) => source.id === "source-a" ? { ...source, latestOperation: { ...source.latestOperation, state: "completed" }, latestReceipt: receipt, receiptHistory: [receipt, ...source.receiptHistory] } : source);
+      completeA = false;
+    }
+    const pendingB = groups.find((source) => source.id === "source-b")?.latestOperation?.state === "queued";
+    if (pendingB) groups = groups.map((source) => source.id === "source-b" ? { ...source, latestOperation: { ...source.latestOperation, state: "completed" } } : source);
+    return route.fulfill({ json: { actorRole: "admin", pages: [], groups } });
+  });
+  await page.route(/\/api\/sources\/groups\/[^/]+\/scans$/, (route) => {
+    const id = new URL(route.request().url()).pathname.split("/").at(-2);
+    groups = groups.map((source) => source.id === id ? { ...source, latestOperation: { operationId: `scan-${id}-new`, state: "queued", createdAt: "2026-10-22T09:12:00.000Z" } } : source);
+    return route.fulfill({ status: 202, json: { operationId: `scan-${id}-new`, state: "queued" } });
+  });
+  await page.route(/\/api\/sources\/groups\/[^/]+$/, (route) => route.fulfill({ json: groups.find((source) => source.id === new URL(route.request().url()).pathname.split("/").at(-1)) }));
+  await page.route(/\/api\/sources\/[^/]+\/browser-health$/, (route) => route.fulfill({
+    json: {
+      sourceId: "source-a",
+      sourceHealth: { session: "healthy", selector: "healthy", sessionCircuit: false, selectorCircuit: false, paused: false },
+      browser: { ok: true, session: { state: "healthy" }, recovery: { state: "available" } },
+    },
+  }));
+  await page.route(/\/api\/sources\/[^/]+\/recovery$/, (route) => route.fulfill({ status: 201, json: { sourceId: "source-a", sessionId: "session-a", expiresAt: "2026-10-22T09:20:00.000Z", tunnelUrl: "/api/sources/source-a/recovery/session-a/novnc/vnc.html" } }));
+  await page.route(/\/api\/sources\/[^/]+\/recovery\/[^/]+$/, (route) => route.fulfill({ status: 204 }));
+  await page.route("**/api/sources/source-a/recovery/session-a/novnc/vnc.html", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>recovery</title>" }));
+
+  await page.goto("/sources");
+  await expect(page.getByTestId("source-source-a").getByText("รอ worker รับงาน")).toBeVisible();
+  await page.clock.fastForward(12 * 60_000 + 1_000);
+  const sourceA = page.getByTestId("source-source-a"), sourceB = page.getByTestId("source-source-b");
+  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
+  await expect(sourceA.getByRole("button", { name: "ลองตรวจอีกครั้ง" })).toBeVisible();
+  const loadsAtFailure = sourceLoads;
+
+  failPolls = false;
+  await sourceB.getByRole("button", { name: "สแกนตอนนี้" }).click();
+  const loadsAfterB = sourceLoads;
+  await sourceA.getByRole("button", { name: "ตรวจสอบเซสชัน" }).click();
+  await sourceA.getByRole("button", { name: "เปิดหน้ากู้คืนเซสชัน" }).click();
+  await page.getByRole("button", { name: "ปิดหน้ากู้คืน" }).evaluate((button) => button.click());
+  await page.clock.fastForward(1);
+  await expect.poll(() => sourceLoads).toBeGreaterThan(loadsAfterB);
+  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
+  const loadsAfterRecovery = sourceLoads;
+  await page.clock.fastForward(60_000);
+  expect(loadsAfterRecovery).toBeGreaterThan(loadsAtFailure);
+  expect(sourceLoads).toBe(loadsAfterRecovery);
+  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
+  await expect(sourceB.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
+
+  completeA = true;
+  await sourceA.getByRole("button", { name: "ลองตรวจอีกครั้ง" }).evaluate((button) => button.click());
+  await page.clock.fastForward(1_000);
+  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
+  await expect(sourceA.getByText("สแกนครบแล้ว")).toBeVisible();
+  await expect(sourceB.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
+});
+
 test("Automations previews the production decision and persists pause/format receipts", async ({ page }) => {
   const state = await mockOperations(page);
   await page.goto("/automations");

@@ -73,7 +73,7 @@ test("a second operation starts a fresh lifecycle after the first exhausts", asy
   }, { absoluteCapMs: 10_000 });
   poller.start("scan-first");
   await clock.advance(11_000);
-  assert.equal(poller.state("scan-first"), "stale");
+  assert.equal(poller.state("scan-first"), "retry_required");
   poller.start("scan-second");
   await clock.advance(1_000);
   assert(calls.includes("scan-second"));
