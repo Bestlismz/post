@@ -3,16 +3,17 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MAX_GROUP_ID_LENGTH } from '../channels/groups/target.mjs';
+import { abortable, closeContext } from './cancellation.mjs';
 
 export function assertGroupTarget(target) {
   if(typeof target!=='string'||!new RegExp(`^https://www\\.facebook\\.com/groups/[0-9]{1,${MAX_GROUP_ID_LENGTH}}$`).test(target)) throw new Error('Invalid group target');
 }
-export async function selectGroupPage(context,target) {
+export async function selectGroupPage(context,target,{signal}={}) {
   assertGroupTarget(target);
   const matches=context.pages().filter(page=>!page.isClosed?.()&&page.url()===target);
-  if(matches.length) { const [selected,...duplicates]=matches; await Promise.all(duplicates.map(page=>page.close().catch(()=>{}))); return selected; }
-  const page=await context.newPage();
-  await page.goto(target,{waitUntil:'domcontentloaded',timeout:30000});
+  if(matches.length) { const [selected,...duplicates]=matches; await abortable(()=>Promise.all(duplicates.map(page=>page.close().catch(()=>{}))),signal); return selected; }
+  const page=await abortable(()=>context.newPage(),signal,page=>page.close());
+  await abortable(()=>page.goto(target,{waitUntil:'domcontentloaded',timeout:30000}),signal);
   return page;
 }
 export async function inspectSession(page) {
@@ -39,25 +40,57 @@ export async function acquireProfileLease(profilePath,{python='python3'}={}) {
   await mkdir(profilePath,{recursive:true,mode:0o700});
   const canonical=await realpath(profilePath),fence=randomUUID();
   const child=spawn(python,['-c',lockHolder,join(canonical,'.group-worker.lock'),String(process.pid)],{stdio:['pipe','pipe','ignore']});
+  const exited=new Promise(resolve=>child.once('exit',resolve));
+  const ownership=new AbortController();
+  child.once('exit',()=>ownership.abort(new Error('Profile lease lost')));
+  child.stdin.on('error',()=>{});
   await new Promise((resolve,reject)=>{ child.once('error',()=>reject(new Error('Profile lease unavailable'))); child.once('exit',()=>reject(new Error('Profile already leased'))); child.stdout.once('data',()=>resolve()); });
-  let released=false;
-  return {fence,async assertOwned(){ if(released||child.exitCode!==null||child.signalCode!==null) throw new Error('Profile lease lost'); },async release(){if(released)return;released=true;const stopped=new Promise(resolve=>child.once('exit',resolve));child.stdin.end();await stopped;}};
+  let released=false,releasing;
+  const stopped=()=>child.exitCode!==null||child.signalCode!==null;
+  async function waitForExit(ms) {
+    if(stopped())return;
+    let timer;
+    try { await Promise.race([exited,new Promise(resolve=>{timer=setTimeout(resolve,ms);})]); }
+    finally { clearTimeout(timer); }
+  }
+  return {fence,signal:ownership.signal,async assertOwned(){ if(released||stopped()) throw new Error('Profile lease lost'); },release(){
+    if(releasing)return releasing;
+    released=true;
+    releasing=(async()=>{
+      if(stopped())return;
+      child.stdin.end();await waitForExit(100);
+      if(!stopped()) {child.kill('SIGKILL');await waitForExit(100);}
+      if(!stopped())throw new Error('Profile lease release failed');
+    })();
+    return releasing;
+  }};
 }
 
-export function createGroupSession({profilePath,launchContext}) {
+export function createGroupSession({profilePath,launchContext,commandTimeoutMs=30000,cleanupTimeoutMs=200}) {
   let busy=false;
-  return {async withGroup(command,run) {
+  return {async withGroup(command,run,{signal:parentSignal}={}) {
     assertGroupTarget(command.canonicalTarget);
     if(busy) throw new Error('Profile already leased'); busy=true;
     let lease,context;
+    const controller=new AbortController(),signal=controller.signal;
+    const cancel=()=>controller.abort(parentSignal.reason??new Error('Operation cancelled'));
+    parentSignal?.addEventListener('abort',cancel,{once:true});if(parentSignal?.aborted)cancel();
+    const timer=setTimeout(()=>controller.abort(new Error('Operation deadline exceeded')),Math.max(0,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now())));
+    const lost=()=>controller.abort(lease.signal.reason);
     try {
-      lease=await acquireProfileLease(profilePath);
-      context=await launchContext(profilePath);
+      lease=await abortable(()=>acquireProfileLease(profilePath),signal,lease=>lease.release());
+      lease.signal.addEventListener('abort',lost,{once:true});if(lease.signal.aborted)lost();
+      context=await abortable(()=>launchContext(profilePath,{signal,timeout:Math.max(1,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now()))}),signal,context=>closeContext(context,cleanupTimeoutMs));
       await lease.assertOwned();
-      const page=await selectGroupPage(context,command.canonicalTarget);
-      const health=await inspectSession(page);
-      if(health.state!=='healthy') return {selectorVersion:'facebook-dom-v1',coverage:'none',health:health.state,reason:'session_unavailable',cursor:null,observations:[]};
-      const result=await run(page,command); await lease.assertOwned(); return result;
-    } finally { await context?.close().catch(()=>{}); await lease?.release(); busy=false; }
+      const page=await selectGroupPage(context,command.canonicalTarget,{signal});
+      const health=await abortable(()=>inspectSession(page),signal);
+      if(health.state!=='healthy') return {selectorVersion:'facebook-dom-v2',coverage:'none',health:health.state,reason:'session_unavailable',cursor:null,observations:[]};
+      const result=await abortable(()=>run(page,command,{signal}),signal); await lease.assertOwned(); return result;
+    } finally {
+      clearTimeout(timer);parentSignal?.removeEventListener('abort',cancel);
+      lease?.signal.removeEventListener('abort',lost);
+      try { await closeContext(context,cleanupTimeoutMs); }
+      finally {try{await lease?.release();}finally{busy=false;}}
+    }
   }};
 }
