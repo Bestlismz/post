@@ -51,7 +51,19 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       assert.equal(detail.participant.label, "Messenger customer");
       const serialized = JSON.stringify({ first, second, detail });
       for (const forbidden of ["private-psid", "another-psid", "page-secret", "raw_evidence", "provider_timestamp", "organization_id", "ciphertext", "envelope", "outside"]) assert.equal(serialized.includes(forbidden), false, forbidden);
-      assert.deepEqual(Object.keys(first.items[0]).sort(), ["channel", "conversationId", "createdAt", "id", "message", "participant", "processingRevision", "source", "status"].sort());
+      assert.deepEqual(Object.keys(first.items[0]).sort(), ["channel", "conversationId", "createdAt", "id", "message", "participant", "processingRevision", "source", "status", "summary"].sort());
+    });
+    await t.test("list summary exposes normalized durable requirements and explicit nulls without provider identities", async () => {
+      await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+        SELECT 'summary-reply',w.organization_id,w.id,w.conversation_id,w.processing_revision,1,'{"text":"safe"}',
+          '{"extraction":{"requirements":{"district":"  อโศก  ","budgetMax":20000}},"providerId":"page-secret"}'::jsonb
+        FROM work_items w JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id
+        WHERE w.organization_id='org_default' AND m.mid='first'`);
+      const populated = (await inbox.listInbox({ search: "first" }, actor)).items[0];
+      const empty = (await inbox.listInbox({ search: "third" }, actor)).items[0];
+      assert.deepEqual(populated.summary, { location: "อโศก", budgetMax: 20000, assignee: null });
+      assert.deepEqual(empty.summary, { location: null, budgetMax: null, assignee: null });
+      assert.equal(JSON.stringify(populated).includes("page-secret"), false);
     });
     await t.test("source/channel/search filters retain disconnected source history", async () => {
       await pool.query("UPDATE meta_page_sources SET health='disconnected' WHERE id='source'");

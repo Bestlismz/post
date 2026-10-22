@@ -15,6 +15,7 @@ const queue = [
     participant: { id: "mint", label: "Mint Kanyarat" },
     source: { id: "asoke-rentals", name: "คอนโดให้เช่า กรุงเทพฯ", health: "connected" },
     message: { id: "group-post", text: "หาคอนโดใกล้ BTS อโศก งบไม่เกิน 20,000 บาท 1 ห้องนอน เลี้ยงแมวได้ค่ะ https://facebook.com/groups/very-long-group-address-that-must-wrap/posts/123" },
+    summary: { location: "อโศก", budgetMax: 20000, assignee: null },
   },
   {
     id: "messenger_1",
@@ -26,6 +27,7 @@ const queue = [
     participant: { id: "nattapong", label: "Nattapong S." },
     source: { id: "page-source", name: "Rental Radar Page", health: "connected" },
     message: { id: "messenger-message", text: "มีห้องว่างปลายพฤศจิกายนไหมครับ" },
+    summary: { location: "อโศก", budgetMax: null, assignee: null },
   },
   {
     id: "stale_1",
@@ -37,6 +39,7 @@ const queue = [
     participant: { id: "stale", label: "Ployphailin" },
     source: { id: "asoke-rentals", name: "คอนโดให้เช่า กรุงเทพฯ", health: "connected" },
     message: { id: "stale-post", text: "ขอรายละเอียดเพิ่มได้ไหมคะ" },
+    summary: { location: null, budgetMax: null, assignee: null },
   },
   {
     id: "partial_1",
@@ -48,6 +51,7 @@ const queue = [
     participant: { id: "partial", label: "Worachet" },
     source: { id: "page-source", name: "Rental Radar Page", health: "connected" },
     message: { id: "partial-message", text: "สนใจห้องใกล้รถไฟฟ้าครับ" },
+    summary: { location: null, budgetMax: null, assignee: null },
   },
 ];
 

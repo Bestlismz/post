@@ -98,6 +98,7 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
     assert.equal((await webhook('mid-1')).status,200);assert.equal((await webhook('mid-1')).status,200);
     let list=await (await get('/api/inbox')).json();assert.equal(list.items.length,1);
     const item=list.items[0],path=`/api/inbox/${item.id}`;
+    assert.deepEqual(item.summary,{location:null,budgetMax:null,assignee:null});
     await t.test('new inbound produces a durable resource receipt before any worker runs',async()=>{
       const received=await (await get(path)).json();
       assert.ok(received.events.some(event=>event.resourceId===item.id && event.state==='pending'));
@@ -210,6 +211,15 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
         assert.deepEqual(attempts.map(a=>a.state),[state]);assert.ok(row);
       }
       assert.equal(provider.sends.length,4);
+    });
+    await t.test('Inbox HTTP summary returns normalized durable facts and no provider identities',async()=>{
+      await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+        SELECT 'http-summary',organization_id,id,conversation_id,processing_revision,99,'{"text":"safe"}',
+          '{"snapshot":{"requirements":{"geography":{"districts":["  Asoke  "]},"budgetMax":20000}},"providerId":"private-psid"}'::jsonb
+        FROM work_items WHERE id=$1`,[item.id]);
+      const summarized=(await (await get('/api/inbox?limit=100')).json()).items.find(candidate=>candidate.id===item.id);
+      assert.deepEqual(summarized.summary,{location:'Asoke',budgetMax:20000,assignee:null});
+      assert.equal(JSON.stringify(summarized).includes('private-psid'),false);
     });
   } finally {
     streams.forEach(stream=>stream.abort());

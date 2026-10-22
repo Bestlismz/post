@@ -9,12 +9,34 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS author_label,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.kind FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS target_kind,
   coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE s.name END AS source_name,
-  CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health`;
+  CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health,
+  latest_reply.context AS latest_reply_context`;
 const relations = `FROM work_items w
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
   JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id AND m.conversation_id=c.id
   LEFT JOIN meta_page_sources s ON c.channel='messenger' AND s.organization_id=c.organization_id AND s.page_id=c.page_id
-  LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND 'facebook_group:' || g.group_id=c.page_id`;
+  LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND 'facebook_group:' || g.group_id=c.page_id
+  LEFT JOIN LATERAL (SELECT rv.context FROM reply_versions rv
+    WHERE rv.organization_id=w.organization_id AND rv.work_item_id=w.id
+    ORDER BY rv.version DESC LIMIT 1) latest_reply ON true`;
+
+function safeSummaryLocation(context) {
+  const snapshot = context?.snapshot?.requirements;
+  const extraction = context?.extraction?.requirements;
+  const value = snapshot?.geography?.districts?.[0] ?? snapshot?.district
+    ?? extraction?.geography?.districts?.[0] ?? extraction?.district
+    ?? context?.extraction?.fields?.district?.value;
+  if (typeof value !== "string") return null;
+  const normalized = value.normalize("NFC").trim().replace(/\s+/gu, " ");
+  return normalized && normalized.length <= 160 && !/[\p{Cc}\p{Cs}]/u.test(normalized) ? normalized : null;
+}
+
+function safeSummaryBudget(context) {
+  const snapshot = context?.snapshot?.requirements;
+  const extraction = context?.extraction?.requirements;
+  const value = snapshot?.budgetMax ?? extraction?.budgetMax ?? context?.extraction?.fields?.budgetMax?.value;
+  return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : null;
+}
 
 function itemDto(row) {
   return {
@@ -27,6 +49,7 @@ function itemDto(row) {
     participant: { id: row.conversation_id, label: row.author_label || (row.channel === "facebook_group" ? "Group participant" : "Messenger customer") },
     source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable" },
     message: { id: row.message_id, text: row.message_text },
+    summary: { location: safeSummaryLocation(row.latest_reply_context), budgetMax: safeSummaryBudget(row.latest_reply_context), assignee: null },
   };
 }
 
@@ -102,7 +125,6 @@ export async function getInboxItem(pool, id, actor) {
       FROM (SELECT * FROM messages WHERE organization_id=w.organization_id AND conversation_id=w.conversation_id ORDER BY processing_revision DESC LIMIT 100) tm) AS timeline,
     (SELECT coalesce(jsonb_agg(r),'[]') FROM (SELECT id,version,conversation_revision AS "processingRevision",content->>'text' AS text
       FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 20) r) AS replies,
-    (SELECT context FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 1) AS latest_reply_context,
     (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",
       CASE WHEN a.state='attempting' THEN 'unknown' ELSE coalesce(a.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
       a.provider_message_id AS "providerMessageId"

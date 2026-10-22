@@ -28,6 +28,7 @@ function InboxWorkspace() {
   const [inspectorOpen, setInspectorOpen] = useState(true), [receipt, setReceipt] = useState(null), [csrfToken, setCsrfToken] = useState("");
   const [mobileQueueOpen, setMobileQueueOpen] = useState(!requestedId);
   const tableTriggerRef = useRef(null);
+  const sheetWasOpenRef = useRef(false);
   const selectedRef = useRef(selectedId); selectedRef.current = selectedId;
   const detailRef = useRef(detail); detailRef.current = detail;
   const filterRef = useRef(filter); filterRef.current = filter;
@@ -86,6 +87,14 @@ function InboxWorkspace() {
   useEffect(() => { applySelection(requestedId); }, [applySelection, requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
   useEffect(() => {
+    const open = view === "table" && Boolean(selectedId);
+    if (sheetWasOpenRef.current && !open) {
+      const trigger = tableTriggerRef.current;
+      requestAnimationFrame(() => { if (trigger?.isConnected) trigger.focus({ preventScroll: true }); });
+    }
+    sheetWasOpenRef.current = open;
+  }, [selectedId, view]);
+  useEffect(() => {
     if (typeof EventSource === "undefined") return undefined;
     const events = new EventSource("/api/inbox/events");
     const handleReceipt = (event) => {
@@ -125,7 +134,6 @@ function InboxWorkspace() {
   const closeFocusSheet = useCallback(() => {
     applySelection(null);
     navigateState({ item: null }, { history: "push" });
-    requestAnimationFrame(() => tableTriggerRef.current?.focus({ preventScroll: true }));
   }, [applySelection, navigateState]);
 
   const runCommand = useCallback(async (action, input = {}) => {

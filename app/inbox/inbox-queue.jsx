@@ -17,6 +17,11 @@ function InboxFilters({ items, filter, onFilterChange }) {
   return <div className="inbox-queue__filters" aria-label="ตัวกรองคิว"><button aria-pressed={filter === "all"} className={filter === "all" ? "is-active" : ""} type="button" onClick={() => onFilterChange("all")}>ทั้งหมด <span>{items.length}</span></button><button aria-pressed={filter === "needs_review"} className={filter === "needs_review" ? "is-active" : ""} type="button" onClick={() => onFilterChange("needs_review")}>ต้องตรวจ <span>{reviewCount}</span></button></div>;
 }
 
+function InboxRefreshError({ state, hasItems, onRetry }) {
+  if (!state.error || !hasItems) return null;
+  return <div className="inbox-refresh-error" role="alert"><span><strong>ข้อมูลอาจไม่ใช่ข้อมูลล่าสุด</strong><small>การโหลดครั้งล่าสุดไม่สำเร็จ รายการเดิมยังใช้งานได้</small></span><button type="button" onClick={onRetry}><RotateCcw size={15} />ลองโหลดคิวอีกครั้ง</button></div>;
+}
+
 export function InboxViewSwitch({ view, onViewChange }) {
   return <div className="inbox-view-switch" aria-label="รูปแบบ Inbox"><button type="button" aria-label="มุมมองพื้นที่ทำงาน" aria-pressed={view === "workspace"} onClick={() => onViewChange("workspace")}><LayoutList size={17} />พื้นที่ทำงาน</button><button type="button" aria-label="มุมมองตาราง" aria-pressed={view === "table"} onClick={() => onViewChange("table")}><Rows3 size={17} />ตาราง</button></div>;
 }
@@ -27,6 +32,7 @@ export function InboxQueue({ items, selectedId, onSelect, state, onRetry, filter
     <header className="inbox-queue__header"><div><h1>Inbox</h1><p>ทุกช่องทางในที่เดียว</p></div><span className="inbox-count" aria-label={`${items.length} รายการ`}>{items.length}</span></header>
     {onViewChange ? <InboxViewSwitch view={view} onViewChange={onViewChange} /> : null}
     <InboxFilters items={items} filter={filter} onFilterChange={onFilterChange} />
+    <InboxRefreshError state={state} hasItems={items.length > 0} onRetry={onRetry} />
     <div className="inbox-queue__list">
       {state.loading && !items.length ? <div className="inbox-queue-skeleton" aria-label="กำลังโหลดคิว"><i /><i /><i /><i /></div> : null}
       {state.error && !items.length ? <div className="inbox-region-error"><Inbox size={24} /><strong>โหลดคิวไม่ได้</strong><p>คิวส่วนอื่นยังไม่เปลี่ยนแปลง</p><button type="button" onClick={onRetry}><RotateCcw size={16} />ลองอีกครั้ง</button></div> : null}
@@ -55,14 +61,14 @@ export function InboxTable({ items, selectedId, onSelect, state, onRetry, filter
   const visibleItems = visibleInboxItems(items, filter);
   const content = visibleItems.map((item) => ({
     ...item,
-    location: item.requirements?.district ?? item.extractedRequirements?.district ?? "ยังไม่ระบุ",
-    budget: budgetLabel(item.requirements?.budgetMax ?? item.extractedRequirements?.budgetMax),
-    assigneeLabel: item.assignee?.label ?? "ยังไม่มอบหมาย",
+    location: item.summary?.location ?? "ยังไม่ระบุ",
+    budget: budgetLabel(item.summary?.budgetMax),
+    assigneeLabel: item.summary?.assignee?.label ?? "ยังไม่มอบหมาย",
   }));
   const empty = !state.loading && !state.error && !content.length;
   return <section className="inbox-table" aria-label="Inbox แบบตาราง" aria-hidden={obscured || undefined} inert={obscured || undefined}>
     <header className="inbox-table__header"><div><h1>Inbox</h1><p>คัดแยกงานจำนวนมากโดยไม่เสียบริบท</p></div><InboxViewSwitch view={view} onViewChange={onViewChange} /></header>
-    <InboxFilters items={items} filter={filter} onFilterChange={onFilterChange} />
+    <div className="inbox-table__controls"><InboxFilters items={items} filter={filter} onFilterChange={onFilterChange} /><InboxRefreshError state={state} hasItems={items.length > 0} onRetry={onRetry} /></div>
     {state.loading && !items.length ? <div className="inbox-queue-skeleton" aria-label="กำลังโหลดคิว"><i /><i /><i /><i /></div> : null}
     {state.error && !items.length ? <div className="inbox-region-error"><Inbox size={24} /><strong>โหลดคิวไม่ได้</strong><p>ข้อมูลเดิมยังไม่ถูกเปลี่ยนแปลง</p><button type="button" onClick={onRetry}><RotateCcw size={16} />ลองอีกครั้ง</button></div> : null}
     {empty ? <div className="inbox-empty-list"><Inbox size={26} /><strong>{filter === "needs_review" ? "ไม่มีรายการที่ต้องตรวจ" : "ยังไม่มีข้อความใหม่"}</strong><span>{filter === "needs_review" ? "เลือกตัวกรองทั้งหมดเพื่อดูรายการอื่น" : "รายการจากกลุ่มและ Messenger จะปรากฏที่นี่"}</span></div> : null}
