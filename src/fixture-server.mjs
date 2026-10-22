@@ -21,6 +21,7 @@ import { createRelevanceAnalyzer } from "./relevance.mjs";
 import { decideReplyAction, renderReplyProfile, validateReplyProfile } from "./reply-policy.mjs";
 import { createStore, digest, id, preserveSubmittedTargetKeys, publicState } from "./state.mjs";
 import { createInboxWorkspaceFixture } from "../fixture/inbox-workspace.mjs";
+import { createInventoryWorkspaceFixture } from "../fixture/inventory-workspace.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const port = Number(process.env.PORT ?? 3000);
@@ -30,6 +31,7 @@ const liveSubmissionEnabled = process.env.POC_LIVE_SUBMISSION === "true";
 const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
+const inventoryWorkspace = createInventoryWorkspaceFixture();
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {
@@ -107,6 +109,18 @@ app.post("/api/inbox/:id/prepare", (request, response) => { const operation=inbo
 app.post("/api/inbox/:id/handoff", (request, response) => { const operation=inboxWorkspace.handoff(request.params.id);if(!operation)return response.status(404).json({error:"Inbox item not found"});response.status(202).json({operation}); });
 app.post("/api/replies/:id/edit", (request, response) => { const reply=inboxWorkspace.edit(request.params.id,requiredText(request.body?.text,"Reply text"));if(!reply)return response.status(404).json({error:"Reply not found"});response.json({reply}); });
 app.post("/api/replies/:id/approve", (request, response) => { const operation=inboxWorkspace.approve(request.params.id);if(!operation)return response.status(404).json({error:"Reply not found"});response.status(202).json({operation}); });
+
+app.get("/api/projects", (_request, response) => response.json(inventoryWorkspace.listProjects()));
+app.get("/api/units", (_request, response) => response.json(inventoryWorkspace.listUnits()));
+app.get("/api/projects/:id", (request, response) => sendFixtureEntity(response, inventoryWorkspace.getProject(request.params.id)));
+app.get("/api/units/:id", (request, response) => sendFixtureEntity(response, inventoryWorkspace.getUnit(request.params.id)));
+app.post("/api/projects", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.createProject(request.body), 201)));
+app.patch("/api/projects/:id", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.updateProject(request.params.id, request.body, fixtureRevision(request)))));
+app.post("/api/units", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.createUnit(request.body), 201)));
+app.patch("/api/units/:id", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.updateUnit(request.params.id, request.body, fixtureRevision(request)))));
+app.post("/api/units/:id/availability", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.changeAvailability(request.params.id, request.body?.status, fixtureRevision(request)))));
+app.post("/api/units/:id/publish", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.publishUnit(request.params.id, fixtureRevision(request)))));
+app.post("/api/units/:id/archive", asyncRoute(async (request, response) => sendFixtureEntity(response, inventoryWorkspace.archiveUnit(request.params.id, fixtureRevision(request)))));
 
 app.get("/novnc/package.json", (_request, response) => response.json({ name: "novnc", version: "system" }));
 app.use("/novnc", (request, response) => {
@@ -543,6 +557,18 @@ function validReply(value) {
   const text = requiredText(value, "Reply").replace(/\r\n/g, "\n");
   if (text.length > 2000) throw httpError(400, "Reply must be 2,000 characters or fewer.");
   return text;
+}
+
+function fixtureRevision(request) {
+  const value = request.get("If-Match")?.replace(/^"(\d+)"$/, "$1");
+  if (!value || !Number.isSafeInteger(Number(value)) || Number(value) < 1) throw httpError(409, "Current If-Match revision is required");
+  return Number(value);
+}
+
+function sendFixtureEntity(response, entity, status = 200) {
+  if (!entity) throw httpError(404, "Resource not found");
+  if (entity.revision) response.set("ETag", `"${entity.revision}"`);
+  return response.status(status).json(entity);
 }
 
 function httpError(status, message) {

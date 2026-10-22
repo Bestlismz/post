@@ -73,6 +73,7 @@ test("every navigation destination is backed by a real App Router page", async (
       "utf8",
     );
     if (route.id === "inbox") assert.match(page, /InboxQueue/);
+    else if (route.id === "properties") assert.match(page, /UnitTable/);
     else assert.match(page, /RoutePlaceholder/);
   }
 
