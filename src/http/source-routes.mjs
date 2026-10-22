@@ -59,14 +59,84 @@ export async function authorizeRecoveryUpgrade({pool,registry,request}) {
   return {targetPath:'/websockify',identity:{organizationId:actor.organization_id,sourceId,sessionId}};
 }
 
-export function createSourceRouter({pool,config,recovery,registry,proxyHttp}) {
-  const router=Router(),write=[requireRole('admin'),checkOrigin(config),checkCsrf];
+function publicGroup(row) {
+  return {
+    id:row.id,
+    canonicalUrl:row.canonical_url,
+    mode:row.mode,
+    allowListed:row.allow_listed,
+    policy:row.policy,
+    health:{session:row.session_health,selector:row.selector_health,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit},
+    paused:row.kill_switch,
+    revision:row.revision,
+    latestScan:row.operation_id?{
+      operationId:row.operation_id,
+      state:row.coverage?'completed':'queued',
+      coverage:row.coverage??null,
+      health:row.scan_health??null,
+      reason:row.reason??null,
+      createdAt:(row.receipt_created_at??row.operation_created_at)?.toISOString?.()??row.receipt_created_at??row.operation_created_at,
+    }:null,
+    session:{owner:'group-worker',state:row.session_health==='healthy'?'available':row.session_health},
+  };
+}
+
+function publicSource(entity) {
+  return {id:entity.id,canonicalUrl:entity.canonicalUrl,mode:entity.mode,allowListed:entity.allowListed,policy:entity.policy,
+    health:{session:entity.sessionHealth,selector:entity.selectorHealth,sessionCircuit:entity.sessionCircuit,selectorCircuit:entity.selectorCircuit},paused:entity.killSwitch,revision:entity.revision};
+}
+
+export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sourceService}) {
+  const router=Router(),write=[requireRole('admin'),checkOrigin(config),checkCsrf],scanWrite=[requireRole('admin','operator'),checkOrigin(config),checkCsrf];
   router.use('/api/sources',authenticate(pool));
   async function sourceFor(request,lock=false,tx=pool) {
     const {rows:[source]}=await tx.query(`SELECT id,group_id,kill_switch,session_health,selector_health,session_circuit,selector_circuit
       FROM group_sources WHERE organization_id=$1 AND id=$2 AND NOT archived${lock?' FOR UPDATE':''}`,[request.actor.organizationId,request.params.id]);
     if(!source)throw httpError(404,'Source not found');return source;
   }
+  router.get('/api/sources',requireRole('admin','operator','viewer'),async(request,response,next)=>{
+    try {
+      const [{rows:pages},{rows:groups}]=await Promise.all([
+        pool.query(`SELECT id,name,health,expires_at,updated_at FROM meta_page_sources WHERE organization_id=$1 ORDER BY updated_at DESC,id`,[request.actor.organizationId]),
+        pool.query(`SELECT g.*,op.id operation_id,op.created_at operation_created_at,r.coverage,r.health scan_health,r.reason,r.created_at receipt_created_at
+          FROM group_sources g
+          LEFT JOIN LATERAL (SELECT id,created_at FROM group_operations WHERE organization_id=g.organization_id AND source_id=g.id AND kind='ScanCommand' ORDER BY operation_order DESC LIMIT 1) op ON true
+          LEFT JOIN group_scan_receipts r ON r.organization_id=g.organization_id AND r.operation_id=op.id
+          WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[request.actor.organizationId]),
+      ]);
+      response.json({actorRole:request.actor.role,pages:pages.map(row=>({id:row.id,name:row.name,health:row.health,expiresAt:row.expires_at?.toISOString?.()??row.expires_at,updatedAt:row.updated_at?.toISOString?.()??row.updated_at})),groups:groups.map(publicGroup)});
+    } catch(error){next(error);}
+  });
+  router.post('/api/sources/groups',...write,async(request,response,next)=>{
+    try {
+      if(!sourceService)throw httpError(503,'Group source service unavailable');
+      const url=z.strictObject({url:z.string().max(2000)}).parse(request.body).url;
+      let entity;
+      try {entity=await sourceService.addGroupSource({organizationId:request.actor.organizationId,actorId:request.actor.id,idempotencyKey:request.get('Idempotency-Key'),input:{url}});}
+      catch(error){if(/group URL/i.test(error.message))throw httpError(422,'Invalid group URL');throw error;}
+      response.status(201).json(publicSource(entity));
+    } catch(error){next(error);}
+  });
+  router.patch('/api/sources/groups/:id',...write,async(request,response,next)=>{
+    try {
+      if(!sourceService)throw httpError(503,'Group source service unavailable');
+      const match=/^"?(0|[1-9]\d*)"?$/.exec(request.get('If-Match')??'');
+      if(!match)throw httpError(409,'Current If-Match revision is required');
+      const patch=z.strictObject({mode:z.enum(['observe','approval','automatic']).optional(),allowListed:z.boolean().optional(),policy:z.record(z.string(),z.unknown()).optional(),killSwitch:z.boolean().optional()}).parse(request.body);
+      const entity=await sourceService.updateGroupSource({organizationId:request.actor.organizationId,actorId:request.actor.id,idempotencyKey:request.get('Idempotency-Key'),expectedRevision:Number(match[1]),input:{id:request.params.id,...patch}});
+      response.json(publicSource(entity));
+    } catch(error){next(error);}
+  });
+  router.post('/api/sources/groups/:id/scans',...scanWrite,async(request,response,next)=>{
+    try {
+      if(!sourceService)throw httpError(503,'Group source service unavailable');
+      const match=/^"?([1-9]\d*)"?$/.exec(request.get('If-Match')??'');
+      if(!match)throw httpError(409,'Current If-Match revision is required');
+      const input=z.strictObject({recovery:z.boolean().optional()}).parse(request.body??{});
+      const result=await sourceService.requestGroupScan({organizationId:request.actor.organizationId,actorId:request.actor.id,idempotencyKey:request.get('Idempotency-Key'),expectedRevision:Number(match[1]),input:{id:request.params.id,...input}});
+      response.status(202).json({operationId:result.operationId,state:'queued'});
+    } catch(error){next(error);}
+  });
   router.get('/api/sources/:id/browser-health',requireRole('admin','operator','viewer'),async(request,response,next)=>{
     try {const source=await sourceFor(request),browser=await recovery.health();response.json({sourceId:source.id,sourceHealth:{session:source.session_health,selector:source.selector_health,sessionCircuit:source.session_circuit,selectorCircuit:source.selector_circuit,paused:source.kill_switch},browser});}catch(error){next(error);}
   });

@@ -1,5 +1,104 @@
-import { RoutePlaceholder } from "../components/route-placeholder";
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, MessagesSquare, Plus, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { api } from "../lib/api-client.mjs";
+import { BrowserRecovery } from "./browser-recovery";
+import { SourceRow } from "./source-row";
+import "../sources-automations.css";
+
+const exactGroupUrl = /^https:\/\/(?:www\.|m\.)?facebook\.com\/groups\/\d+\/?(?:\?[^#]*)?$/;
+const operationKey = () => globalThis.crypto?.randomUUID?.() ?? `source-${Date.now()}-${Math.random()}`;
 
 export default function SourcesPage() {
-  return <RoutePlaceholder routeId="sources" />;
+  const [data, setData] = useState({ actorRole: null, pages: [], groups: [] });
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [groupUrl, setGroupUrl] = useState("");
+  const [formError, setFormError] = useState("");
+  const [busy, setBusy] = useState("");
+  const [notice, setNotice] = useState("");
+  const [expanded, setExpanded] = useState(null);
+  const [browserHealth, setBrowserHealth] = useState({});
+  const [recovery, setRecovery] = useState(null);
+  const csrfRef = useRef("");
+
+  const load = useCallback(async () => {
+    setLoadError("");
+    try { setData(await api.request("/api/sources")); }
+    catch (error) { setLoadError(error.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void load(); }, [load]);
+
+  async function csrf(force = false) {
+    if (!force && csrfRef.current) return csrfRef.current;
+    const result = await api.request("/api/auth/csrf", { method: "POST" });
+    csrfRef.current = result.csrfToken;
+    return csrfRef.current;
+  }
+  async function mutate(path, { method = "POST", body = {}, revision, key = operationKey() } = {}) {
+    const send = async (token) => api.request(path, { method, headers: { "X-CSRF-Token": token, "Idempotency-Key": key, ...(revision == null ? {} : { "If-Match": `"${revision}"` }) }, body: JSON.stringify(body) });
+    let token = await csrf();
+    try { return await send(token); }
+    catch (error) { if (error.status !== 403) throw error; token = await csrf(true); return send(token); }
+  }
+  async function addGroup(event) {
+    event.preventDefault(); const value = groupUrl.trim();
+    if (!exactGroupUrl.test(value)) { setFormError("ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น"); return; }
+    setBusy("add"); setFormError("");
+    try { const created = await mutate("/api/sources/groups", { body: { url: value } }); setData((current) => ({ ...current, groups: [...current.groups.filter((entry) => entry.id !== created.id), created] })); setAddOpen(false); setGroupUrl(""); setNotice("เพิ่มกลุ่มและบันทึกลิงก์ถาวรแล้ว"); }
+    catch (error) { setFormError(error.status === 422 ? "ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น" : error.message); }
+    finally { setBusy(""); }
+  }
+  async function setMode(source, mode) {
+    setBusy(`${source.id}:mode`);
+    try { const next = await mutate(`/api/sources/groups/${source.id}`, { method: "PATCH", revision: source.revision, body: { mode } }); setData((current) => ({ ...current, groups: current.groups.map((entry) => entry.id === source.id ? { ...entry, ...next } : entry) })); setNotice(`เปลี่ยนโหมดเป็น ${mode === "observe" ? "Observe" : mode === "approval" ? "Approval" : "Automatic"} แล้ว`); }
+    catch (error) { setNotice(error.status === 409 ? "ยังเปิด Automatic ไม่ได้ กรุณาแก้สถานะสุขภาพและกติกาก่อน" : error.message); }
+    finally { setBusy(""); }
+  }
+  async function scan(source) {
+    setBusy(`${source.id}:scan`);
+    try { await mutate(`/api/sources/groups/${source.id}/scans`, { revision: source.revision }); setNotice("รับคำขอสแกนแล้ว กำลังรอผลจาก browser worker"); await load(); }
+    catch (error) { setNotice(error.message); }
+    finally { setBusy(""); }
+  }
+  async function inspect(source) {
+    const open = expanded === source.id ? null : source.id; setExpanded(open);
+    if (!open || browserHealth[source.id]) return;
+    setBusy(`${source.id}:health`);
+    try { const health = await api.request(`/api/sources/${source.id}/browser-health`); setBrowserHealth((current) => ({ ...current, [source.id]: health })); }
+    catch (error) { setBrowserHealth((current) => ({ ...current, [source.id]: { error: error.message } })); }
+    finally { setBusy(""); }
+  }
+  async function beginRecovery(source) {
+    setBusy(`${source.id}:recovery`);
+    try { setRecovery(await mutate(`/api/sources/${source.id}/recovery`, { body: { ttlSeconds: 300 } })); }
+    catch (error) { setNotice(error.message); }
+    finally { setBusy(""); }
+  }
+  async function closeRecovery() {
+    const current = recovery; setRecovery(null);
+    if (!current) return;
+    try { await mutate(`/api/sources/${current.sourceId}/recovery/${current.sessionId}`, { method: "DELETE" }); }
+    catch (error) { setNotice(`หน้าต่างถูกปิดแล้ว แต่การยกเลิก lease ต้องรอหมดอายุ: ${error.message}`); }
+    finally { await load(); }
+  }
+
+  return <div className="ops-page sources-page">
+    <header className="ops-heading"><div><p>Connections &amp; health</p><h1>แหล่งข้อมูล Facebook</h1><span>เพจและกลุ่มที่ได้รับอนุญาต พร้อมสถานะสแกนและ browser session จากระบบจริง</span></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => setAddOpen(true)}><Plus size={17}/>เพิ่มกลุ่ม</button> : null}</header>
+    {notice ? <div className="ops-notice" role="status"><CheckCircle2 size={17}/><span>{notice}</span><button aria-label="ปิดข้อความ" onClick={() => setNotice("")}><X size={16}/></button></div> : null}
+    {loadError ? <div className="ops-error" role="alert"><AlertTriangle size={17}/><span>{loadError}</span><button onClick={load}><RefreshCw size={16}/>ลองอีกครั้ง</button></div> : null}
+    <div className="ops-content">
+      <section className="ops-section" aria-labelledby="page-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="page-source-title">Facebook Page</h2><p>Messenger ผ่าน Meta API ทางการ</p></div></div><span className="ops-count">{data.pages.length} เพจ</span></div>
+        {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div><strong>{page.name}</strong><p>รับข้อความและส่งคำตอบผ่าน Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : "ต้องตรวจสอบการเชื่อมต่อ"}</span></article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div></div>}
+      </section>
+      <section className="ops-section" aria-labelledby="group-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="group-source-title">Facebook Groups</h2><p>ลิงก์ถาวรหลายกลุ่ม โหมดแยกต่อแหล่ง และหลักฐานการสแกนล่าสุด</p></div></div><span className="ops-count">{data.groups.length} กลุ่ม</span></div>
+        <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} onMode={setMode} onScan={scan} onInspect={inspect} onRecovery={beginRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
+      </section>
+    </div>
+    {addOpen ? <div className="ops-dialog-backdrop"><form className="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="add-group-title" onSubmit={addGroup}><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => { setAddOpen(false); setFormError(""); }}><X size={18}/></button><span className="ops-dialog__eyebrow">New source</span><h2 id="add-group-title">เพิ่ม Facebook Group</h2><p>วางลิงก์กลุ่มที่ทีมของคุณได้รับอนุญาตให้ติดตาม ระบบจะบันทึกเป็นลิงก์ถาวรให้</p><label>ลิงก์ Facebook Group<input aria-label="ลิงก์ Facebook Group" autoFocus value={groupUrl} onChange={(event) => setGroupUrl(event.target.value)} placeholder="https://www.facebook.com/groups/1742522453522327"/></label>{formError ? <div className="ops-field-error" role="alert">{formError}</div> : null}<footer><button className="ops-button ops-button--secondary" type="button" onClick={() => setAddOpen(false)}>ยกเลิก</button><button className="ops-button ops-button--primary" disabled={busy === "add"}>ยืนยันเพิ่มกลุ่ม</button></footer></form></div> : null}
+    {recovery ? <BrowserRecovery recovery={recovery} onClose={closeRecovery}/> : null}
+  </div>;
 }

@@ -7,6 +7,8 @@ import {appendAudit,runIdempotent,withTransaction} from '../db/transaction.mjs';
 import {previewPolicy} from '../policy/preview.mjs';
 import {evaluateSchedule} from '../workers/scheduler.mjs';
 import {errorHandler} from './boundary.mjs';
+import {readFormat} from '../replies/contracts.mjs';
+import {defaultReplyFormat} from '../replies/renderer.mjs';
 
 const pauseInput=z.strictObject({paused:z.boolean()});
 const counts=z.strictObject({organization:z.number().int().nonnegative(),source:z.number().int().nonnegative(),conversation:z.number().int().nonnegative()});
@@ -14,6 +16,7 @@ const sample=z.strictObject({grounded:z.boolean(),automaticEligible:z.boolean(),
 const businessHours=z.strictObject({timeZone:z.string().min(1).max(100),days:z.array(z.number().int().min(0).max(6)).min(1),start:z.string(),end:z.string()});
 const limits=z.strictObject({organization:z.number().int().positive(),source:z.number().int().positive(),conversation:z.number().int().positive()});
 const policy=z.strictObject({mode:z.enum(['observe','approval','automatic']),minimumConfidence:z.number().min(0).max(1).optional(),rateLimits:limits.optional(),businessHours:businessHours.optional()});
+const storedPolicy=z.strictObject({mode:z.enum(['observe','approval','automatic']),minimumConfidence:z.number().min(0).max(1),rateLimits:limits,businessHours});
 const maintenance=z.strictObject({startsAt:z.iso.datetime(),endsAt:z.iso.datetime()});
 const scheduleInput=z.strictObject({enabled:z.boolean(),cadenceMinutes:z.number().int().min(1).max(1440),timeZone:z.string().min(1).max(100),days:z.array(z.number().int().min(0).max(6)).min(1).max(7),start:z.string(),end:z.string(),dailyLimit:z.number().int().min(1).max(1440),maintenanceWindows:z.array(maintenance).max(100)});
 
@@ -32,12 +35,12 @@ export function createAutomationRouter({pool,config}) {
   const router=Router(),write=[requireRole('admin'),checkOrigin(config),checkCsrf];
   router.use('/api/automation',authenticate(pool));
   router.get('/api/automation',requireRole('admin','operator','viewer'),async(req,res)=>{
-    const {rows:[organization]}=await pool.query('SELECT group_automation_paused FROM organizations WHERE id=$1',[req.actor.organizationId]);
-    const {rows:sources}=await pool.query(`SELECT g.id,g.kill_switch,g.session_health,g.selector_health,g.session_circuit,g.selector_circuit,
+    const {rows:[organization]}=await pool.query('SELECT group_automation_paused,automation_policy,automation_policy_revision,reply_format,reply_format_revision FROM organizations WHERE id=$1',[req.actor.organizationId]);
+    const [{rows:sources},{rows:receipts}]=await Promise.all([pool.query(`SELECT g.id,g.canonical_url,g.mode,g.policy,g.revision source_revision,g.kill_switch,g.session_health,g.selector_health,g.session_circuit,g.selector_circuit,
       s.enabled,s.cadence_minutes,s.time_zone,s.days,s.start_local,s.end_local,s.daily_limit,s.maintenance_windows,s.revision
       FROM group_sources g LEFT JOIN group_source_schedules s ON s.organization_id=g.organization_id AND s.source_id=g.id
-      WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[req.actor.organizationId]);
-    res.json({paused:organization.group_automation_paused,sources:sources.map(row=>({id:row.id,paused:row.kill_switch,health:{session:row.session_health,selector:row.selector_health,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit},schedule:row.revision?{enabled:row.enabled,cadenceMinutes:row.cadence_minutes,timeZone:row.time_zone,days:row.days.map(Number),start:row.start_local,end:row.end_local,dailyLimit:row.daily_limit,maintenanceWindows:row.maintenance_windows,revision:row.revision}:null}))});
+      WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[req.actor.organizationId]),pool.query(`SELECT id,scope,source_id,paused,reason_code,created_at FROM automation_control_receipts WHERE organization_id=$1 ORDER BY created_at DESC,id DESC LIMIT 25`,[req.actor.organizationId])]);
+    res.json({actorRole:req.actor.role,paused:organization.group_automation_paused,policy:{value:organization.automation_policy,revision:organization.automation_policy_revision},replyFormat:{value:organization.reply_format??defaultReplyFormat(),revision:organization.reply_format_revision},sources:sources.map(row=>({id:row.id,label:row.canonical_url,mode:row.mode,policy:row.policy,revision:row.source_revision,paused:row.kill_switch,health:{session:row.session_health,selector:row.selector_health,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit},schedule:row.revision?{enabled:row.enabled,cadenceMinutes:row.cadence_minutes,timeZone:row.time_zone,days:row.days.map(Number),start:row.start_local,end:row.end_local,dailyLimit:row.daily_limit,maintenanceWindows:row.maintenance_windows,revision:row.revision}:null})),receipts:receipts.map(row=>({id:row.id,scope:row.scope,sourceId:row.source_id,paused:row.paused,reasonCode:row.reason_code,createdAt:row.created_at?.toISOString?.()??row.created_at}))});
   });
   router.post('/api/automation/policy-preview',requireRole('admin','operator'),async(req,res)=>{
     const input=z.strictObject({sample,policy}).parse(req.body),{rows:[clock]}=await pool.query('SELECT clock_timestamp() AS now');
@@ -54,6 +57,22 @@ export function createAutomationRouter({pool,config}) {
       return {status:200,body:{paused:input.paused,receiptId,reasonCode}};
     }));
     res.status(result.status).json(result.body);
+  });
+  for(const [route,column,revisionColumn,validate,action] of [
+    ['policy','automation_policy','automation_policy_revision',value=>storedPolicy.parse(value),'automation.policy_changed'],
+    ['reply-format','reply_format','reply_format_revision',value=>readFormat(value),'automation.reply_format_changed'],
+  ]) router.put(`/api/automation/${route}`,...write,async(req,res)=>{
+    const expectedRevision=revision(req),idempotencyKey=key(req);let value;
+    try {value=validate(req.body);} catch(error){throw httpError(422,'Invalid automation configuration');}
+    const result=await withTransaction(pool,async tx=>runIdempotent(tx,{organizationId:req.actor.organizationId,actorId:req.actor.id,route:`automation.${route}`,key:idempotencyKey,body:{value,expectedRevision}},async()=>{
+      const {rows:[current]}=await tx.query(`SELECT ${revisionColumn} revision FROM organizations WHERE id=$1 FOR UPDATE`,[req.actor.organizationId]);
+      if(current.revision!==expectedRevision)throw httpError(409,'Revision conflict');
+      const next=expectedRevision+1;
+      await tx.query(`UPDATE organizations SET ${column}=$2,${revisionColumn}=$3 WHERE id=$1`,[req.actor.organizationId,JSON.stringify(value),next]);
+      await appendAudit(tx,{organizationId:req.actor.organizationId,actorId:req.actor.id,action,entityType:'organization',entityId:req.actor.organizationId,details:{revision:next}});
+      return {status:200,body:{value,revision:next}};
+    }));
+    res.set('ETag',`"${result.body.revision}"`).status(result.status).json(result.body);
   });
   router.post('/api/automation/sources/:id/pause',...write,async(req,res)=>{
     const input=pauseInput.parse(req.body),idempotencyKey=key(req);
