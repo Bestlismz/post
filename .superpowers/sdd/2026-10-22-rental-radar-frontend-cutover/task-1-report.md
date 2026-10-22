@@ -27,3 +27,10 @@
 - No external image assets or credentials were added.
 - The user-owned untracked `artifacts-dashboard-saved-group.png` was not staged or modified.
 - Legacy feature components remain untouched for later vertical cutover tasks, but are no longer imported by the production entry page.
+
+## Review fixes
+
+- Added real App Router pages for all five destinations using one shared placeholder component; `/` now redirects consistently to `/inbox`.
+- Added route-existence coverage alongside navigation and popstate restoration coverage.
+- Changed standalone `navigate()` to mutate history directly and optionally notify through `onChange`, without registering an undisposable event listener.
+- Added a regression proving standalone navigation registers zero `popstate` listeners.

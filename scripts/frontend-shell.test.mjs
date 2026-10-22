@@ -65,6 +65,54 @@ test("route state restores from a URL and browser popstate", async () => {
   store.destroy();
 });
 
+test("every navigation destination is backed by a real App Router page", async () => {
+  const { routes } = await import("../app/lib/routes.mjs");
+  for (const route of routes) {
+    const page = await readFile(
+      new URL(`app/${route.id}/page.jsx`, projectRoot),
+      "utf8",
+    );
+    assert.match(page, /RoutePlaceholder/);
+  }
+
+  const rootPage = await readFile(new URL("app/page.jsx", projectRoot), "utf8");
+  assert.match(rootPage, /redirect\(["']\/inbox["']\)/);
+});
+
+test("standalone navigate mutates history without registering a popstate listener", async () => {
+  const { navigate } = await import("../app/lib/routes.mjs");
+  let listenersAdded = 0;
+  const browser = {
+    location: { href: "https://radar.test/inbox" },
+    history: {
+      pushState(_state, _unused, href) {
+        browser.location.href = new URL(href, browser.location.href).href;
+      },
+      replaceState(_state, _unused, href) {
+        browser.location.href = new URL(href, browser.location.href).href;
+      },
+    },
+    addEventListener() {
+      listenersAdded += 1;
+    },
+  };
+
+  const state = navigate(
+    { route: "automations", query: { source: "group-12" } },
+    { browser },
+  );
+
+  assert.equal(listenersAdded, 0);
+  assert.equal(
+    browser.location.href,
+    "https://radar.test/automations?source=group-12",
+  );
+  assert.deepEqual(state, {
+    route: "automations",
+    query: { source: "group-12" },
+  });
+});
+
 test("shell exposes active-route and mobile labels accessibly", async () => {
   const shell = await readFile(
     new URL("app/components/app-shell.jsx", projectRoot),

@@ -41,9 +41,7 @@ export function createRouteStore(browser, onChange = () => {}) {
   return {
     getSnapshot: () => readRouteState(browser.location),
     navigate(routeState, options = {}) {
-      const method = options.replace ? "replaceState" : "pushState";
-      browser.history[method](routeState, "", routeHref(routeState));
-      const next = readRouteState(browser.location);
+      const next = mutateHistory(browser, routeState, options);
       onChange(next);
       return next;
     },
@@ -54,5 +52,14 @@ export function createRouteStore(browser, onChange = () => {}) {
 }
 
 export function navigate(routeState, options = {}) {
-  return createRouteStore(options.browser ?? globalThis.window).navigate(routeState, options);
+  const next = mutateHistory(options.browser ?? globalThis.window, routeState, options);
+  options.onChange?.(next);
+  return next;
+}
+
+function mutateHistory(browser, routeState, options) {
+  if (!browser?.history || !browser?.location) throw new TypeError("A browser-like history and location are required");
+  const method = options.replace ? "replaceState" : "pushState";
+  browser.history[method](routeState, "", routeHref(routeState));
+  return readRouteState(browser.location);
 }
