@@ -160,3 +160,37 @@ integration("lifecycle retries emit exactly one matching audit and fact revision
   const facts = await pool.query("SELECT facts FROM unit_fact_revisions WHERE unit_id=$1 ORDER BY revision", [unit.id]);
   assert.deepEqual(facts.rows.map((r) => [r.facts.revision, r.facts.status]), [[1,"draft"],[2,"available"],[3,"available"],[4,"archived"]]);
 });
+
+for (const description of [
+  "ห้องสวย โทร ๐๘๑๒๓๔๕๖๗๘",
+  "โทร ๐๘๑-๒๓๔-๕๖๗๘",
+  "ดูห้อง line.me/ti/p/owner123",
+  "ดูห้อง LIN.EE/owner123",
+  "ห้องสวย ติดต่อ LINE ID: owner123",
+  "ติดต่อ line id owner_123",
+]) {
+  integration(`contact-safe descriptions reject ${description} on creation, update and publication`, async ({ pool, catalog, command, makeUnit, complete }) => {
+    await assert.rejects(makeUnit({ ...complete, description }), /description/);
+    const unit = await makeUnit(complete);
+    await assert.rejects(catalog.updateUnit(command({ id: unit.id, description }, 1)), /description/);
+    await catalog.changeAvailability(command({ id: unit.id, status: "available" }, 1));
+    // Previously stored descriptions must also meet the current publication boundary.
+    await pool.query("UPDATE units SET description=$1 WHERE id=$2", [description, unit.id]);
+    await assert.rejects(catalog.publishUnit(command({ id: unit.id }, 2)), /description/);
+    assert.deepEqual((await pool.query("SELECT revision,published_at FROM units WHERE id=$1", [unit.id])).rows, [{ revision: 2, published_at: null }]);
+  });
+}
+
+integration("contact-safe validation keeps ordinary Thai room facts and transit line names publishable", async ({ catalog, command, makeUnit, complete }) => {
+  for (const description of [
+    "ห้อง ๓๒ ตร.ม. ชั้น ๑๕ ค่าเช่า ๑๕๐๐๐ บาท ใกล้รถไฟฟ้า",
+    "Skyline view near MRT Blue Line, 32 sqm, floor 15",
+    "ห้องสวย ใกล้รถไฟฟ้า เดิน 300 เมตร มีสระว่ายน้ำ",
+  ]) {
+    const unit = await makeUnit({ ...complete, unitCode: randomUUID(), description });
+    await catalog.changeAvailability(command({ id: unit.id, status: "available" }, 1));
+    const published = await catalog.publishUnit(command({ id: unit.id }, 2));
+    assert.equal(published.description, description);
+    assert.ok(published.publishedAt);
+  }
+});

@@ -9,7 +9,13 @@ const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00Z`);
   return !Number.isNaN(parsed.valueOf()) && parsed.toISOString().slice(0, 10) === value;
 }, "Invalid calendar date");
-const description = text.refine((value) => !/(?:https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\s()-]*){9,})/iu.test(value), "description must be contact-safe");
+const description = text.refine((value) => {
+  const contactText = value.replace(/[๐-๙]/gu, (digit) => String(digit.charCodeAt(0) - 0x0e50));
+  const contact = /(?:https?:\/\/|www\.|[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\s()-]*){9,})/iu;
+  const lineLink = /(?:^|[^\p{L}\p{N}_.-])(?:line\.me|lin\.ee)(?:[/?#]|$|\s)/iu;
+  const lineId = /\bline\s+id\b\s*[:：=]?\s*@?[a-z0-9_.-]+/iu;
+  return !contact.test(contactText) && !lineLink.test(contactText) && !lineId.test(contactText);
+}, "description must be contact-safe");
 
 export const projectFields = {
   name: text,
@@ -63,4 +69,5 @@ export function validatePublication(unit) {
     error.fields = missing;
     throw error;
   }
+  z.object({ description }).parse(unit);
 }
