@@ -33,7 +33,7 @@ const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
 const inventoryWorkspace = createInventoryWorkspaceFixture();
-const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture();
+const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({ operationalClock: fixtureOperationalClock(process.env) });
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {
@@ -649,6 +649,16 @@ function fixtureActor(request) {
   const role = request.get("X-Fixture-Role") || "admin";
   if (!["admin", "operator", "viewer"].includes(role)) throw httpError(401, "Invalid fixture identity");
   return { id: `fixture-${role}`, displayName: role === "admin" ? "ณัฐวุฒิ" : `Fixture ${role}`, role };
+}
+
+function fixtureOperationalClock(environment) {
+  const configuredStart = environment.FIXTURE_OPERATIONAL_CLOCK_START;
+  if (!configuredStart) return () => new Date();
+  const start = Date.parse(configuredStart);
+  const step = Number(environment.FIXTURE_OPERATIONAL_CLOCK_STEP_MS ?? 1);
+  if (!Number.isFinite(start) || !Number.isSafeInteger(step) || step < 1) throw new Error("Invalid fixture operational clock configuration");
+  let current = start - step;
+  return () => new Date(current += step);
 }
 
 function requireFixtureRole(request, ...roles) {

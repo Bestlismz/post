@@ -440,3 +440,101 @@ test("fixture scan gates refuse paused and circuit-open work without replacing e
   after = await (await request.get("/api/sources")).json();
   expect(after.groups.find((source) => source.id === circuit.id)?.latestReceipt).toEqual(expect.objectContaining({ operationId: queued.operationId, coverage: "partial", health: "auth_required" }));
 });
+
+test("fixture operational clock advances scan evidence and expires recovery independently from policy time", async ({ request }) => {
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const headers = (key, revision) => ({
+    "X-CSRF-Token": csrfToken,
+    "Idempotency-Key": key,
+    ...(revision == null ? {} : { "If-Match": `"${revision}"` }),
+  });
+  const before = await (await request.get("/api/sources")).json();
+  const source = before.groups.find((entry) => entry.mode === "automatic");
+  const priorEvidenceAt = Date.parse(source.latestReceipt.createdAt);
+
+  const first = await request.post(`/api/sources/groups/${source.id}/scans`, {
+    data: {},
+    headers: headers("clock-scan-first", source.revision),
+  });
+  expect(first.status()).toBe(202);
+  const firstOperation = await first.json();
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/sources")).json();
+    return state.groups.find((entry) => entry.id === source.id)?.latestReceipt?.operationId;
+  }).toBe(firstOperation.operationId);
+  const afterFirst = (await (await request.get("/api/sources")).json()).groups.find((entry) => entry.id === source.id);
+  expect(Date.parse(afterFirst.latestOperation.createdAt)).toBeGreaterThan(priorEvidenceAt);
+  expect(Date.parse(afterFirst.latestReceipt.createdAt)).toBeGreaterThanOrEqual(Date.parse(afterFirst.latestOperation.createdAt));
+
+  const second = await request.post(`/api/sources/groups/${source.id}/scans`, {
+    data: {},
+    headers: headers("clock-scan-second", source.revision),
+  });
+  expect(second.status()).toBe(202);
+  const secondOperation = await second.json();
+  await expect.poll(async () => {
+    const state = await (await request.get("/api/sources")).json();
+    return state.groups.find((entry) => entry.id === source.id)?.latestReceipt?.operationId;
+  }).toBe(secondOperation.operationId);
+  const afterSecond = (await (await request.get("/api/sources")).json()).groups.find((entry) => entry.id === source.id);
+  expect(Date.parse(afterSecond.latestOperation.createdAt)).toBeGreaterThan(Date.parse(afterFirst.latestOperation.createdAt));
+  expect(Date.parse(afterSecond.latestReceipt.createdAt)).toBeGreaterThan(Date.parse(afterFirst.latestReceipt.createdAt));
+
+  const recovery = await request.post(`/api/sources/${source.id}/recovery`, {
+    data: { ttlSeconds: 30 },
+    headers: headers("clock-recovery"),
+  });
+  expect(recovery.status()).toBe(201);
+  const session = await recovery.json();
+  const expired = await request.get(session.tunnelUrl);
+  expect(expired.status()).toBe(404);
+  const alreadyCleaned = await request.delete(`/api/sources/${source.id}/recovery/${session.sessionId}`, {
+    headers: headers("clock-recovery-delete"),
+  });
+  expect(alreadyCleaned.status()).toBe(404);
+
+  const automation = await (await request.get("/api/automation")).json();
+  const previewSource = automation.sources.find((entry) => entry.id === source.id);
+  const preview = await request.post("/api/automation/policy-preview", {
+    data: {
+      sourceId: source.id,
+      conversationId: previewSource.previewContexts.find((entry) => !entry.id.endsWith("-busy")).id,
+      sample: { grounded: true, automaticEligible: true, confidence: 1, replyWindowOpen: true },
+    },
+  });
+  expect((await preview.json()).evaluatedAt).toBe(evaluationTime.toISOString());
+});
+
+test("fixture source PATCH rejects non-object and invalid present fields without mutation", async ({ request }) => {
+  const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
+  const source = (await (await request.get("/api/sources")).json()).groups.find((entry) => entry.mode === "automatic");
+  const headers = (key) => ({
+    "X-CSRF-Token": csrfToken,
+    "Idempotency-Key": key,
+    "If-Match": `"${source.revision}"`,
+  });
+  const invalidBodies = [
+    ["patch-null-mode", { mode: null }, 422],
+    ["patch-null-policy", { policy: null }, 422],
+    ["patch-null-allowlist", { allowListed: null }, 422],
+    ["patch-null-kill-switch", { killSwitch: null }, 422],
+    ["patch-zero-policy", { policy: 0 }, 422],
+    ["patch-empty-mode", { mode: "" }, 422],
+    ["patch-false-archive", { archived: false }, 422],
+    ["patch-array", [], 422],
+    ["patch-scalar", 7, 400],
+    ["patch-unknown", { unknown: true }, 422],
+    ["patch-invalid-mode", { mode: "off" }, 422],
+  ];
+  for (const [key, data, expectedStatus] of invalidBodies) {
+    const response = await request.patch(`/api/sources/groups/${source.id}`, { data, headers: headers(key) });
+    expect(response.status(), key).toBe(expectedStatus);
+  }
+
+  const after = (await (await request.get("/api/sources")).json()).groups.find((entry) => entry.id === source.id);
+  expect(after).toEqual(source);
+
+  const empty = await request.patch(`/api/sources/groups/${source.id}`, { data: {}, headers: headers("patch-empty") });
+  expect(empty.status()).toBe(200);
+  expect(await empty.json()).toEqual(expect.objectContaining({ revision: source.revision + 1 }));
+});
