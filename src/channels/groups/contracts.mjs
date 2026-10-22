@@ -1,8 +1,9 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
+import { MAX_GROUP_ID_LENGTH } from './target.mjs';
 
 const id=z.string().min(1).max(200), hash=z.string().regex(/^[a-f0-9]{64}$/), timestamp=z.iso.datetime();
-const common={version:z.literal(1),operationId:id,sourceId:id,groupId:z.string().regex(/^[0-9]+$/).max(100),canonicalTarget:z.string().max(200),issuedAt:timestamp,expiresAt:timestamp,keyId:id};
+const common={version:z.literal(1),operationId:id,sourceId:id,groupId:z.string().regex(/^[0-9]+$/).max(MAX_GROUP_ID_LENGTH),canonicalTarget:z.string().max(200),issuedAt:timestamp,expiresAt:timestamp,keyId:id};
 const scan=z.strictObject({...common,kind:z.literal('ScanCommand')});
 const reply=z.strictObject({...common,kind:z.literal('GroupReplyCommand'),targetId:id,text:z.string().min(1).max(10000),textHash:hash});
 const reconcile=z.strictObject({...common,kind:z.literal('ReconcileCommand'),targetId:id,textHash:hash,senderId:id,attemptStartedAt:timestamp,attemptFinishedAt:timestamp});

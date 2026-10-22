@@ -12,6 +12,15 @@ test('group URLs canonicalize exact HTTPS Facebook hosts and reject target ambig
   for (const url of ['http://www.facebook.com/groups/123','https://evilfacebook.com/groups/123','https://www.facebook.com.evil.test/groups/123','https://user@www.facebook.com/groups/123','https://www.facebook.com:443/groups/123','https://www.facebook.com/groups/name','https://www.facebook.com/groups/123/posts/456','https://www.facebook.com/groups/%31%32%33','https://www.facebook.com/a/../groups/123','https://www.facebook.com/groups/123\\foo','https://www.facebook.com/groups/123//',' https://www.facebook.com/groups/123']) assert.throws(() => canonicalizeGroupUrl(url), /group URL/i, url);
 });
 
+test('group URL IDs preserve leading zeros and accept at most 100 digits', () => {
+  for (const groupId of ['1'.repeat(100), '0'.repeat(99)+'1', '000123']) {
+    assert.deepEqual(canonicalizeGroupUrl(`https://m.facebook.com/groups/${groupId}`), {groupId,canonicalUrl:`https://www.facebook.com/groups/${groupId}`});
+  }
+  for (const groupId of ['1'.repeat(101), '0'.repeat(100)+'1']) {
+    assert.throws(()=>canonicalizeGroupUrl(`https://www.facebook.com/groups/${groupId}`),/group URL/i);
+  }
+});
+
 async function sourceFixture(fn) {
   const admin = createPool({ databaseUrl:process.env.TEST_DATABASE_URL });
   const schema = `source_${randomUUID().replaceAll('-','')}`;
@@ -30,6 +39,19 @@ async function sourceFixture(fn) {
   } finally { await pool?.end(); await admin.query(`DROP SCHEMA "${schema}" CASCADE`); await admin.end(); }
 }
 const integration=(name,fn)=>test(name,{skip:!process.env.TEST_DATABASE_URL},()=>sourceFixture(fn));
+
+integration('oversized group IDs fail before source persistence and accepted boundary IDs remain scannable',async({pool,service,command})=>{
+  for(const groupId of ['1'.repeat(101),'0'.repeat(100)+'1']) {
+    await assert.rejects(service.addGroupSource(command({url:`https://facebook.com/groups/${groupId}`})),/group URL/i);
+  }
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM group_sources')).rows[0].n,0);
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM audit_entries')).rows[0].n,0);
+  for(const groupId of ['1'.repeat(100),'0'.repeat(99)+'1']) {
+    const source=await service.addGroupSource(command({url:`https://facebook.com/groups/${groupId}`}));
+    const scan=await service.requestGroupScan(command({id:source.id},1));
+    assert.equal(scan.command.groupId,groupId);
+  }
+});
 
 integration('concurrent source adds deduplicate targets and idempotency with one audit',async({pool,service,command})=>{
   const c=command({url:'https://m.facebook.com/groups/123/?ref=share'});

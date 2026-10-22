@@ -6,6 +6,15 @@ const now=new Date('2026-10-22T12:00:00Z');
 const options={keyId:'test',key:'s'.repeat(32),now};
 const verify={keys:{test:options.key},now};
 const base={version:1,kind:'ScanCommand',operationId:'op-1',sourceId:'source-1',groupId:'123',canonicalTarget:'https://www.facebook.com/groups/123',issuedAt:now.toISOString(),expiresAt:'2026-10-22T12:05:00.000Z',keyId:'test'};
+test('command group IDs preserve leading zeros and accept at most 100 digits',()=>{
+  for(const groupId of ['1'.repeat(100),'0'.repeat(99)+'1','000123']) {
+    const signed=signCommand({...base,groupId,canonicalTarget:`https://www.facebook.com/groups/${groupId}`},options);
+    assert.equal(verifyCommand(signed,verify).groupId,groupId);
+  }
+  for(const groupId of ['1'.repeat(101),'0'.repeat(100)+'1']) {
+    assert.throws(()=>signCommand({...base,groupId,canonicalTarget:`https://www.facebook.com/groups/${groupId}`},options));
+  }
+});
 test('signed commands authenticate strict versioned canonical payloads',()=>{
   const signed=signCommand(base,options); assert.deepEqual(verifyCommand(JSON.stringify(signed),verify),signed);
   assert.equal(canonicalSerialize({z:1,a:{y:2,b:3}}),'{"a":{"b":3,"y":2},"z":1}');
