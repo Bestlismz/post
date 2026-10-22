@@ -373,9 +373,13 @@ test("inventory staff handles stale edits, changes availability, and keeps archi
     .getByRole("row", { name: /A-1207/ })
     .getByRole("button", { name: "เมนูห้อง A-1207" })
     .click();
+  const archiveMenuTrigger = page
+    .getByRole("row", { name: /A-1207/ })
+    .getByRole("button", { name: "เมนูห้อง A-1207" });
   await page.getByRole("menuitem", { name: "เก็บเข้าประวัติ" }).click();
   await page.getByRole("button", { name: "ยืนยันเก็บเข้าประวัติ" }).click();
   await expect(page.getByText("เก็บในประวัติแล้ว")).toBeVisible();
+  await expect(archiveMenuTrigger).toBeFocused();
   await page.getByLabel("ตัวกรองสถานะ").selectOption("archived");
   await expect(page.getByRole("row", { name: /A-1207/ })).toBeVisible();
 });
@@ -448,6 +452,62 @@ test("project matching facts are editable and stale project revisions recover sa
   ).toBeTruthy();
 });
 
+test("project editor round-trips and deliberately orders every transit station", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "desktop",
+    "desktop multi-station editing",
+  );
+  const fixture = await mockInventory(page);
+  fixture.seedProject({
+    ...projectSeed,
+    transit: [
+      { station: "MRT เพชรบุรี", walkingDistanceM: 300 },
+      { station: "BTS อโศก", walkingDistanceM: 850 },
+      { station: "ARL มักกะสัน", walkingDistanceM: 450 },
+    ],
+  });
+  await page.goto("/properties");
+  await page.getByRole("button", { name: "แก้ไขโครงการ ไลฟ์ อโศก" }).click();
+  await expect(page.getByTestId("transit-row")).toHaveCount(3);
+  await page.getByLabel("เขต / อำเภอ").fill("ห้วยขวาง");
+  await page.getByRole("button", { name: "บันทึกโครงการ" }).click();
+  await expect(page.getByText("อัปเดตโครงการแล้ว")).toBeVisible();
+  const unrelatedUpdate = fixture.requests.findLast(
+    (entry) => entry.method === "PATCH" && entry.path === "/api/projects/project-asoke",
+  );
+  expect(unrelatedUpdate.body.transit).toEqual([
+    { station: "MRT เพชรบุรี", walkingDistanceM: 300 },
+    { station: "BTS อโศก", walkingDistanceM: 850 },
+    { station: "ARL มักกะสัน", walkingDistanceM: 450 },
+  ]);
+
+  await page.getByRole("button", { name: "แก้ไขโครงการ ไลฟ์ อโศก" }).click();
+  await page.getByRole("button", { name: "เลื่อน ARL มักกะสัน ขึ้น" }).click();
+  await page.getByRole("button", { name: "ลบสถานี BTS อโศก" }).click();
+  await page.getByRole("button", { name: "เพิ่มสถานี" }).click();
+  await page.getByLabel("สถานีรถไฟฟ้า 3").fill("BTS พร้อมพงษ์");
+  await page.getByRole("button", { name: "บันทึกโครงการ" }).click();
+  await expect(
+    page.getByText("กรุณาระบุชื่อสถานีและระยะเดินเป็นจำนวนเต็มตั้งแต่ 0 เมตรขึ้นไป"),
+  ).toBeVisible();
+  await page.getByLabel("ระยะเดินสถานี 3 (เมตร)").fill("700");
+  await page.getByRole("button", { name: "บันทึกโครงการ" }).click();
+  await expect(page.getByText("อัปเดตโครงการแล้ว")).toBeVisible();
+
+  const update = fixture.requests.findLast(
+    (entry) =>
+      entry.method === "PATCH" && entry.path === "/api/projects/project-asoke",
+  );
+  expect(update.body.district).toBe("ห้วยขวาง");
+  expect(update.body.transit).toEqual([
+    { station: "MRT เพชรบุรี", walkingDistanceM: 300 },
+    { station: "ARL มักกะสัน", walkingDistanceM: 450 },
+    { station: "BTS พร้อมพงษ์", walkingDistanceM: 700 },
+  ]);
+});
+
 test("availability and archive conflicts offer entity refresh without lying about the result", async ({
   page,
 }, testInfo) => {
@@ -480,6 +540,44 @@ test("availability and archive conflicts offer entity refresh without lying abou
   await dialog.getByRole("button", { name: "โหลดข้อมูลล่าสุดและปิด" }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("row", { name: /A-1207/ })).toBeVisible();
+  await expect(
+    page
+      .getByRole("row", { name: /A-1207/ })
+      .getByRole("button", { name: "เมนูห้อง A-1207" }),
+  ).toBeFocused();
+});
+
+test("project edit control keeps a 44px target without page overflow", async ({
+  page,
+}) => {
+  const fixture = await mockInventory(page);
+  fixture.seedProject();
+  await page.goto("/properties");
+  const edit = page.getByRole("button", { name: "แก้ไขโครงการ ไลฟ์ อโศก" });
+  await expect(edit).toBeVisible();
+  const box = await edit.boundingBox();
+  expect(box.width).toBeGreaterThanOrEqual(44);
+  expect(box.height).toBeGreaterThanOrEqual(44);
+  await edit.click();
+  const undersized = await page
+    .getByRole("dialog", { name: "แก้ไขโครงการ" })
+    .locator("button, input, textarea")
+    .evaluateAll((controls) =>
+      controls
+        .filter((control) => control.getClientRects().length)
+        .map((control) => ({
+          label: control.getAttribute("aria-label") || control.textContent?.trim(),
+          width: control.getBoundingClientRect().width,
+          height: control.getBoundingClientRect().height,
+        }))
+        .filter(({ width, height }) => width < 44 || height < 44),
+    );
+  expect(undersized).toEqual([]);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
 });
 
 test("drawers trap focus, guard Escape, nest semantics, and restore the trigger", async ({

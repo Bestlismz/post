@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api-client.mjs";
 import { UnsavedDialog, useDialogA11y } from "./dialog-a11y";
@@ -10,8 +10,7 @@ const emptyProject = {
   address: "",
   district: "",
   province: "",
-  station: "",
-  walkingDistanceM: "",
+  transit: [{ station: "", walkingDistanceM: "" }],
   amenities: "",
 };
 function toForm(project) {
@@ -20,8 +19,12 @@ function toForm(project) {
     address: project?.address ?? "",
     district: project?.district ?? "",
     province: project?.province ?? "",
-    station: project?.transit?.[0]?.station ?? "",
-    walkingDistanceM: project?.transit?.[0]?.walkingDistanceM ?? "",
+    transit: project?.transit?.length
+      ? project.transit.map((entry) => ({
+          station: entry.station,
+          walkingDistanceM: String(entry.walkingDistanceM),
+        }))
+      : [{ station: "", walkingDistanceM: "" }],
     amenities: (project?.amenities ?? []).join(", "),
   };
 }
@@ -31,14 +34,12 @@ function payload(form) {
     address: form.address || null,
     district: form.district || null,
     province: form.province || null,
-    transit: form.station
-      ? [
-          {
-            station: form.station,
-            walkingDistanceM: Number(form.walkingDistanceM || 0),
-          },
-        ]
-      : [],
+    transit: form.transit
+      .filter((entry) => entry.station.trim() || entry.walkingDistanceM !== "")
+      .map((entry) => ({
+        station: entry.station.trim(),
+        walkingDistanceM: Number(entry.walkingDistanceM),
+      })),
     amenities: form.amenities
       .split(",")
       .map((item) => item.trim())
@@ -81,6 +82,34 @@ export function ProjectEditor({
   });
   const update = (key) => (event) =>
     setForm((value) => ({ ...value, [key]: event.target.value }));
+  const updateTransit = (index, key) => (event) =>
+    setForm((value) => ({
+      ...value,
+      transit: value.transit.map((entry, entryIndex) =>
+        entryIndex === index ? { ...entry, [key]: event.target.value } : entry,
+      ),
+    }));
+  const addTransit = () =>
+    setForm((value) => ({
+      ...value,
+      transit: [...value.transit, { station: "", walkingDistanceM: "" }],
+    }));
+  const removeTransit = (index) =>
+    setForm((value) => ({
+      ...value,
+      transit: value.transit.filter((_, entryIndex) => entryIndex !== index),
+    }));
+  const moveTransit = (index, direction) =>
+    setForm((value) => {
+      const destination = index + direction;
+      if (destination < 0 || destination >= value.transit.length) return value;
+      const transit = [...value.transit];
+      [transit[index], transit[destination]] = [
+        transit[destination],
+        transit[index],
+      ];
+      return { ...value, transit };
+    });
 
   useEffect(() => {
     const guard = (event) => {
@@ -96,6 +125,18 @@ export function ProjectEditor({
   async function submit(event) {
     event.preventDefault();
     if (!form.name.trim()) return setError("กรุณาระบุชื่อโครงการ");
+    const invalidTransit = form.transit.find(
+      (entry) =>
+        (entry.walkingDistanceM !== "" && !entry.station.trim()) ||
+        (entry.station.trim() &&
+          (entry.walkingDistanceM === "" ||
+            !Number.isInteger(Number(entry.walkingDistanceM)) ||
+            Number(entry.walkingDistanceM) < 0)),
+    );
+    if (invalidTransit)
+      return setError(
+        "กรุณาระบุชื่อสถานีและระยะเดินเป็นจำนวนเต็มตั้งแต่ 0 เมตรขึ้นไป",
+      );
     setSaving(true);
     setError("");
     setConflict(false);
@@ -218,26 +259,88 @@ export function ProjectEditor({
           </section>
           <section className="property-form__section">
             <h3>ข้อมูลที่ใช้จับคู่ความต้องการ</h3>
-            <div className="field-grid">
-              <label className="field">
-                <span>สถานีรถไฟฟ้าใกล้ที่สุด</span>
-                <input
-                  aria-label="สถานีรถไฟฟ้าใกล้ที่สุด"
-                  value={form.station}
-                  onChange={update("station")}
-                  placeholder="เช่น MRT เพชรบุรี"
-                />
-              </label>
-              <label className="field">
-                <span>ระยะเดินจากสถานี (เมตร)</span>
-                <input
-                  aria-label="ระยะเดินจากสถานี (เมตร)"
-                  type="number"
-                  min="0"
-                  value={form.walkingDistanceM}
-                  onChange={update("walkingDistanceM")}
-                />
-              </label>
+            <div className="project-transit-list">
+              {form.transit.map((entry, index) => {
+                const stationName =
+                  entry.station.trim() || `ลำดับ ${index + 1}`;
+                return (
+                  <div
+                    className="project-transit"
+                    data-testid="transit-row"
+                    key={index}
+                  >
+                    <div className="project-transit__heading">
+                      <b>สถานี {index + 1}</b>
+                      <div className="project-transit__actions">
+                        <button
+                          className="icon-button"
+                          type="button"
+                          aria-label={`เลื่อน ${stationName} ขึ้น`}
+                          disabled={index === 0}
+                          onClick={() => moveTransit(index, -1)}
+                        >
+                          <ArrowUp size={16} />
+                        </button>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          aria-label={`เลื่อน ${stationName} ลง`}
+                          disabled={index === form.transit.length - 1}
+                          onClick={() => moveTransit(index, 1)}
+                        >
+                          <ArrowDown size={16} />
+                        </button>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          aria-label={`ลบสถานี ${stationName}`}
+                          onClick={() => removeTransit(index)}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </div>
+                    <div className="field-grid">
+                      <label className="field">
+                        <span>ชื่อสถานี</span>
+                        <input
+                          aria-label={
+                            index === 0
+                              ? "สถานีรถไฟฟ้าใกล้ที่สุด"
+                              : `สถานีรถไฟฟ้า ${index + 1}`
+                          }
+                          value={entry.station}
+                          onChange={updateTransit(index, "station")}
+                          placeholder="เช่น MRT เพชรบุรี"
+                        />
+                      </label>
+                      <label className="field">
+                        <span>ระยะเดิน (เมตร)</span>
+                        <input
+                          aria-label={
+                            index === 0
+                              ? "ระยะเดินจากสถานี (เมตร)"
+                              : `ระยะเดินสถานี ${index + 1} (เมตร)`
+                          }
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={entry.walkingDistanceM}
+                          onChange={updateTransit(index, "walkingDistanceM")}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                );
+              })}
+              <button
+                className="button button--secondary project-transit__add"
+                type="button"
+                onClick={addTransit}
+              >
+                <Plus size={16} />
+                เพิ่มสถานี
+              </button>
             </div>
             <label className="field field--wide">
               <span>สิ่งอำนวยความสะดวก</span>

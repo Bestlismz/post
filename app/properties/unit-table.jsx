@@ -61,6 +61,7 @@ function UnitActions({ unit, onEdit, menuOpen, onMenu, onArchive, canEdit }) {
           className="icon-button"
           type="button"
           aria-label={`เมนูห้อง ${unit.unitCode}`}
+          data-unit-menu-trigger={unit.id}
           aria-expanded={menuOpen}
           onClick={() => onMenu(unit.id)}
         >

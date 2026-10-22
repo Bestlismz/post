@@ -244,6 +244,21 @@ export default function PropertiesPage() {
     );
   }
 
+  function restoreUnitMenuFocus(unitId) {
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const trigger = [
+          ...document.querySelectorAll("[data-unit-menu-trigger]"),
+        ].find(
+          (node) =>
+            node.dataset.unitMenuTrigger === unitId &&
+            node.getClientRects().length,
+        );
+        trigger?.focus();
+      }),
+    );
+  }
+
   async function refreshUnit(unitId) {
     try {
       const latest = await api.request(`/api/units/${unitId}`);
@@ -290,6 +305,7 @@ export default function PropertiesPage() {
       setArchiveUnit(null);
       setArchiveConflict(false);
       setMenuUnitId(null);
+      restoreUnitMenuFocus(next.id);
       setToast("เก็บในประวัติแล้ว");
     } catch (error) {
       if (error.status === 409) setArchiveConflict(true);
@@ -306,6 +322,7 @@ export default function PropertiesPage() {
       setArchiveUnit(null);
       setArchiveConflict(false);
       setMenuUnitId(null);
+      restoreUnitMenuFocus(latest.id);
     }
   }
 

@@ -41,8 +41,28 @@ test(
         csrf: rotated.body.csrfToken,
         method: "POST",
         headers: { "Idempotency-Key": randomUUID() },
-        body: { name: "โครงการ Contract" },
+        body: {
+          name: "โครงการ Contract",
+          transit: [
+            { station: "MRT เพชรบุรี", walkingDistanceM: 300 },
+            { station: "BTS อโศก", walkingDistanceM: 850 },
+            { station: "ARL มักกะสัน", walkingDistanceM: 450 },
+          ],
+        },
       });
       assert.equal(created.status, 201);
+      const updated = await request(`/api/projects/${created.body.id}`, {
+        ...session,
+        csrf: rotated.body.csrfToken,
+        method: "PATCH",
+        headers: {
+          "Idempotency-Key": randomUUID(),
+          "If-Match": `"${created.body.revision}"`,
+        },
+        body: { district: "ห้วยขวาง", transit: created.body.transit },
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(updated.body.district, "ห้วยขวาง");
+      assert.deepEqual(updated.body.transit, created.body.transit);
     }),
 );
