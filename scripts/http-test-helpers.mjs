@@ -9,7 +9,7 @@ import { migrate } from "../src/db/migrate.mjs";
 export const databaseUrl = process.env.TEST_DATABASE_URL;
 export const origin = "https://radar.example";
 const execute = promisify(execFile);
-export async function httpFixture(fn) {
+export async function httpFixture(fn, { environment = { OPENAI_API_KEY: "private-api-key" } } = {}) {
   const admin = createPool({ databaseUrl });
   const schema = `http_${randomUUID().replaceAll("-", "")}`;
   let pool, server;
@@ -28,7 +28,7 @@ export async function httpFixture(fn) {
       if (server) await new Promise((resolve) => server.close(resolve));
       const app = express();
       app.use(express.json());
-      app.use(createApplicationRouter({ pool, config: { appOrigin: origin, nodeEnv: "production" }, env: { OPENAI_API_KEY: "private-api-key" } }));
+      app.use(createApplicationRouter({ pool, config: { appOrigin: origin, nodeEnv: "production" }, env: environment }));
       server = app.listen(0, "127.0.0.1");
       await new Promise((resolve) => server.once("listening", resolve));
       base = `http://127.0.0.1:${server.address().port}`;

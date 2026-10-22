@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 
 const privateToken = "sk-proj-super-secret-never-render";
 
-async function mockSettings(page, { role = "admin" } = {}) {
+async function mockSettings(page, { role = "admin", auditResponder = null } = {}) {
   let profile = { name: "Rental Radar Thailand", description: "บริการหาคอนโดเช่าใกล้รถไฟฟ้า", relevanceThreshold: 72, revision: 1 };
   let retention = { rawPayloadDays: 30, screenshotDays: 7, revision: 1 };
   let users = [
@@ -24,7 +24,7 @@ async function mockSettings(page, { role = "admin" } = {}) {
     const url = new URL(request.url());
     const path = url.pathname;
     const method = request.method();
-    requests.push({ path, method, body: request.postDataJSON?.(), headers: request.headers() });
+    requests.push({ url: url.href, path, method, body: request.postDataJSON?.(), headers: request.headers() });
     if (role !== "admin") return route.fulfill({ status: 403, json: { error: "Role does not permit this action" } });
     if (method === "GET" && path.endsWith("/users")) return route.fulfill({ json: { users } });
     if (method === "GET" && path.endsWith("/business-profile")) return route.fulfill({ headers: { ETag: `"${profile.revision}"` }, json: profile });
@@ -34,17 +34,23 @@ async function mockSettings(page, { role = "admin" } = {}) {
       openaiConfigured: true,
       messengerConfigured: false,
       groupWorkerConfigured: true,
-      missing: ["META_APP_SECRET"],
+      metaInfrastructure: { appConfigured: false, webhookConfigured: false, oauthConfigured: false },
+      pageConnections: [],
+      missing: ["META_APP_ID", "META_APP_SECRET", "META_VERIFY_TOKEN", "META_REDIRECT_URI", "META_TOKEN_KEY_VERSION", "META_TOKEN_KEYS"],
       integrations: [
         { id: "database", label: "Database", status: "configured" },
         { id: "openai", label: "OpenAI", status: "configured" },
-        { id: "messenger", label: "Messenger", status: "missing", missing: ["META_APP_SECRET"] },
+        { id: "meta-app", label: "Meta app", status: "missing", missing: ["META_APP_ID", "META_APP_SECRET"] },
+        { id: "meta-webhook", label: "Meta webhook", status: "missing", missing: ["META_APP_SECRET", "META_VERIFY_TOKEN"] },
+        { id: "meta-oauth", label: "Meta OAuth", status: "missing", missing: ["META_APP_ID", "META_APP_SECRET", "META_REDIRECT_URI", "META_TOKEN_KEY_VERSION", "META_TOKEN_KEYS"] },
+        { id: "messenger", label: "Messenger", status: "missing", missing: ["เชื่อมต่อ Facebook Page ขององค์กร"] },
         { id: "group-worker", label: "Group worker", status: "configured" },
       ],
       configuration: { method: "deployment_environment", secretReadback: false },
       diagnostic: privateToken,
     } });
     if (method === "GET" && path.endsWith("/audit")) {
+      if (auditResponder) return auditResponder(route, url, audits);
       const correlation = url.searchParams.get("correlationId");
       const action = url.searchParams.get("action");
       const cursor = url.searchParams.get("cursor");
@@ -130,4 +136,45 @@ test("Settings keeps long Thai administration data inside every supported viewpo
   }
   const buttons = await page.locator(".settings-page button:visible").evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().height)));
   expect(buttons.every((height) => height >= 44)).toBeTruthy();
+});
+
+test("audit pagination stays bound to the applied filters while draft filters change", async ({ page }) => {
+  const fixture = await mockSettings(page);
+  await page.goto("/settings");
+  await expect(page.getByRole("button", { name: "โหลดเพิ่มเติม" })).toBeVisible();
+  await page.getByLabel("ค้นหา correlation ID").fill("corr-send-18");
+  await page.getByLabel("กรองเหตุการณ์").selectOption("delivery.sent");
+  await page.getByRole("button", { name: "โหลดเพิ่มเติม" }).click();
+  const auditRequests = fixture.requests.filter((entry) => entry.method === "GET" && entry.path === "/api/settings/audit");
+  const loadMore = new URL(auditRequests.at(-1).url);
+  expect(loadMore.searchParams.get("cursor")).toBe("cursor-page-2");
+  expect(loadMore.searchParams.has("correlationId")).toBe(false);
+  expect(loadMore.searchParams.has("action")).toBe(false);
+});
+
+test("a slower audit search or append cannot overwrite a newer applied search", async ({ page }) => {
+  let releaseOldSearch, releaseAppend;
+  const oldSearchGate = new Promise((resolve) => { releaseOldSearch = resolve; });
+  const appendGate = new Promise((resolve) => { releaseAppend = resolve; });
+  await mockSettings(page, { auditResponder: async (route, url, audits) => {
+    const query = url.searchParams.get("correlationId");
+    const cursor = url.searchParams.get("cursor");
+    if (query === "slow-search") await oldSearchGate;
+    if (cursor === "slow-append") await appendGate;
+    const entry = query === "new-search" ? { ...audits[0], id: "new-result", details: { correlationId: "new-search" } } : { ...audits[1], id: query || cursor || "initial", details: { correlationId: query || cursor || "initial" } };
+    return route.fulfill({ json: { entries: [entry], nextCursor: !query && !cursor ? "slow-append" : null } }).catch(() => {});
+  } });
+  await page.goto("/settings");
+  await expect(page.getByRole("button", { name: "โหลดเพิ่มเติม" })).toBeVisible();
+  await page.getByRole("button", { name: "โหลดเพิ่มเติม" }).click();
+  await page.getByLabel("ค้นหา correlation ID").fill("slow-search");
+  await page.getByRole("button", { name: "ค้นหาบันทึก" }).click();
+  await page.getByLabel("ค้นหา correlation ID").fill("new-search");
+  await page.getByRole("button", { name: "ค้นหาบันทึก" }).click();
+  await expect(page.getByText("new-search")).toBeVisible();
+  releaseAppend(); releaseOldSearch();
+  await page.waitForTimeout(50);
+  await expect(page.getByText("new-search")).toBeVisible();
+  await expect(page.getByText("slow-search")).toHaveCount(0);
+  await expect(page.getByText("slow-append")).toHaveCount(0);
 });

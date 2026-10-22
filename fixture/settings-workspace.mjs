@@ -40,11 +40,16 @@ export function createSettingsWorkspaceFixture() {
     retention: () => structuredClone(retention),
     readiness: () => ({
       databaseConfigured: true, openaiConfigured: true, messengerConfigured: false, groupWorkerConfigured: true,
-      missing: ["META_APP_SECRET", "META_PAGE_ACCESS_TOKEN"],
+      metaInfrastructure: { appConfigured: false, webhookConfigured: false, oauthConfigured: false },
+      pageConnections: [],
+      missing: ["META_APP_ID", "META_APP_SECRET", "META_VERIFY_TOKEN", "META_REDIRECT_URI", "META_TOKEN_KEY_VERSION", "META_TOKEN_KEYS"],
       integrations: [
         { id: "database", label: "Database", status: "configured" },
         { id: "openai", label: "OpenAI", status: "configured" },
-        { id: "messenger", label: "Messenger", status: "missing", missing: ["META_APP_SECRET", "META_PAGE_ACCESS_TOKEN"] },
+        { id: "meta-app", label: "Meta app", status: "missing", missing: ["META_APP_ID", "META_APP_SECRET"] },
+        { id: "meta-webhook", label: "Meta webhook", status: "missing", missing: ["META_APP_SECRET", "META_VERIFY_TOKEN"] },
+        { id: "meta-oauth", label: "Meta OAuth", status: "missing", missing: ["META_APP_ID", "META_APP_SECRET", "META_REDIRECT_URI", "META_TOKEN_KEY_VERSION", "META_TOKEN_KEYS"] },
+        { id: "messenger", label: "Messenger", status: "missing", missing: ["เชื่อมต่อ Facebook Page ขององค์กร"] },
         { id: "group-worker", label: "Group worker", status: "configured" },
       ],
       configuration: { method: "deployment_environment", secretReadback: false },
@@ -81,11 +86,12 @@ export function createSettingsWorkspaceFixture() {
     },
     audit(input = {}) {
       const limit = Math.min(100, Math.max(1, Number(input.limit) || 50));
-      let entries = audits.filter((entry) => !input.action || entry.action === input.action);
+      let entries = [...audits].sort(compareAudit).filter((entry) => !input.action || entry.action === input.action);
       if (input.correlationId) entries = entries.filter((entry) => correlations(entry).includes(input.correlationId));
-      const offset = input.cursor ? decodeCursor(input.cursor) : 0;
-      const page = entries.slice(offset, offset + limit);
-      return { entries: structuredClone(page), nextCursor: offset + limit < entries.length ? Buffer.from(String(offset + limit)).toString("base64url") : null };
+      const cursor = input.cursor ? decodeCursor(input.cursor) : null;
+      if (cursor) entries = entries.filter((entry) => entry.created_at < cursor.createdAt || (entry.created_at === cursor.createdAt && entry.id < cursor.id));
+      const window = entries.slice(0, limit + 1), page = window.slice(0, limit);
+      return { entries: structuredClone(page), nextCursor: window.length > limit ? encodeCursor(page.at(-1)) : null };
     },
   };
 }
@@ -96,7 +102,16 @@ function audit(id, actorId, actorName, action, entityType, entityId, details, cr
 function correlations(entry) {
   return [entry.id, entry.entity_id, entry.details?.correlationId, entry.details?.attemptId, entry.details?.operationId, entry.details?.jobId, entry.details?.receiptId, entry.details?.replyVersionId].filter(Boolean);
 }
+function compareAudit(left, right) { return right.created_at.localeCompare(left.created_at) || right.id.localeCompare(left.id); }
+function encodeCursor(entry) { return Buffer.from(`${entry.created_at}\0${entry.id}`, "utf8").toString("base64url"); }
 function decodeCursor(value) {
-  try { const offset = Number(Buffer.from(value, "base64url").toString("utf8")); if (!Number.isSafeInteger(offset) || offset < 0) throw new Error(); return offset; }
+  try {
+    if (typeof value !== "string" || value.length > 512 || !/^[A-Za-z0-9_-]+$/u.test(value)) throw new Error();
+    const decoded = Buffer.from(value, "base64url");
+    if (decoded.toString("base64url") !== value) throw new Error();
+    const [createdAt, id, ...rest] = decoded.toString("utf8").split("\0");
+    if (rest.length || !id || id.length > 200 || new Date(createdAt).toISOString() !== createdAt) throw new Error();
+    return { createdAt, id };
+  }
   catch { failure(422, "Invalid audit cursor"); }
 }

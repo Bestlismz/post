@@ -34,3 +34,27 @@ test("fixture Settings validates retention and enforces role visibility", async 
   const forbidden = await request.get("/api/settings/users", { headers: { "X-Fixture-Role": "viewer" } });
   expect(forbidden.status()).toBe(403);
 });
+
+test("fixture audit cursor is stable when a newer mutation arrives between pages", async ({ request }) => {
+  const first = await request.get("/api/settings/audit?limit=1");
+  expect(first.status()).toBe(200);
+  const firstBody = await first.json();
+  expect(firstBody.entries).toHaveLength(1);
+  expect(firstBody.nextCursor).toBeTruthy();
+
+  const profileResponse = await request.get("/api/settings/business-profile");
+  const profile = await profileResponse.json();
+  const changed = await request.patch("/api/settings/business-profile", {
+    headers: { "X-CSRF-Token": "fixture-csrf", "Idempotency-Key": "fixture-between-pages", "If-Match": `"${profile.revision}"` },
+    data: { name: "Inserted after first page", description: profile.description, relevanceThreshold: profile.relevanceThreshold },
+  });
+  expect(changed.status()).toBe(200);
+
+  const second = await request.get(`/api/settings/audit?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor)}`);
+  expect(second.status()).toBe(200);
+  const secondBody = await second.json();
+  expect(secondBody.entries).toHaveLength(1);
+  expect(secondBody.entries[0].id).not.toBe(firstBody.entries[0].id);
+  expect(secondBody.entries[0].created_at <= firstBody.entries[0].created_at).toBe(true);
+  expect((await request.get("/api/settings/audit?cursor=not-a-real-cursor")).status()).toBe(422);
+});

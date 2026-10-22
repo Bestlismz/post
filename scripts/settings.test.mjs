@@ -109,3 +109,56 @@ test("audit search uses an exact correlation across durable identifiers and pagi
   assert.equal(second.status, 200);
   assert.equal(new Set([...first.body.entries, ...second.body.entries].map((entry) => entry.id)).size, 4);
 }));
+
+test("readiness separates Meta infrastructure from a current tenant-owned Page connection", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, login, request, addUser }) => {
+  await bootstrap();
+  const admin = await login();
+  const actorId = (await request("/api/me", admin)).body.user.id;
+  const foreign = await addUser("admin", "org_default");
+  await pool.query("INSERT INTO organizations(id,name) VALUES('foreign-ready','Foreign ready')");
+  await pool.query("INSERT INTO memberships(organization_id,user_id,role) VALUES('foreign-ready',$1,'admin')", [foreign.id]);
+
+  const legacyOnly = await request("/api/settings/readiness", admin);
+  assert.equal(legacyOnly.status, 200);
+  assert.equal(legacyOnly.body.metaInfrastructure.appConfigured, true);
+  assert.equal(legacyOnly.body.metaInfrastructure.webhookConfigured, true);
+  assert.equal(legacyOnly.body.metaInfrastructure.oauthConfigured, true);
+  assert.equal(legacyOnly.body.messengerConfigured, false, "legacy environment token cannot claim this organization is connected");
+  assert.equal(JSON.stringify(legacyOnly.body).includes("legacy-page-token"), false);
+
+  await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health,expires_at) VALUES('foreign-source','foreign-ready','foreign-page','Foreign Page','connected',now()+interval '1 day')");
+  await pool.query("SELECT meta_credential_write('foreign-ready','foreign-source',$1,'page','{}'::jsonb,now()+interval '1 day')", [foreign.id]);
+  assert.equal((await request("/api/settings/readiness", admin)).body.messengerConfigured, false, "another tenant connection is never inherited");
+
+  await pool.query("INSERT INTO meta_page_sources(id,organization_id,page_id,name,health,expires_at) VALUES('local-source','org_default','local-page','Local Page','connected',now()+interval '1 day')");
+  let readiness = await request("/api/settings/readiness", admin);
+  assert.equal(readiness.body.messengerConfigured, false, "source without its OAuth credential is incomplete");
+  assert.deepEqual(readiness.body.pageConnections, [{ id: "local-source", name: "Local Page", health: "connected", expiresAt: readiness.body.pageConnections[0].expiresAt, connected: false }]);
+
+  await pool.query("SELECT meta_credential_write('org_default','local-source',$1,'page','{}'::jsonb,now()-interval '1 minute')", [actorId]);
+  assert.equal((await request("/api/settings/readiness", admin)).body.messengerConfigured, false, "expired OAuth state is not current");
+  await pool.query("SELECT meta_credential_write('org_default','local-source',$1,'page','{}'::jsonb,now()+interval '1 day')", [actorId]);
+  readiness = await request("/api/settings/readiness", admin);
+  assert.equal(readiness.body.messengerConfigured, true);
+  assert.equal(readiness.body.pageConnections[0].connected, true);
+  assert.equal(JSON.stringify(readiness.body).includes("envelope"), false);
+
+  await pool.query("UPDATE meta_page_sources SET health='disconnected' WHERE id='local-source'");
+  readiness = await request("/api/settings/readiness", admin);
+  assert.equal(readiness.body.messengerConfigured, false);
+  assert.equal(readiness.body.pageConnections[0].connected, false);
+  await pool.query("UPDATE meta_page_sources SET health='connected',expires_at=now()-interval '1 minute' WHERE id='local-source'");
+  readiness = await request("/api/settings/readiness", admin);
+  assert.equal(readiness.body.messengerConfigured, false, "expired Page authorization is not current");
+  assert.equal(readiness.body.pageConnections[0].connected, false);
+}, { environment: {
+  OPENAI_API_KEY: "private-api-key",
+  META_APP_ID: "meta-app",
+  META_APP_SECRET: "meta-app-secret",
+  META_VERIFY_TOKEN: "verify-secret",
+  META_REDIRECT_URI: "https://radar.example/api/meta/callback",
+  META_TOKEN_KEY_VERSION: "one",
+  META_TOKEN_KEYS: JSON.stringify({ one: Buffer.alloc(32, 7).toString("base64") }),
+  META_PAGE_ID: "legacy-page",
+  META_PAGE_ACCESS_TOKEN: "legacy-page-token",
+} }));
