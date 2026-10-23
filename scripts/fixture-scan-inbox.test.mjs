@@ -32,3 +32,21 @@ test("a healthy fixture group scan projects one idempotent post into Inbox", asy
   await waitForCompleted(sources, second.operationId);
   assert.equal(inbox.list({ search: "หาห้องถูกๆ" }).resultCount, 1);
 });
+
+test("fixture approval is explicitly simulated and never claims external delivery", () => {
+  const inbox = createInboxWorkspaceFixture();
+  const before = inbox.get("group_1");
+  assert.deepEqual(before.deliveryCapability, { mode: "fixture", externalSend: false });
+
+  const receipt = inbox.approve(before.replies[0].id);
+  const after = inbox.get("group_1");
+
+  assert.equal(receipt.state, "simulated");
+  assert.equal(receipt.simulated, true);
+  assert.deepEqual(after.deliveries[0], {
+    id: receipt.resourceId,
+    replyId: before.replies[0].id,
+    state: "simulated",
+    simulated: true,
+  });
+});

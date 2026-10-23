@@ -22,6 +22,10 @@ test("fixture Inbox uses the production table URL filters and one focus sheet", 
   await row.press("Enter");
   await expect(page.getByRole("dialog", { name: "รายละเอียดลีด" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "ข้อความตอบกลับ" })).toHaveCount(1);
+  await expect(page.getByRole("note")).toContainText("การอนุมัติจะบันทึกในระบบนี้เท่านั้น และจะไม่ส่งไป Facebook");
+  await expect(page.getByRole("button", { name: "อนุมัติในเดโม" })).toBeVisible();
+  await page.getByRole("button", { name: "อนุมัติในเดโม" }).click();
+  await expect(page.getByRole("status")).toContainText("ยังไม่ได้ส่งไป Facebook");
 });
 
 test("Messenger and stale group items both accept a manual reply draft", async ({ page }) => {

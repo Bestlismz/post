@@ -64,7 +64,6 @@ function InboxWorkspace() {
       setItems((current) => append ? [...new Map([...current, ...nextItems].map((item) => [item.id, item])).values()] : nextItems);
       setResultCount(Number.isSafeInteger(payload?.resultCount) ? payload.resultCount : nextItems.length);
       setNextCursor(typeof payload?.nextCursor === "string" && payload.nextCursor ? payload.nextCursor : null);
-      if (!append && selectedRef.current && !nextItems.some((item) => item.id === selectedRef.current)) navigateSelection(null);
       setListState({ loading: false, loadingMore: false, error: null });
     } catch (error) {
       if (controller.signal.aborted || requestId !== listRequestRef.current) return;
