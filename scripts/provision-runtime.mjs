@@ -81,7 +81,7 @@ export async function provisionRuntime(pool, { role = "rental_radar_web", passwo
     for (const [table, webPermissions] of Object.entries(grants)) {
       if(profile==='worker' && !workerTables.has(table))continue;
       const permissions=profile==='worker' && workerReadOnly.has(table)?'SELECT':
-        profile==='worker' && table==='group_sources'?'SELECT, UPDATE (session_health, selector_health, selector_version, session_circuit, selector_circuit, selector_failures, last_result_order, updated_at)':
+        profile==='worker' && table==='group_sources'?'SELECT, UPDATE (session_health, selector_health, selector_version, session_circuit, selector_circuit, selector_failures, last_result_order, display_name, access_level, updated_at)':
         profile==='worker' && ['group_scan_receipts','group_observations'].includes(table)?'SELECT, INSERT':
         profile==='worker' && ['group_delivery_attempts','group_send_receipts'].includes(table)?'SELECT, INSERT':
         profile==='worker' && table==='group_source_schedules'?'SELECT':

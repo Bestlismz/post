@@ -14,6 +14,8 @@ function identity(href,groupId) {
 }
 async function readPage(page,groupId) {
   return page.evaluate(({groupId,maxIdLength})=>{
+    const groupName=(document.querySelector('main h1, [role="main"] h1, h1')?.textContent??'').slice(0,300);
+    const accessLevel=document.querySelector('a[href*="/admin_assistant/"], a[href*="/member-requests/"], a[href*="/admin_activities/"], a[href*="/edit/"]')?'admin':'reader';
     const feed=document.querySelector('[role="feed"]');
     const cards=Array.from(feed?.querySelectorAll('[role="article"]')??[]).filter(card=>
       !card.parentElement?.closest('[role="article"]') || card.getAttribute('aria-label')?.startsWith('Comment by '));
@@ -48,15 +50,16 @@ async function readPage(page,groupId) {
       const [link]=targets.values();
       items.push({href:link.href.slice(0,2000),authorLabel:(heading.textContent??'').slice(0,300),text:text.textContent.slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null});
     }
-    return {selectorValid:!!feed&&cards.length>0&&items.length===cards.length,reason,items,hasMore:false,complete:false};
+    return {groupName,accessLevel,selectorValid:!!feed&&cards.length>0&&items.length===cards.length,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});
 }
 export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,signal}={}) {
   assertGroupTarget(command.canonicalTarget);
   if(command.canonicalTarget!==`https://www.facebook.com/groups/${command.groupId}`||page.url()!==command.canonicalTarget) throw new Error('Invalid observation page');
   const observations=[],seen=new Set();
+  let groupName=null,accessLevel='unknown';
   let bytes=0;
-  const batch=(coverage,health='healthy',reason=null)=>({selectorVersion:SELECTOR_VERSION,coverage,health,reason,cursor:observations.at(-1)?.targetId??null,observations});
+  const batch=(coverage,health='healthy',reason=null)=>({selectorVersion:SELECTOR_VERSION,coverage,health,reason,groupName,accessLevel,cursor:observations.at(-1)?.targetId??null,observations});
   async function checkSession() {
     if(!page.isClosed?.()&&!page.url().startsWith('https://www.facebook.com/')) return batch('partial','failed','page_changed');
     let session;
@@ -75,6 +78,8 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
       const health=await checkSession();if(health)return health.health==='expired'?{...health,reason:'session_lost'}:health;
       return batch('partial','selector_failure','selector_changed');
     }
+    groupName=clean(snapshot.groupName,300)||groupName;
+    accessLevel=['reader','admin'].includes(snapshot.accessLevel)?snapshot.accessLevel:accessLevel;
     if(page.url()!==command.canonicalTarget||page.isClosed?.()) {const changed=await checkSession();if(changed)return changed;}
     for(const raw of snapshot.items.slice(0,100)) {
       let ids; try{ids=identity(raw.href,command.groupId);}catch{return batch('partial','failed','page_changed');}

@@ -41,6 +41,8 @@ export function createGroupResultService(pool,{keys,signingKey,keyId,clock=()=>n
         return {error:conflict('Conflicting result for immutable operation')};
       }
       const observations=result.observations.map(normalizeObservation);
+      const groupName=clean(result.groupName,300)||null;
+      const accessLevel=['reader','admin'].includes(result.accessLevel)?result.accessLevel:'unknown';
       if(new Set(observations.map(item=>item.targetId)).size!==observations.length) throw new Error('Duplicate observation identity');
       const response={receiptId:randomUUID(),operationId:operation.id,acceptedCount:observations.length,coverage:result.coverage};
       await tx.query(`INSERT INTO group_scan_receipts(operation_id,organization_id,source_id,digest,selector_version,coverage,health,reason,cursor,response)
@@ -55,8 +57,9 @@ export function createGroupResultService(pool,{keys,signingKey,keyId,clock=()=>n
         const sessionCircuit=(source.session_circuit||sessionBlocked)&&!canRecover;
         const selectorCircuit=(source.selector_circuit||failures>=3)&&!canRecover;
         await tx.query(`UPDATE group_sources SET session_health=$2,selector_health=$3,selector_version=$4,
-          session_circuit=$5,selector_circuit=$6,selector_failures=$7,last_result_order=$8,updated_at=now() WHERE id=$1`,
-        [source.id,sessionCircuit?'auth_required':result.health==='healthy'?'healthy':'failed',selectorCircuit?'failed':healthy?'healthy':'failed',result.selectorVersion,sessionCircuit,selectorCircuit,failures,operation.operation_order]);
+          session_circuit=$5,selector_circuit=$6,selector_failures=$7,last_result_order=$8,
+          display_name=COALESCE($9,display_name),access_level=CASE WHEN $10='unknown' THEN access_level ELSE $10 END,updated_at=now() WHERE id=$1`,
+        [source.id,sessionCircuit?'auth_required':result.health==='healthy'?'healthy':'failed',selectorCircuit?'failed':healthy?'healthy':'failed',result.selectorVersion,sessionCircuit,selectorCircuit,failures,operation.operation_order,groupName,accessLevel]);
         const retryable=(genuineSelector||result.health==='failed'&&['scan_failed','scan_timeout'].includes(result.reason))&&!sessionCircuit&&!selectorCircuit;
         const {rows:[org]}=await tx.query('SELECT group_automation_paused FROM organizations WHERE id=$1',[operation.organization_id]);
         if(retryable&&operation.retry_attempt<2&&!source.kill_switch&&!source.archived&&!org.group_automation_paused&&signingKey&&keyId) {

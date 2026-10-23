@@ -93,6 +93,8 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   const added = await request("/api/sources/groups", { method: "POST", body: { url: "https://m.facebook.com/groups/1742522453522327/?ref=share" } });
   assert.equal(added.status, 201);
   assert.equal(added.body.canonicalUrl, "https://www.facebook.com/groups/1742522453522327");
+  assert.equal(added.body.displayName, null);
+  assert.equal(added.body.accessLevel, "unknown");
   assert.equal(added.body.groupId, undefined, "provider ids stay server-side");
 
   const publicArchive = await request(`/api/sources/groups/${added.body.id}`, { method: "PATCH", revision: 1, body: { archived: true } });
@@ -122,7 +124,7 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   const { rows: [operation] } = await pool.query("SELECT command FROM group_operations WHERE id=$1", [pending.body.operationId]);
   const { signature: _signature, ...command } = operation.command;
   const now = new Date();
-  const result = signResult({ ...command, kind: "ScanResult", issuedAt: now.toISOString(), selectorVersion: "facebook-dom-v2", coverage: "partial", health: "auth_required", reason: "session_unavailable", observations: [] }, { key: signingKey, keyId: "test", now });
+  const result = signResult({ ...command, kind: "ScanResult", issuedAt: now.toISOString(), selectorVersion: "facebook-dom-v2", coverage: "partial", health: "auth_required", reason: "session_unavailable", groupName: "autopost", accessLevel: "admin", observations: [] }, { key: signingKey, keyId: "test", now });
   await acceptScanResult(result);
 
   const deadline = Date.now() + 1500;
@@ -132,6 +134,8 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   assert.equal(afterWorker.body.groups[0].latestReceipt.operationId, pending.body.operationId);
   assert.equal(afterWorker.body.groups[0].latestReceipt.coverage, "partial");
   assert.equal(afterWorker.body.groups[0].latestReceipt.health, "auth_required");
+  assert.equal(afterWorker.body.groups[0].displayName, "autopost");
+  assert.equal(afterWorker.body.groups[0].accessLevel, "admin");
   assert.equal(afterWorker.body.groups[0].receiptHistory.length, 2);
   assert.equal(afterWorker.body.groups[0].session.owner, "group-worker");
   assert.equal(JSON.stringify(afterWorker.body).includes("signature"), false);

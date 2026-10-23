@@ -9,7 +9,7 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   c.channel,m.id AS message_id,m.text AS message_text,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS author_label,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.kind FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS target_kind,
-  coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE s.name END AS source_name,
+  coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN coalesce(g.display_name,'Facebook group') ELSE s.name END AS source_name,
   CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health,
   latest_reply.context AS latest_reply_context`;
 const relations = `FROM work_items w
@@ -116,7 +116,7 @@ export async function listInbox(pool, query = {}, actor) {
       AND ($6::bigint IS NULL OR ${budgetSql}>=$6)
       AND ($7::bigint IS NULL OR ${budgetSql}<=$7)
       AND ($8::text IS NULL OR $8='unassigned')
-      AND ($9::text='' OR strpos(lower(m.text),lower($9))>0 OR strpos(lower(CASE WHEN c.channel='facebook_group' THEN 'Facebook group' ELSE coalesce(s.name,'') END),lower($9))>0 OR strpos(lower(coalesce(${authorSql},'')),lower($9))>0))
+      AND ($9::text='' OR strpos(lower(m.text),lower($9))>0 OR strpos(lower(CASE WHEN c.channel='facebook_group' THEN coalesce(g.display_name,'Facebook group') ELSE coalesce(s.name,'') END),lower($9))>0 OR strpos(lower(coalesce(${authorSql},'')),lower($9))>0))
     SELECT filtered.*,(SELECT count(*)::int FROM filtered) AS total_count FROM filtered
       WHERE ($10::timestamptz IS NULL OR (sort_created_at,id)<($10::timestamptz,$11::text))
     ORDER BY sort_created_at DESC,id DESC LIMIT $12`,

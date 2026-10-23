@@ -72,6 +72,8 @@ function publicGroup(row) {
   return {
     id:row.id,
     canonicalUrl:row.canonical_url,
+    displayName:row.display_name??null,
+    accessLevel:row.access_level??'unknown',
     mode:row.mode,
     allowListed:row.allow_listed,
     policy:row.policy,
@@ -86,7 +88,7 @@ function publicGroup(row) {
 }
 
 function publicSource(entity) {
-  return {id:entity.id,canonicalUrl:entity.canonicalUrl,mode:entity.mode,allowListed:entity.allowListed,policy:entity.policy,
+  return {id:entity.id,canonicalUrl:entity.canonicalUrl,displayName:entity.displayName,accessLevel:entity.accessLevel,mode:entity.mode,allowListed:entity.allowListed,policy:entity.policy,
     health:{session:entity.sessionHealth,selector:entity.selectorHealth,sessionCircuit:entity.sessionCircuit,selectorCircuit:entity.selectorCircuit},paused:entity.killSwitch,revision:entity.revision};
 }
 

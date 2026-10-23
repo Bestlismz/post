@@ -45,9 +45,12 @@ test('reply command preserves exact text and verifies its hash without admitting
   const reconcile={...base,kind:'ReconcileCommand',attemptOperationId:'reply-op',targetId:'post-1',textHash:reply.textHash,senderId:'sender-1',attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt};
   assert.equal(verifyCommand(signCommand(reconcile,options),verify).kind,'ReconcileCommand');
 });
-test('signed results bind observations and delivery evidence to operation and destination',()=>{
-  const scan={...base,kind:'ScanResult',selectorVersion:'v1',coverage:'partial',health:'healthy',observations:[{targetId:'post-1',text:'Want a room',observedAt:base.issuedAt,evidenceHash:'a'.repeat(64)}]};
+test('signed results bind observations and discovered group identity to operation and destination',()=>{
+  const scan={...base,kind:'ScanResult',selectorVersion:'v1',coverage:'partial',health:'healthy',groupName:'Condo Leads Bangkok',accessLevel:'admin',observations:[{targetId:'post-1',text:'Want a room',observedAt:base.issuedAt,evidenceHash:'a'.repeat(64)}]};
   const signed=signResult(scan,options); assert.deepEqual(verifyResult(signed,verify),signed);
+  assert.equal(signed.groupName,'Condo Leads Bangkok');assert.equal(signed.accessLevel,'admin');
+  assert.throws(()=>signResult({...scan,groupName:'x'.repeat(301)},options));
+  assert.throws(()=>signResult({...scan,accessLevel:'owner'},options));
   assert.throws(()=>verifyResult({...signed,observations:[]},verify));
   assert.throws(()=>signResult({...scan,token:'private'},options));
   assert.throws(()=>signResult({...scan,observations:[{...scan.observations[0],observedAt:'2026-10-22T13:00:00.000Z'}]},options),/time/i);

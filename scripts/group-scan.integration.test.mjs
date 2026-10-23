@@ -62,6 +62,13 @@ integration('partial scans retain old targets and changed content creates one ne
   assert.equal((await pool.query("SELECT count(*)::int n FROM group_scan_receipts WHERE coverage='partial'")).rows[0].n,1);
 });
 
+integration('newest authentic scan persists a safe Facebook group name and access level',async({pool,scan,result,accept})=>{
+  await accept(result(await scan(),{groupName:'<b>autopost</b>\u0000',accessLevel:'admin'}));
+  assert.deepEqual((await pool.query('SELECT display_name,access_level FROM group_sources')).rows[0],{display_name:'autopost',access_level:'admin'});
+  await accept(result(await scan(),{groupName:null,accessLevel:'unknown'}));
+  assert.deepEqual((await pool.query('SELECT display_name,access_level FROM group_sources')).rows[0],{display_name:'autopost',access_level:'admin'});
+});
+
 integration('semantic edits preserve history and supersede actionable work once under concurrent repeats',async({pool,source,scan,result,accept,observation})=>{
   await accept(result(await scan(),{observations:[observation('456','Looking for a rental')]}));
   await pool.query("UPDATE work_items SET status='needs_review'");

@@ -48,6 +48,8 @@ const seededSources = [
   source({
     id: "fixture-group-on-nut",
     groupId: "1742522453522327",
+    displayName: "autopost",
+    accessLevel: "admin",
     mode: "automatic",
     session: "healthy",
     selector: "healthy",
@@ -56,28 +58,32 @@ const seededSources = [
   }),
   source({
     id: "fixture-group-ari",
-    groupId: "100200300400500",
+    groupId: "2625323481252008",
+    displayName: "test autopost",
+    accessLevel: "reader",
     mode: "observe",
-    session: "auth_required",
-    selector: "healthy",
-    sessionCircuit: true,
-    coverage: "partial",
-    receiptHealth: "auth_required",
-    reason: "session_unavailable",
+    session: "healthy",
+    selector: "failed",
+    selectorCircuit: true,
+    coverage: "none",
+    receiptHealth: "selector_failure",
+    reason: "selector_changed",
   }),
 ];
 
-function source({ id, groupId, mode, session, selector, sessionCircuit = false, coverage, receiptHealth, reason = null }) {
+function source({ id, groupId, displayName, accessLevel, mode, session, selector, sessionCircuit = false, selectorCircuit = false, coverage, receiptHealth, reason = null }) {
   const operationId = `fixture-scan-${groupId}`;
   const receipt = { operationId, coverage, health: receiptHealth, reason, createdAt: seededAt };
   return {
     id,
     groupId,
     canonicalUrl: `https://www.facebook.com/groups/${groupId}`,
+    displayName,
+    accessLevel,
     mode,
     allowListed: true,
     policy: defaultSourcePolicy(),
-    health: { session, selector, sessionCircuit, selectorCircuit: false },
+    health: { session, selector, sessionCircuit, selectorCircuit },
     paused: false,
     archived: false,
     revision: 1,
@@ -169,7 +175,7 @@ export function createSourcesAutomationWorkspaceFixture({
   };
   const automationSource = (entry) => ({
     id: entry.id,
-    label: entry.canonicalUrl,
+    label: entry.displayName ?? entry.canonicalUrl,
     mode: entry.mode,
     policy: structuredClone(entry.policy),
     revision: entry.revision,
@@ -239,6 +245,8 @@ export function createSourcesAutomationWorkspaceFixture({
         const entry = {
           id: randomUUID(),
           ...identity,
+          displayName: null,
+          accessLevel: "unknown",
           mode: "observe",
           allowListed: false,
           policy: defaultSourcePolicy(),
@@ -300,14 +308,17 @@ export function createSourcesAutomationWorkspaceFixture({
         const finish = () => {
           if (entry.latestOperation?.operationId !== operationId) return;
           const healthy = entry.health.session === "healthy" && entry.health.selector === "healthy";
+          const receiptHealth = healthy ? "healthy" : entry.health.session !== "healthy" ? entry.health.session : "selector_failure";
           const receipt = {
             operationId,
             coverage: healthy ? "complete" : "partial",
-            health: healthy ? "healthy" : entry.health.session,
-            reason: healthy ? null : "session_unavailable",
+            health: receiptHealth,
+            reason: healthy ? null : receiptHealth === "selector_failure" ? "selector_changed" : "session_unavailable",
             createdAt: now(),
           };
           entry.latestOperation = { ...entry.latestOperation, state: "completed" };
+          const known = { "1742522453522327": { displayName: "autopost", accessLevel: "admin" }, "2625323481252008": { displayName: "test autopost", accessLevel: "reader" } }[entry.groupId];
+          if (known) Object.assign(entry, known);
           entry.latestReceipt = receipt;
           entry.receiptHistory = [receipt, ...entry.receiptHistory].slice(0, 5);
         };
@@ -383,7 +394,7 @@ export function createSourcesAutomationWorkspaceFixture({
         now: evaluatedAt,
       });
       return {
-        source: { id: entry.id, label: entry.canonicalUrl },
+        source: { id: entry.id, label: entry.displayName ?? entry.canonicalUrl },
         conversation: { id: conversation.id },
         ...decision,
         evaluatedAt: evaluatedAt.toISOString(),

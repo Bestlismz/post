@@ -1,6 +1,6 @@
 export function sourceFromRow(row) {
   if(!row) return null;
-  return {id:row.id,organizationId:row.organization_id,groupId:row.group_id,canonicalUrl:row.canonical_url,mode:row.mode,allowListed:row.allow_listed,policy:row.policy,sessionHealth:row.session_health,selectorHealth:row.selector_health,selectorVersion:row.selector_version,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit,selectorFailures:row.selector_failures,killSwitch:row.kill_switch,archived:row.archived,revision:row.revision};
+  return {id:row.id,organizationId:row.organization_id,groupId:row.group_id,canonicalUrl:row.canonical_url,displayName:row.display_name??null,accessLevel:row.access_level??'unknown',mode:row.mode,allowListed:row.allow_listed,policy:row.policy,sessionHealth:row.session_health,selectorHealth:row.selector_health,selectorVersion:row.selector_version,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit,selectorFailures:row.selector_failures,killSwitch:row.kill_switch,archived:row.archived,revision:row.revision};
 }
 export async function getGroupSource(tx,organizationId,id) {
   const {rows:[row]}=await tx.query('SELECT * FROM group_sources WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,id]);

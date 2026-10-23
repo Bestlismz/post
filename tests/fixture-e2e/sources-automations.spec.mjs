@@ -19,8 +19,10 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
       latestReceipt: expect.objectContaining({ coverage: "complete", health: "healthy" }),
     }),
     expect.objectContaining({
-      health: expect.objectContaining({ session: "auth_required", sessionCircuit: true }),
-      latestReceipt: expect.objectContaining({ coverage: "partial", health: "auth_required" }),
+      displayName: "test autopost",
+      accessLevel: "reader",
+      health: expect.objectContaining({ session: "healthy", selector: "failed", selectorCircuit: true }),
+      latestReceipt: expect.objectContaining({ coverage: "none", health: "selector_failure" }),
     }),
   ]));
 
@@ -36,7 +38,9 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
   await expect(page.getByRole("region", { name: "Facebook Page" }).getByText("Rental Radar Thailand")).toBeVisible();
   await expect(page.locator(".source-row")).toHaveCount(2);
   await expect(page.getByText("สแกนครบแล้ว")).toBeVisible();
-  await expect(page.getByText("สแกนได้บางส่วน")).toBeVisible();
+  await expect(page.getByText("สแกนไม่สำเร็จ")).toBeVisible();
+  await expect(page.getByText("autopost", { exact: true })).toBeVisible();
+  await expect(page.getByText("test autopost", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "ตรวจใหม่" }).click();
   await expect(page.getByRole("status")).toContainText("อัปเดตสถานะ Facebook Page แล้ว");
 
@@ -193,7 +197,7 @@ test("fixture policy preview is the production source evaluator for authorize an
   const automation = await (await request.get("/api/automation")).json();
   const sourceState = await (await request.get("/api/sources")).json();
   const automatic = automation.sources.find((source) => source.mode === "automatic");
-  const observe = automation.sources.find((source) => source.mode === "observe" && source.health.sessionCircuit);
+  const observe = automation.sources.find((source) => source.mode === "observe" && source.health.selectorCircuit);
   expect(automatic).toBeTruthy();
   expect(observe).toBeTruthy();
 
@@ -256,7 +260,7 @@ test("fixture policy preview is the production source evaluator for authorize an
     now: evaluationTime,
   });
   expect({ action: observed.action, reasons: observed.reasons, effectivePolicy: observed.effectivePolicy }).toEqual(expectedObserved);
-  expect(observed.reasons).toEqual(expect.arrayContaining(["observe_mode", "source_session_unhealthy", "session_circuit_open"]));
+  expect(observed.reasons).toEqual(expect.arrayContaining(["observe_mode", "source_selector_unhealthy", "selector_circuit_open"]));
 
   const csrfToken = (await (await request.post("/api/auth/csrf")).json()).csrfToken;
   const headers = (key, revision) => ({
@@ -404,7 +408,7 @@ test("fixture scan gates refuse paused and circuit-open work without replacing e
   });
   const initial = await (await request.get("/api/sources")).json();
   const healthy = initial.groups.find((source) => source.mode === "automatic");
-  const circuit = initial.groups.find((source) => source.health.sessionCircuit);
+  const circuit = initial.groups.find((source) => source.health.selectorCircuit);
   const priorHealthyOperation = healthy.latestOperation;
   const priorHealthyReceipt = healthy.latestReceipt;
   const priorCircuitOperation = circuit.latestOperation;
@@ -428,7 +432,7 @@ test("fixture scan gates refuse paused and circuit-open work without replacing e
 
   const circuitBlocked = await request.post(`/api/sources/groups/${circuit.id}/scans`, { data: {}, headers: headers("gate-circuit-scan", circuit.revision) });
   expect(circuitBlocked.status()).toBe(409);
-  expect(await circuitBlocked.json()).toEqual(expect.objectContaining({ error: "Source circuit requires explicit recovery", reasonCode: "SESSION_CIRCUIT_OPEN" }));
+  expect(await circuitBlocked.json()).toEqual(expect.objectContaining({ error: "Source circuit requires explicit recovery", reasonCode: "SELECTOR_CIRCUIT_OPEN" }));
   after = await (await request.get("/api/sources")).json();
   expect(after.groups.find((source) => source.id === circuit.id)).toEqual(expect.objectContaining({ latestOperation: priorCircuitOperation, latestReceipt: priorCircuitReceipt }));
 
@@ -440,7 +444,7 @@ test("fixture scan gates refuse paused and circuit-open work without replacing e
     return state.groups.find((source) => source.id === circuit.id)?.latestOperation?.state;
   }).toBe("completed");
   after = await (await request.get("/api/sources")).json();
-  expect(after.groups.find((source) => source.id === circuit.id)?.latestReceipt).toEqual(expect.objectContaining({ operationId: queued.operationId, coverage: "partial", health: "auth_required" }));
+  expect(after.groups.find((source) => source.id === circuit.id)?.latestReceipt).toEqual(expect.objectContaining({ operationId: queued.operationId, coverage: "partial", health: "selector_failure" }));
 });
 
 test("fixture operational clock advances scan evidence and expires recovery independently from policy time", async ({ request }) => {
