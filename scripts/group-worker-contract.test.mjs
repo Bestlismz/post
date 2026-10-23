@@ -142,6 +142,21 @@ test('recorded Facebook DOM extracts posts and comments without claiming complet
   assert.equal(result.observations[1].authorLabel,'Ann');
 });
 
+test('observer extracts the current Thai Facebook group card without legacy message markers',async t=>{
+  const {observeGroupPage}=await load('group-worker/observer');
+  const page=await fixturePage(t,`<main><h1>test autopost</h1><a href="/groups/100/admin_assistant/">&#3605;&#3633;&#3623;&#3594;&#3656;&#3623;&#3618;&#3612;&#3641;&#3657;&#3604;&#3641;&#3649;&#3621;</a><div role="feed">
+    <div role="article"><h2>B'Best Warut</h2><a href="/groups/100/posts/900/?__cft__[0]=opaque" aria-label="7 hours">7 hours</a><div dir="auto">&#3627;&#3634;&#3627;&#3657;&#3629;&#3591;&#3618;&#3656;&#3634;&#3609;&#3614;&#3619;&#3632;&#3619;&#3634;&#3617; 9</div><button aria-label="&#3585;&#3634;&#3619;&#3604;&#3635;&#3648;&#3609;&#3636;&#3609;&#3585;&#3634;&#3619;&#3626;&#3635;&#3627;&#3619;&#3633;&#3610;&#3650;&#3614;&#3626;&#3605;&#3660;&#3609;&#3637;&#3657;&#3650;&#3604;&#3618; B'Best Warut"></button></div>
+    <div role="article"><h2>B'Best Warut ได้สร้างกลุ่ม test autopost แล้ว</h2><a href="/groups/100/posts/899/" aria-label="7 ชั่วโมง">7 ชั่วโมง</a></div>
+  </div></main>`);
+  const result=await observeGroupPage(page,command());
+  assert.equal(result.health,'healthy');
+  assert.equal(result.groupName,'test autopost');
+  assert.equal(result.accessLevel,'admin');
+  assert.deepEqual(result.observations.map(item=>item.targetId),['post:900']);
+  assert.equal(result.observations[0].authorLabel,"B'Best Warut");
+  assert.equal(result.observations[0].text,'หาห้องย่านพระราม 9');
+});
+
 test('observer resolves current role-less Facebook post cards through their opaque timestamp trigger',async t=>{
   const {observeGroupPage}=await load('group-worker/observer');
   const page=await fixturePage(t,`<main><h1>test autopost</h1><div role="feed"><section>

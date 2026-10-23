@@ -69,16 +69,19 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
   async function findReplyEvidence(command) {
     const target=await locateExactTarget(command),rows=await target.scope.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>articles.flatMap(article=>{
       const owned=selector=>Array.from(article.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===article);
-      const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');if(messages.length!==1)return [];
+      const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
+      if(!messages.length)messages.push(...owned('div[dir="auto"]').filter(node=>node.textContent?.trim()&&!node.closest('h1,h2,h3,button,[role="button"],[contenteditable="true"]')&&!Array.from(node.querySelectorAll('div[dir="auto"]')).some(child=>child.closest('[role="article"]')===article&&child.textContent?.trim())));
+      if(messages.length!==1)return [];
       const links=owned('a[href]'),permalinks=links.flatMap(link=>{try{const url=new URL(link.href),path=url.pathname.match(/^\/groups\/(\d+)\/posts\/(\d+)\/?$/),comment=url.searchParams.get('comment_id');return url.origin==='https://www.facebook.com'&&path?.[1]===groupId&&path[2]===postId&&/^\d+$/.test(comment??'')?[{link,comment}]:[];}catch{return [];}});
       if(permalinks.length!==1)return [];
-      const author=owned('h2 a[href], h3 a[href], strong a[href]')[0];const observedAt=permalinks[0].link.querySelector('time[datetime]')?.getAttribute('datetime');
-      if(!author||!observedAt)return [];
+      const author=owned('h2 a[href], h3 a[href], strong a[href]')[0];const observedAt=permalinks[0].link.querySelector('time[datetime]')?.getAttribute('datetime')??null;
+      if(!author)return [];
       return [{text:messages[0].textContent??'',authorHref:author.href,observedAt,remoteId:permalinks[0].comment}];
     }),{groupId:command.groupId,postId:target.identity.postId});
     const expected=senderId??await identifySender(),evidence=[];
-    for(const row of rows) {let candidate;try{candidate=actor(normalizeActorHref(row.authorHref));}catch{continue;}if(candidate!==expected||!Number.isFinite(Date.parse(row.observedAt)))continue;
-      evidence.push({canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:candidate,text:row.text,observedAt:new Date(row.observedAt).toISOString(),remoteId:row.remoteId});}
+    for(const row of rows) {let candidate;try{candidate=actor(normalizeActorHref(row.authorHref));}catch{continue;}if(candidate!==expected)continue;
+      const observedAt=row.observedAt&&Number.isFinite(Date.parse(row.observedAt))?new Date(row.observedAt).toISOString():clock().toISOString();
+      evidence.push({canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:candidate,text:row.text,observedAt,remoteId:row.remoteId});}
     return evidence;
   }
   function assertActive({signal,deadline}) {

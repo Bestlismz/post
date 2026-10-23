@@ -22,13 +22,13 @@ const receiptResponse=result=>({operation:result.operation});
 export function createInboxRouter({pool,config,events={}}) {
   const router=Router(),queries=createInboxQueries({pool}),service=createInboxService({pool});
   const write=[requireRole('admin','operator'),checkOrigin(config),checkCsrf];
-  router.use(['/api/inbox','/api/replies'],authenticate(pool));
+  router.use(['/api/inbox','/api/replies','/api/deliveries'],authenticate(pool));
   router.get('/api/inbox/events',createReceiptStream({pool,...events}));
-  router.get('/api/inbox',async(req,res)=>res.json(await queries.listInbox(querySchema.parse(req.query),req.actor)));
+  router.get('/api/inbox',async(req,res)=>res.set('Cache-Control','no-store').json(await queries.listInbox(querySchema.parse(req.query),req.actor)));
   router.get('/api/inbox/:id',async(req,res)=>{
     const item=await queries.getInboxItem(req.params.id,req.actor);
     if(!item) throw httpError(404,'Inbox item not found');
-    res.set('ETag',`"${item.processingRevision}"`).json(item);
+    res.set({'ETag':`"${item.processingRevision}"`,'Cache-Control':'no-store'}).json(item);
   });
   router.post('/api/inbox/:id/prepare',...write,async(req,res)=>{
     const command=commandFor(req,empty.parse(req.body));
@@ -55,13 +55,18 @@ export function createInboxRouter({pool,config,events={}}) {
     const reply=await service.editReply(req.params.id,command.expectedRevision,body.text,req.actor,{idempotencyKey:command.idempotencyKey});
     res.json({reply:{id:reply.id,version:reply.version,processingRevision:reply.conversation_revision,text:reply.content.text}});
   });
+  router.post('/api/deliveries/:id/retry',...write,async(req,res)=>{
+    const body=z.strictObject({verification:z.literal('comment_not_present')}).parse(req.body),command=commandFor(req,body);
+    const result=await service.retryUnknownDelivery(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
+    res.status(202).json(receiptResponse(result));
+  });
   router.post('/api/inbox/:id/handoff',...write,async(req,res)=>{
     const {reason}=z.strictObject({reason:z.string().trim().min(1).max(200)}).parse(req.body);
     const command=commandFor(req,{reason});
     const result=await service.requestHandoff(req.params.id,reason,req.actor,{idempotencyKey:command.idempotencyKey,expectedRevision:command.expectedRevision});
     res.status(202).json(receiptResponse(result));
   });
-  router.use(['/api/inbox','/api/replies'],(_req,_res,next)=>next(httpError(404,'Resource not found')));
+  router.use(['/api/inbox','/api/replies','/api/deliveries'],(_req,_res,next)=>next(httpError(404,'Resource not found')));
   router.use(errorHandler);
   return router;
 }

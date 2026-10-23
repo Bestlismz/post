@@ -136,9 +136,9 @@ export function createInboxService({ pool, client, model, clock = () => new Date
       organizationId:actor.organizationId,actorId:actor.id,route,key:options.idempotencyKey,body,
     },async()=>{
       const result=await persist(tx);
-      if(!['inbox.approveAndQueue','inbox.requestHandoff'].includes(route))return {status:200,body:result};
+      if(!['inbox.approveAndQueue','inbox.retryUnknownDelivery','inbox.requestHandoff'].includes(route))return {status:200,body:result};
       const operation=await operationReceipt(tx,{organizationId:actor.organizationId,
-        resourceId:result.id ?? body.workItemId,resourceType:route==='inbox.approveAndQueue'?'delivery_intent':'work_item',
+        resourceId:result.id ?? body.workItemId,resourceType:route==='inbox.requestHandoff'?'work_item':'delivery_intent',
         state:route==='inbox.requestHandoff'?'handoff':'queued'});
       return {status:200,body:{...result,operation}};
     }));
@@ -239,6 +239,33 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     });
   }
 
+  async function retryUnknownDelivery(id,expectedRevision,actor,options) {
+    const organizationId=authorizeInboxActor(actor,{write:true});validateInboxText(id,'delivery intent ID');
+    return mutation(actor,'inbox.retryUnknownDelivery',{id,expectedRevision,verification:'comment_not_present'},options,async tx=>{
+      await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
+      const {rows:[prior]}=await tx.query(`SELECT d.*,rv.work_item_id,w.processing_revision,a.state AS attempt_state
+        FROM delivery_intents d
+        JOIN reply_versions rv ON rv.organization_id=d.organization_id AND rv.id=d.reply_version_id
+        JOIN work_items w ON w.organization_id=rv.organization_id AND w.id=rv.work_item_id
+        JOIN delivery_attempts a ON a.organization_id=d.organization_id AND a.delivery_intent_id=d.id
+        WHERE d.organization_id=$1 AND d.id=$2 FOR UPDATE OF d,w,a`,[organizationId,id]);
+      if(!prior)throw httpError(404,'Delivery intent not found');
+      if(!prior.group_source_id)fail('Only Facebook Group delivery can be retried','RETRY_UNSUPPORTED');
+      if(prior.processing_revision!==expectedRevision)fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      if(prior.attempt_state!=='unknown')fail('Only an unresolved delivery can be retried','RETRY_NOT_UNKNOWN');
+      if((await tx.query('SELECT 1 FROM delivery_cancellations WHERE organization_id=$1 AND delivery_intent_id=$2',[organizationId,id])).rowCount)fail('Delivery was cancelled','DELIVERY_CANCELLED');
+      const existing=(await tx.query('SELECT * FROM delivery_intents WHERE organization_id=$1 AND retry_of_intent_id=$2',[organizationId,id])).rows[0];
+      if(existing)return existing;
+      const retryId=randomUUID();
+      const {rows:[intent]}=await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content,retry_of_intent_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[retryId,organizationId,prior.authorization_id,prior.reply_version_id,prior.conversation_id,prior.source_id,prior.group_source_id,prior.content,id]);
+      await enqueueJob(tx,{organizationId,kind:'deliver_group_reply',retrySafe:false,payload:{deliveryIntentId:intent.id}});
+      await appendAudit(tx,{organizationId,actorId:actor.id,action:'delivery.retry_authorized',entityType:'delivery_intent',entityId:intent.id,
+        details:{priorIntentId:id,verification:'comment_not_present'}});
+      return intent;
+    });
+  }
+
   async function editReply(id,expectedRevision,text,actor,options) {
     const organizationId=authorizeInboxActor(actor,{write:true}); validateInboxText(id,'reply ID');
     return mutation(actor,'inbox.editReply',{id,expectedRevision,text},options,async tx => {
@@ -277,5 +304,5 @@ export function createInboxService({ pool, client, model, clock = () => new Date
       return {status:'handoff'};
     });
   }
-  return {prepareReply,approveAndQueue,editReply,requestHandoff};
+  return {prepareReply,approveAndQueue,retryUnknownDelivery,editReply,requestHandoff};
 }

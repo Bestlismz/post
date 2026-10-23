@@ -58,7 +58,8 @@ export function createApiClient(fetcher = globalThis.fetch) {
       if (options.body && !(options.body instanceof FormData) && !headers.has("content-type")) headers.set("content-type", "application/json");
       let response;
       try {
-        response = await fetcher(resource, { ...options, credentials: "same-origin", headers });
+        const method=(options.method??"GET").toUpperCase(),cache=method==="GET"?"no-store":options.cache;
+        response = await fetcher(resource, { ...options, cache, credentials: "same-origin", headers });
       } catch {
         throw mappedError(0);
       }

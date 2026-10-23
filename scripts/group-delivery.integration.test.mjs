@@ -136,6 +136,19 @@ dbtest('group analysis uses DB-owned format and source policy, then authorizatio
   await assert.rejects(pool.query("UPDATE delivery_intents SET content='{}' WHERE id=$1",[intent.id]),/immutable/i);
 });
 
+dbtest('an operator may create one audited retry only after an unresolved Group attempt is verified absent',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');
+  const service=createInboxService({pool}),reply=await service.prepareReply(workItemId,1,actor),prior=await service.approveAndQueue(reply.id,1,actor);
+  await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,outcome_code,finished_at) VALUES('unknown-attempt','org_default',$1,'unknown','POSSIBLE_SEND',now())",[prior.id]);
+  const options={idempotencyKey:'verified-absent-retry'};
+  const retry=await service.retryUnknownDelivery(prior.id,1,actor,options),replayed=await service.retryUnknownDelivery(prior.id,1,actor,options);
+  assert.equal(retry.retry_of_intent_id,prior.id);assert.equal(replayed.id,retry.id);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM delivery_intents WHERE retry_of_intent_id=$1",[prior.id])).rows[0].n,1);
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='deliver_group_reply' AND payload->>'deliveryIntentId'=$1",[retry.id])).rows[0].n,1);
+  const audit=(await pool.query("SELECT details FROM audit_entries WHERE action='delivery.retry_authorized' AND entity_id=$1",[retry.id])).rows[0];
+  assert.equal(audit.details.priorIntentId,prior.id);assert.equal(audit.details.verification,'comment_not_present');
+});
+
 dbtest('handoff atomically fences pending and running Messenger and Group work with a durable reason',async({pool,actor,workItemId,conversationId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');
   const {createAutomationWorker}=await import('../src/workers/automation-worker.mjs');

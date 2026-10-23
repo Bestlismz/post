@@ -116,6 +116,7 @@ function InboxWorkspace() {
       if (action === "handoff") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/handoff`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: JSON.stringify({ reason: input.reason ?? "ส่งต่อให้ทีมดูแลจาก Inbox" }) });
       if (action === "edit") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/edit`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
       if (action === "approve") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/approve`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: "{}" });
+      if (action === "retry") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/retry`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: JSON.stringify({ verification: "comment_not_present" }) });
       throw new Error("Unsupported Inbox command");
     };
     return retryOnceWithFreshCsrf({ token: csrfToken, request, refresh: async () => (await api.request("/api/auth/csrf", { method: "POST" })).csrfToken, onRefresh: setCsrfToken });

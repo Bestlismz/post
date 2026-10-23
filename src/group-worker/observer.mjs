@@ -37,15 +37,17 @@ async function readPage(page,groupId) {
     for(const card of cards.slice(0,100)) {
       const owned=selector=>Array.from(card.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===card);
       const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
-      if(!messages.length&&card.getAttribute('aria-label')?.startsWith('Comment by ')) messages.push(...owned('div[dir="auto"]'));
+      if(!messages.length) messages.push(...owned('div[dir="auto"]').filter(node=>{
+        if(!node.textContent?.trim()||node.closest('h1,h2,h3,button,[role="button"],[contenteditable="true"]'))return false;
+        return !Array.from(node.querySelectorAll('div[dir="auto"]')).some(child=>child.closest('[role="article"]')===card&&child.textContent?.trim());
+      }));
       const headings=owned('h2, h3').filter(node=>!messages.some(message=>message.contains(node)));
+      if(!messages.length)continue;
       if(messages.length!==1||headings.length!==1) { reason='identity_ambiguous';continue; }
       const [text]=messages,[heading]=headings;
       const timestampLinks=owned('a[href]').filter(link=>{
-        if(text.contains(link)||!((link.compareDocumentPosition(text)&Node.DOCUMENT_POSITION_FOLLOWING)&&
-          (heading.contains(link)||(heading.compareDocumentPosition(link)&Node.DOCUMENT_POSITION_FOLLOWING)))) return false;
-        const label=(link.innerText||link.getAttribute('aria-label')||'').replace(/[\u034f\u200b-\u200f\u2060\ufeff]/g,'').trim();
-        return !!link.querySelector('time, abbr')||/^\d+\s*(?:[smhdw]|minutes?|hours?|days?|weeks?)(?:\s+ago)?$/i.test(label);
+        if(text.contains(link))return false;
+        try { return identityPath.test(new URL(link.href).pathname); } catch { return false; }
       });
       const targets=new Map();let invalid=false;
       for(const link of timestampLinks) {
@@ -62,11 +64,11 @@ async function readPage(page,groupId) {
       const [link]=targets.values();
       items.push({href:link.href.slice(0,2000),authorLabel:(heading.textContent??'').slice(0,300),text:text.textContent.slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null});
     }
-    return {groupName,accessLevel,selectorValid:!!feed&&cards.length>0&&items.length===cards.length,reason,items,hasMore:false,complete:false};
+    return {groupName,accessLevel,selectorValid:!!feed&&items.length>0&&!reason,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});
 }
 async function readRolelessPosts(page,groupId,canonicalTarget,{maxItems=100}={}) {
-  const rawCards=await page.locator('[aria-label^="Actions for this post"]').evaluateAll((buttons,expectedGroupId)=>buttons.map(button=>{
+  const rawCards=await page.locator('[aria-label^="Actions for this post"], [aria-label^="การดำเนินการสำหรับโพสต์นี้"]').evaluateAll((buttons,expectedGroupId)=>buttons.map(button=>{
     const scopes=[],timestampHrefs=[];let node=button;
     for(let depth=0;depth<18&&node;depth++,node=node.parentElement) {
       scopes.push((node.innerText??'').trim());

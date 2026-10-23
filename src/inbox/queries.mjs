@@ -144,7 +144,7 @@ export async function getInboxItem(pool, id, actor) {
       FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 20) r) AS replies,
     (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",
       CASE WHEN a.state='attempting' THEN 'unknown' ELSE coalesce(a.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
-      a.provider_message_id AS "providerMessageId"
+      a.outcome_code AS "outcomeCode",a.provider_message_id AS "providerMessageId",di.retry_of_intent_id AS "retryOfIntentId"
       FROM delivery_intents di JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id
       LEFT JOIN delivery_attempts a ON a.organization_id=di.organization_id AND a.delivery_intent_id=di.id
       LEFT JOIN delivery_cancellations dc ON dc.organization_id=di.organization_id AND dc.delivery_intent_id=di.id
