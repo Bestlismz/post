@@ -143,6 +143,7 @@ test('recovery HTTP boundary is tenant scoped, admin only, audited, and never ex
     assert.equal((await fetch(`${base}/api/sources/source-1/recovery`,{method:'POST',headers:headers(viewerSession),body:JSON.stringify({ttlSeconds:60})})).status,403);
     const opened=await fetch(`${base}/api/sources/source-1/recovery`,{method:'POST',headers:headers(adminSession),body:JSON.stringify({ttlSeconds:60})});
     assert.equal(opened.status,201);const body=await opened.json();assert.match(body.tunnelUrl,new RegExp(`^/api/sources/source-1/recovery/${body.sessionId}/novnc/vnc\\.html`));
+    assert.equal(new URL(body.tunnelUrl,'http://localhost').searchParams.get('path'),`api/sources/source-1/recovery/${body.sessionId}/novnc/websockify`);
     assert.equal((await pool.query("SELECT kill_switch FROM group_sources WHERE id='source-1'")).rows[0].kill_switch,true);
     assert.equal((await pool.query("SELECT count(*)::int n FROM audit_entries WHERE action='group.recovery_started'")).rows[0].n,1);
     const upgradeUrl=`/api/sources/source-1/recovery/${body.sessionId}/novnc/websockify`;

@@ -185,7 +185,7 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
         await appendAudit(tx,{organizationId:request.actor.organizationId,actorId:request.actor.id,action:'group.recovery_started',entityType:'group_source',entityId:source.id,details:{expiresAt:started.expiresAt,reasonCode:'MANUAL_SESSION_RECOVERY'}});
       });
       const local=registry.start({organizationId:request.actor.organizationId,sourceId:source.id,expiresAt:started.expiresAt});
-      const socketPath=`/api/sources/${encodeURIComponent(source.id)}/recovery/${local.sessionId}/novnc/websockify`;
+      const socketPath=`api/sources/${encodeURIComponent(source.id)}/recovery/${local.sessionId}/novnc/websockify`;
       response.status(201).json({sourceId:source.id,sessionId:local.sessionId,expiresAt:local.expiresAt,tunnelUrl:`/api/sources/${encodeURIComponent(source.id)}/recovery/${local.sessionId}/novnc/vnc.html?autoconnect=1&resize=scale&path=${encodeURIComponent(socketPath)}`});
     } catch(error) {if(started)await recovery.stop({sourceId:request.params.id}).catch(()=>{});next(error);}
   });
