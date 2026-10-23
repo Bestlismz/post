@@ -1,5 +1,5 @@
 export function BrandMark({ className = "" }) {
-  return <img className={className} src="/brand/rendar-mark.svg" alt="" aria-hidden="true" />;
+  return <img className={className} src="/brand/rendar-mark.png" alt="" aria-hidden="true" />;
 }
 
 export function BrandName() {
