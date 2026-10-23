@@ -37,6 +37,8 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
   await expect(page.locator(".source-row")).toHaveCount(2);
   await expect(page.getByText("สแกนครบแล้ว")).toBeVisible();
   await expect(page.getByText("สแกนได้บางส่วน")).toBeVisible();
+  await page.getByRole("button", { name: "ตรวจใหม่" }).click();
+  await expect(page.getByRole("status")).toContainText("อัปเดตสถานะ Facebook Page แล้ว");
 
   await page.goto("/automations");
   await expect(page.getByRole("heading", { name: "กติกาอัตโนมัติ" })).toBeVisible();

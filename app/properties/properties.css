@@ -138,6 +138,13 @@
 .unit-price__suffix { color: var(--rr-text-faint); font-size: 10px; }
 .unit-date { color: var(--rr-text-soft); font-size: 11px; }
 .status-select { min-height: 34px; max-width: 100%; padding: 0 25px 0 10px; border: 1px solid var(--rr-line); border-radius: 99px; color: var(--rr-text-soft); background: #fff; font-size: 10px; font-weight: 700; }
+.status-select-control { position: relative; display: inline-block; width: 122px; max-width: 100%; color: var(--rr-text-soft); }
+.status-select-control .status-select { width: 100%; padding-right: 38px; appearance: none; color: transparent; }
+.status-select-control .status-select option { color: var(--rr-text); }
+.status-select-control__label { position: absolute; top: 50%; left: 12px; max-width: calc(100% - 44px); overflow: hidden; font-size: 10px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; transform: translateY(-50%); }
+.status-select-control > svg { position: absolute; top: 50%; right: 13px; color: currentColor; pointer-events: none; transform: translateY(-50%); }
+.status-select-control--available { color: #087d56; }
+.status-select-control--held { color: #9a6308; }
 .status-select--available { border-color: #bfe7d7; color: #087d56; background: #effaf6; }
 .status-select--held { border-color: #f1d8a3; color: #9a6308; background: #fff8e9; }
 .status-select--rented, .status-select--archived { color: #667085; background: #f5f5f4; }

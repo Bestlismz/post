@@ -168,6 +168,12 @@ if (mode === "fixture") {
     sendFixtureEntity(response, settingsWorkspace.saveRetention(request.body, fixtureRevision(request), fixtureIdempotencyKey(request), fixtureActor(request)));
   }));
   app.get("/api/sources", (request, response) => response.json(sourcesAutomationWorkspace.listSources(fixtureActor(request).role)));
+  app.get("/api/meta/sources/:id/health", asyncRoute(async (request, response) => response.json(sourcesAutomationWorkspace.inspectPageHealth(request.params.id))));
+  app.post("/api/meta/sources/:id/disconnect", asyncRoute(async (request, response) => {
+    requireFixtureRole(request, "admin");
+    requireFixtureCsrf(request);
+    response.json(sourcesAutomationWorkspace.disconnectPage(request.params.id, fixtureIdempotencyKey(request)));
+  }));
   app.post("/api/sources/groups", asyncRoute(async (request, response) => {
     requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);

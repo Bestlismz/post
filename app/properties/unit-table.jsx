@@ -1,6 +1,7 @@
 import {
   BedDouble,
   CalendarDays,
+  ChevronDown,
   MoreHorizontal,
   Pencil,
   Plus,
@@ -27,19 +28,23 @@ const allowedTransitions = {
 
 function UnitStatus({ unit, onAvailability, canEdit }) {
   return (
-    <select
-      className={`status-select status-select--${unit.status}`}
-      aria-label="สถานะห้อง"
-      value={unit.status}
-      onChange={(event) => onAvailability(unit, event.target.value)}
-      disabled={!canEdit || unit.status === "archived"}
-    >
-      {(allowedTransitions[unit.status] ?? [unit.status]).map((value) => (
-        <option value={value} key={value}>
-          {statusCopy[value]}
-        </option>
-      ))}
-    </select>
+    <span className={`status-select-control status-select-control--${unit.status}`}>
+      <select
+        className={`status-select status-select--${unit.status}`}
+        aria-label="สถานะห้อง"
+        value={unit.status}
+        onChange={(event) => onAvailability(unit, event.target.value)}
+        disabled={!canEdit || unit.status === "archived"}
+      >
+        {(allowedTransitions[unit.status] ?? [unit.status]).map((value) => (
+          <option value={value} key={value}>
+            {statusCopy[value]}
+          </option>
+        ))}
+      </select>
+      <span className="status-select-control__label" aria-hidden="true">{statusCopy[unit.status]}</span>
+      <ChevronDown aria-hidden="true" size={15} strokeWidth={2}/>
+    </span>
   );
 }
 

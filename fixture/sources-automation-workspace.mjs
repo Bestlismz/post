@@ -109,6 +109,7 @@ export function createSourcesAutomationWorkspaceFixture({
   policyEvaluationClock = () => new Date("2026-10-22T03:00:00.000Z"),
 } = {}) {
   let groups = structuredClone(seededSources);
+  const pages = [{ id: "fixture-page", name: "Rental Radar Thailand", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }];
   let globalPaused = false;
   let automationPolicy = structuredClone(policy);
   let policyRevision = 1;
@@ -211,9 +212,24 @@ export function createSourcesAutomationWorkspaceFixture({
     listSources(actorRole = "admin") {
       return {
         actorRole,
-        pages: [{ id: "fixture-page", name: "Rental Radar Thailand", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }],
+        pages: structuredClone(pages),
         groups: groups.map(publicSource),
       };
+    },
+    inspectPageHealth(id) {
+      const page = pages.find((entry) => entry.id === id);
+      if (!page) failure(404, "Page connection not found");
+      page.updatedAt = now();
+      return structuredClone(page);
+    },
+    disconnectPage(id, key) {
+      return once(`pages.disconnect.${id}`, key, { id }, () => {
+        const page = pages.find((entry) => entry.id === id);
+        if (!page) failure(404, "Page connection not found");
+        page.health = "disconnected";
+        page.updatedAt = now();
+        return structuredClone(page);
+      });
     },
     addGroup(input, key) {
       return once("sources.add", key, input, () => {
