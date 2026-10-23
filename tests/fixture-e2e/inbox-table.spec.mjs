@@ -44,7 +44,7 @@ test("fixture topbar exposes safe Facebook identity and revokes the fixture app 
   await page.goto("/inbox");
   await page.getByRole("button", { name: "เปิดเมนูบัญชี" }).click();
   const menu = page.getByRole("menu", { name: "เมนูบัญชี" });
-  await expect(menu).toContainText("Rental Radar Thailand");
+  await expect(menu).toContainText("BestRedar");
   await expect(menu).not.toContainText("fixture-token");
   await page.getByRole("menuitem", { name: "ออกจากระบบ" }).click();
   await expect.poll(async () => (await page.request.get("/api/me")).status()).toBe(401);

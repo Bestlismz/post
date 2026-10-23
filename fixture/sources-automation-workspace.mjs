@@ -116,7 +116,7 @@ export function createSourcesAutomationWorkspaceFixture({
   onObservation = () => undefined,
 } = {}) {
   let groups = structuredClone(seededSources);
-  const pages = [{ id: "fixture-page", name: "Rental Radar Thailand", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }];
+  const pages = [{ id: "61595791349401", name: "BestRedar", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }];
   let globalPaused = false;
   let automationPolicy = structuredClone(policy);
   let policyRevision = 1;

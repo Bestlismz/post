@@ -61,7 +61,7 @@ const generateText = createDraftGenerator({ apiKey: process.env.OPENAI_API_KEY, 
 const analyzeRelevance = createRelevanceAnalyzer({ apiKey: process.env.OPENAI_API_KEY, model });
 const groups = createGroupService({ store, site, analyze: analyzeRelevance, withBrowserLease, onProgress: updateBrowserOperation });
 const metaConfig = {
-  pageId: process.env.META_PAGE_ID || (mode === "fixture" ? "fixture-page" : ""),
+  pageId: process.env.META_PAGE_ID || (mode === "fixture" ? "61595791349401" : ""),
   pageAccessToken: process.env.META_PAGE_ACCESS_TOKEN || (mode === "fixture" ? "fixture-token" : ""),
   appSecret: process.env.META_APP_SECRET || (mode === "fixture" ? "fixture-secret" : ""),
   verifyToken: process.env.META_VERIFY_TOKEN || (mode === "fixture" ? "fixture-verify" : ""),
@@ -124,7 +124,7 @@ app.get("/api/facebook/session-summary", (request, response) => {
   const role = fixtureActor(request).role;
   response.json({
     state: "connected",
-    identity: { displayName: "Rental Radar Thailand", avatarUrl: null, kind: "page" },
+    identity: { displayName: "BestRedar", avatarUrl: null, kind: "page" },
     connections: { pages: 1, groups: 2, pageState: "connected", groupState: "healthy" },
     canRecover: role === "admin",
   });

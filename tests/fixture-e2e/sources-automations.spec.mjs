@@ -9,7 +9,7 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
   const sources = await sourcesResponse.json();
   expect(sources.actorRole).toBe("admin");
   expect(sources.pages).toEqual(expect.arrayContaining([
-    expect.objectContaining({ name: "Rental Radar Thailand", health: "connected" }),
+    expect.objectContaining({ id: "61595791349401", name: "BestRedar", health: "connected" }),
   ]));
   expect(sources.groups).toHaveLength(2);
   expect(new Set(sources.groups.map((source) => source.mode))).toEqual(new Set(["observe", "automatic"]));
@@ -35,7 +35,7 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
 
   await page.goto("/sources");
   await expect(page.getByRole("heading", { name: "แหล่งข้อมูล Facebook" })).toBeVisible();
-  await expect(page.getByRole("region", { name: "Facebook Page" }).getByText("Rental Radar Thailand")).toBeVisible();
+  await expect(page.getByRole("region", { name: "Facebook Page" }).getByText("BestRedar")).toBeVisible();
   await expect(page.locator(".source-row")).toHaveCount(2);
   await expect(page.getByText("สแกนครบแล้ว")).toBeVisible();
   await expect(page.getByText("สแกนไม่สำเร็จ")).toBeVisible();

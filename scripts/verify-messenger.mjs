@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"; import crypto from "node:crypto";
-const base=process.env.BASE_URL||"http://127.0.0.1:3000",pageId=process.env.META_PAGE_ID||"fixture-page",secret=process.env.META_APP_SECRET||"fixture-secret",runId=Date.now(),sender=`verify-${runId}`;
+const base=process.env.BASE_URL||"http://127.0.0.1:3000",pageId=process.env.META_PAGE_ID||"61595791349401",secret=process.env.META_APP_SECRET||"fixture-secret",runId=Date.now(),sender=`verify-${runId}`;
 await api("/api/messenger/enable",{method:"POST",body:{}});const initial=(await api("/fixture/api/messenger/sends")).sends.length;
 const payload={object:"page",entry:[{id:pageId,messaging:[{sender:{id:sender},recipient:{id:pageId},timestamp:Date.now(),message:{mid:`verify-${runId}-1`,text:"หาคอนโดใกล้ BTS อ่อนนุช งบ 15,000 บาท"}}]}]};
 await signed(payload);await signed(payload);await waitFor(async()=>((await api("/fixture/api/messenger/sends")).sends.length===initial+1));
