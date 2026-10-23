@@ -4,12 +4,13 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Clock3, PauseCircle, PlayCircle, RefreshCw, Settings2, ShieldAlert } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
+import { defaultAutomationPolicy } from "../../src/automation/defaults.mjs";
 import { PolicyEditor } from "./policy-editor";
 import { PolicyPreview } from "./policy-preview";
 import "../sources-automations.css";
 
 const operationKey = () => globalThis.crypto?.randomUUID?.() ?? `automation-${Date.now()}-${Math.random()}`;
-const fallbackPolicy = { mode: "approval", minimumConfidence: 0.82, rateLimits: { organization: 100, source: 20, conversation: 2 }, businessHours: { timeZone: "Asia/Bangkok", days: [1, 2, 3, 4, 5], start: "08:00", end: "19:00" } };
+const fallbackPolicy = defaultAutomationPolicy();
 
 export default function AutomationsPage() {
   const [data, setData] = useState(null), [error, setError] = useState(""), [busy, setBusy] = useState(""), [notice, setNotice] = useState("");

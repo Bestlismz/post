@@ -78,8 +78,10 @@ integration('source mutations enforce tenant membership roles revision races and
   await assert.rejects(service.requestGroupScan(command({id:source.id},3)),/archived/);
 });
 
-integration('automatic mode fails closed until every stored readiness gate passes',async({pool,service,command})=>{
+integration('automatic mode checks static readiness without requiring the current time to be inside business hours',async({pool,service,command})=>{
   const source=await service.addGroupSource(command({url:'https://facebook.com/groups/123'}));
+  const {rows:[defaultSchedule]}=await pool.query('SELECT enabled,cadence_minutes,time_zone,start_local,end_local,daily_limit FROM group_source_schedules WHERE source_id=$1',[source.id]);
+  assert.deepEqual(defaultSchedule,{enabled:true,cadence_minutes:15,time_zone:'Asia/Bangkok',start_local:'00:00',end_local:'24:00',daily_limit:96});
   const policy={rateLimits:{organization:10,source:5,conversation:1},businessHours:{timeZone:'UTC',days:[4],start:'00:00',end:'24:00'}};
   await assert.rejects(service.updateGroupSource(command({id:source.id,mode:'automatic'},1)),/not ready/i);
   await service.updateGroupSource(command({id:source.id,allowListed:true,policy},1));
@@ -101,8 +103,6 @@ integration('automatic mode fails closed until every stored readiness gate passe
   await assert.rejects(service.requestGroupScan(command({id:source.id},2)),/paused/i);
   await pool.query("UPDATE organizations SET group_automation_paused=false WHERE id='org_default'");
   await pool.query('UPDATE group_sources SET policy=$1 WHERE id=$2',[JSON.stringify({...policy,businessHours:{...policy.businessHours,start:'13:00',end:'14:00'}}),source.id]);
-  await assert.rejects(service.updateGroupSource(command({id:source.id,mode:'automatic'},2)),/not ready/i);
-  await pool.query('UPDATE group_sources SET policy=$1 WHERE id=$2',[JSON.stringify(policy),source.id]);
   const ready=await service.updateGroupSource(command({id:source.id,mode:'automatic'},2)); assert.equal(ready.mode,'automatic');
   await assert.rejects(service.updateGroupSource(command({id:source.id,sessionHealth:'healthy'},3)),/Unrecognized/);
   await pool.query("UPDATE group_sources SET session_health='failed' WHERE id=$1",[source.id]);

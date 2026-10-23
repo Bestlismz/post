@@ -83,6 +83,8 @@ function publicGroup(row) {
     latestOperation:row.operation_id?{operationId:row.operation_id,state:row.operation_completed?'completed':row.operation_stuck?'stuck':'queued',createdAt:row.operation_created_at?.toISOString?.()??row.operation_created_at}:null,
     latestReceipt:receipt(row.receipt_operation_id?{operationId:row.receipt_operation_id,coverage:row.receipt_coverage,health:row.receipt_health,reason:row.receipt_reason,createdAt:row.receipt_created_at}:null),
     receiptHistory:(row.receipt_history??[]).map(receipt),
+    schedule:row.schedule_revision?{enabled:row.schedule_enabled,cadenceMinutes:row.schedule_cadence_minutes,timeZone:row.schedule_time_zone,days:row.schedule_days.map(Number),start:row.schedule_start_local,end:row.schedule_end_local,dailyLimit:row.schedule_daily_limit,maintenanceWindows:row.schedule_maintenance_windows,revision:row.schedule_revision}:null,
+    latestSchedule:row.schedule_receipt_id?{state:row.schedule_receipt_state,reasons:row.schedule_reason_codes,slot:row.schedule_slot?.toISOString?.()??row.schedule_slot,createdAt:row.schedule_receipt_created_at?.toISOString?.()??row.schedule_receipt_created_at}:null,
     session:{owner:'group-worker',state:row.session_health==='healthy'?'available':row.session_health},
   };
 }
@@ -126,8 +128,16 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
         pool.query(`SELECT g.*,op.id operation_id,op.created_at operation_created_at,(op_receipt.operation_id IS NOT NULL) operation_completed,
           (op_receipt.operation_id IS NULL AND op.created_at<clock_timestamp()-interval '10 minutes') operation_stuck,
           receipt.operation_id receipt_operation_id,receipt.coverage receipt_coverage,receipt.health receipt_health,receipt.reason receipt_reason,receipt.created_at receipt_created_at,
-          coalesce(history.items,'[]'::jsonb) receipt_history
+          coalesce(history.items,'[]'::jsonb) receipt_history,
+          schedule.enabled schedule_enabled,schedule.cadence_minutes schedule_cadence_minutes,schedule.time_zone schedule_time_zone,schedule.days schedule_days,
+          schedule.start_local schedule_start_local,schedule.end_local schedule_end_local,schedule.daily_limit schedule_daily_limit,
+          schedule.maintenance_windows schedule_maintenance_windows,schedule.revision schedule_revision,
+          schedule_receipt.id schedule_receipt_id,schedule_receipt.state schedule_receipt_state,schedule_receipt.reason_codes schedule_reason_codes,
+          schedule_receipt.schedule_slot,schedule_receipt.created_at schedule_receipt_created_at
           FROM group_sources g
+          LEFT JOIN group_source_schedules schedule ON schedule.organization_id=g.organization_id AND schedule.source_id=g.id
+          LEFT JOIN LATERAL (SELECT id,state,reason_codes,schedule_slot,created_at FROM group_schedule_receipts sr
+            WHERE sr.organization_id=g.organization_id AND sr.source_id=g.id ORDER BY sr.schedule_slot DESC LIMIT 1) schedule_receipt ON true
           LEFT JOIN LATERAL (SELECT id,created_at FROM group_operations WHERE organization_id=g.organization_id AND source_id=g.id AND kind='ScanCommand' ORDER BY operation_order DESC LIMIT 1) op ON true
           LEFT JOIN group_scan_receipts op_receipt ON op_receipt.organization_id=g.organization_id AND op_receipt.operation_id=op.id
           LEFT JOIN LATERAL (SELECT r.* FROM group_scan_receipts r JOIN group_operations ro ON ro.organization_id=r.organization_id AND ro.id=r.operation_id

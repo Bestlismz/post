@@ -8,7 +8,11 @@ export async function getGroupSource(tx,organizationId,id) {
 }
 export async function insertGroupSource(tx,source) {
   const result=await tx.query('INSERT INTO group_sources(id,organization_id,group_id,canonical_url) VALUES($1,$2,$3,$4) ON CONFLICT(organization_id,group_id) DO NOTHING RETURNING *',[source.id,source.organizationId,source.groupId,source.canonicalUrl]);
-  if(result.rowCount) return {source:sourceFromRow(result.rows[0]),created:true};
+  if(result.rowCount) {
+    await tx.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit,maintenance_windows,revision)
+      VALUES($1,$2,true,15,'Asia/Bangkok','{0,1,2,3,4,5,6}','00:00','24:00',96,'[]',1)`,[source.organizationId,source.id]);
+    return {source:sourceFromRow(result.rows[0]),created:true};
+  }
   const {rows:[row]}=await tx.query('SELECT * FROM group_sources WHERE organization_id=$1 AND group_id=$2 FOR UPDATE',[source.organizationId,source.groupId]);
   return {source:sourceFromRow(row),created:false};
 }

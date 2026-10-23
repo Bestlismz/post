@@ -2,20 +2,18 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { appendAudit,runIdempotent,withTransaction } from '../db/transaction.mjs';
 import { enqueueJob } from '../jobs/queue.mjs';
-import { evaluatePolicy } from '../policy/evaluator.mjs';
 import { signCommand } from '../channels/groups/contracts.mjs';
 import { canonicalizeGroupUrl } from '../channels/groups/target.mjs';
 import { getGroupSource,insertGroupSource,saveGroupSource,insertGroupOperation } from './repository.mjs';
-import { internalSourceUpdatePatch } from '../automation/contracts.mjs';
+import { internalSourceUpdatePatch,sourcePolicy } from '../automation/contracts.mjs';
 export { canonicalizeGroupUrl };
 const id=z.string().min(1).max(200);
 const inputs={addGroupSource:z.strictObject({url:z.string().max(2000)}),updateGroupSource:internalSourceUpdatePatch.extend({id}),requestGroupScan:z.strictObject({id,recovery:z.boolean().optional()})};
 function fail(status,message){throw Object.assign(new Error(message),{status});}
 export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),supportedSelectorVersions=[]}={}) {
-  async function requireAutomaticReadiness(tx,source,now) {
+  async function requireAutomaticReadiness(tx,source) {
     const {rows:[org]}=await tx.query('SELECT group_automation_paused FROM organizations WHERE id=$1 FOR SHARE',[source.organizationId]);
-    const decision=evaluatePolicy({...source.policy,mode:'automatic'},{grounded:true,automaticEligible:true,confidence:1,sourceHealth:'connected',replyWindowOpen:true,counts:{organization:0,source:0,conversation:0}},now);
-    if(source.sessionCircuit||source.selectorCircuit||!source.allowListed||source.sessionHealth!=='healthy'||source.selectorHealth!=='healthy'||!supportedSelectorVersions.includes(source.selectorVersion)||source.killSwitch||org.group_automation_paused||!source.policy.rateLimits||!source.policy.businessHours||decision.action!=='authorize') fail(409,'Automatic mode is not ready');
+    if(source.sessionCircuit||source.selectorCircuit||!source.allowListed||source.sessionHealth!=='healthy'||source.selectorHealth!=='healthy'||!supportedSelectorVersions.includes(source.selectorVersion)||source.killSwitch||org.group_automation_paused||!sourcePolicy.safeParse(source.policy).success) fail(409,'Automatic mode is not ready');
   }
   const service={};
   for(const action of Object.keys(inputs)) service[action]=async command=>{
@@ -43,7 +41,7 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
             const previousMode=source.mode,{id:ignored,...patch}=input; source={...source,...patch};
             const stopping=patch.mode!=='automatic' && (patch.killSwitch===true || patch.archived===true);
             const editingPausedAutomatic=previousMode==='automatic'&&source.mode==='automatic'&&source.killSwitch&&patch.killSwitch!==false;
-            if(source.mode==='automatic' && !editingPausedAutomatic && !stopping) await requireAutomaticReadiness(tx,source,clock());
+            if(source.mode==='automatic' && !editingPausedAutomatic && !stopping) await requireAutomaticReadiness(tx,source);
             source=await saveGroupSource(tx,source);
             await appendAudit(tx,{organizationId,actorId,action:'group.source_updated',entityType:'group_source',entityId:source.id,details:{revision:source.revision,mode:source.mode,archived:source.archived}});
           } else {
@@ -51,7 +49,7 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
             if(source.killSwitch||org.group_automation_paused) fail(409,'Source automation is paused');
             if((source.sessionCircuit||source.selectorCircuit)&&!input.recovery) fail(409,'Source circuit requires explicit recovery');
             const now=clock();
-            if(source.mode==='automatic'&&!input.recovery) await requireAutomaticReadiness(tx,source,now);
+            if(source.mode==='automatic'&&!input.recovery) await requireAutomaticReadiness(tx,source);
             const signed=signCommand({version:1,kind:'ScanCommand',operationId:randomUUID(),sourceId:source.id,groupId:source.groupId,canonicalTarget:source.canonicalUrl,issuedAt:now.toISOString(),expiresAt:new Date(+now+300000).toISOString(),keyId},{key:signingKey,keyId,now});
             await insertGroupOperation(tx,organizationId,signed,{recovery:input.recovery===true});
             await appendAudit(tx,{organizationId,actorId,action:'group.scan_requested',entityType:'group_operation',entityId:signed.operationId,details:{sourceId:source.id}});

@@ -96,6 +96,8 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   assert.equal(added.body.displayName, null);
   assert.equal(added.body.accessLevel, "unknown");
   assert.equal(added.body.groupId, undefined, "provider ids stay server-side");
+  const afterAdd = await request("/api/sources");
+  assert.deepEqual(afterAdd.body.groups[0].schedule, { enabled: true, cadenceMinutes: 15, timeZone: "Asia/Bangkok", days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "24:00", dailyLimit: 96, maintenanceWindows: [], revision: 1 });
 
   const publicArchive = await request(`/api/sources/groups/${added.body.id}`, { method: "PATCH", revision: 1, body: { archived: true } });
   assert.equal(publicArchive.status, 422, "public PATCH cannot expose the internal archive command");
@@ -186,15 +188,15 @@ dbtest("Automations API persists exact format and policy revisions and exposes i
     VALUES('conversation-1','org_default','facebook_group','facebook_group:123','facebook_group_target:456',1)`);
   const initial = await request("/api/automation");
   assert.equal(initial.status, 200);
-  assert.equal(initial.body.policy.revision, 1);
+  assert.ok(initial.body.policy.revision >= 1);
   assert.equal(initial.body.replyFormat.value.locale, "th");
   assert.deepEqual(initial.body.sources[0].previewContexts.map(({ id }) => id), ["conversation-1"]);
 
   const policy = { mode: "automatic", minimumConfidence: 0.82, rateLimits: { organization: 100, source: 20, conversation: 2 }, businessHours: { timeZone: "Asia/Bangkok", days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "24:00" } };
-  const savedPolicy = await request("/api/automation/policy", { method: "PUT", revision: 1, body: policy });
+  const savedPolicy = await request("/api/automation/policy", { method: "PUT", revision: initial.body.policy.revision, body: policy });
   assert.equal(savedPolicy.status, 200);
   assert.deepEqual(savedPolicy.body.value, policy);
-  assert.equal(savedPolicy.body.revision, 2);
+  assert.equal(savedPolicy.body.revision, initial.body.policy.revision + 1);
 
   const format = { locale: "th", tone: "formal", greetingId: "hello", closingId: "thanks", ctaId: "follow_up", emojiPolicy: "none", maxLength: 700, numberFormat: "grouped", dateFormat: "dmy", requiredDisclosureId: "confirm", forbiddenPhrases: ["รับประกันห้องว่าง"] };
   const savedFormat = await request("/api/automation/reply-format", { method: "PUT", revision: 1, body: format });
