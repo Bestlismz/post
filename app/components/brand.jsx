@@ -1,0 +1,7 @@
+export function BrandMark({ className = "" }) {
+  return <img className={className} src="/brand/rendar-mark.svg" alt="" aria-hidden="true" />;
+}
+
+export function BrandName() {
+  return <span className="rr-brand__name" aria-label="rendar">rendar</span>;
+}

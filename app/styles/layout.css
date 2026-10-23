@@ -39,15 +39,27 @@
 }
 
 .rr-brand__mark {
-  display: grid;
   width: 32px;
   height: 32px;
-  place-items: center;
-  border-radius: 10px;
-  color: #fff;
-  background: var(--rr-indigo);
-  font-size: 16px;
-  font-weight: 760;
+  flex: 0 0 32px;
+}
+
+.rr-brand__mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.rr-session-boundary__mark img {
+  display: block;
+  width: 46px;
+  height: 46px;
+}
+
+.rr-brand__name {
+  font-size: 18px;
+  font-weight: 790;
+  letter-spacing: -.045em;
 }
 
 .rr-topbar__actions {

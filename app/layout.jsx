@@ -4,7 +4,7 @@ import { Suspense } from "react";
 import { AppShell } from "./components/app-shell";
 
 export const metadata = {
-  title: "Rental Radar · Rental Operations",
+  title: "rendar · Rental Operations",
   description: "ศูนย์จัดการลีด ห้องเช่า และการตอบกลับจาก Facebook",
 };
 

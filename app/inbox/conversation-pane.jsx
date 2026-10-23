@@ -21,5 +21,5 @@ function GroupConversation({ detail }) {
 }
 
 function MessengerConversation({ detail }) {
-  return <article className="conversation conversation--messenger"><div className="conversation-kicker"><MessageCircleMore size={16} />ข้อความจากเพจ</div><div className="messenger-thread">{(detail.timeline ?? []).map((message) => { const outbound = message.direction === "outbound"; return <div className={`messenger-message${outbound ? " is-outbound" : ""}`} key={message.id}><span>{message.author ?? (outbound ? "ทีม Rental Radar" : detail.participant?.label)}</span><p>{message.text}</p><time>{formatDate(message.createdAt)}</time></div>; })}</div></article>;
+  return <article className="conversation conversation--messenger"><div className="conversation-kicker"><MessageCircleMore size={16} />ข้อความจากเพจ</div><div className="messenger-thread">{(detail.timeline ?? []).map((message) => { const outbound = message.direction === "outbound"; return <div className={`messenger-message${outbound ? " is-outbound" : ""}`} key={message.id}><span>{message.author ?? (outbound ? "ทีม rendar" : detail.participant?.label)}</span><p>{message.text}</p><time>{formatDate(message.createdAt)}</time></div>; })}</div></article>;
 }

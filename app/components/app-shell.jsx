@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api-client.mjs";
 import { routeHref, routes } from "../lib/routes.mjs";
 import { AppIcon } from "./icons";
+import { BrandMark, BrandName } from "./brand";
 
 const roleLabels = { admin: "ผู้ดูแลระบบ", operator: "เจ้าหน้าที่", inventory_manager: "ผู้จัดการข้อมูลห้อง", viewer: "ผู้ดูข้อมูล" };
 function initials(value) { return (value || "RR").trim().slice(0, 2).toUpperCase(); }
@@ -71,12 +72,12 @@ export function AppShell({ children }) {
   const facebook = session.facebook, fbConnected = facebook?.state === "connected", fbName = fbConnected ? facebook?.identity?.displayName : null, avatar = safeAvatar(facebook?.identity?.avatarUrl);
 
   if (publicRoute) return children;
-  if (session.state === "unavailable") return <main className="rr-session-boundary"><span className="rr-session-boundary__mark">R</span><h1>เชื่อมต่อระบบไม่ได้</h1><p>กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่</p><button type="button" onClick={() => window.location.reload()}>ลองอีกครั้ง</button></main>;
-  if (session.state !== "signed_in") return <main className="rr-session-boundary" aria-label="กำลังตรวจสอบบัญชี"><span className="rr-session-boundary__mark">R</span><p>กำลังตรวจสอบบัญชี…</p></main>;
+  if (session.state === "unavailable") return <main className="rr-session-boundary"><span className="rr-session-boundary__mark"><BrandMark /></span><h1>เชื่อมต่อระบบไม่ได้</h1><p>กรุณาตรวจสอบการเชื่อมต่อแล้วลองใหม่</p><button type="button" onClick={() => window.location.reload()}>ลองอีกครั้ง</button></main>;
+  if (session.state !== "signed_in") return <main className="rr-session-boundary" aria-label="กำลังตรวจสอบบัญชี"><span className="rr-session-boundary__mark"><BrandMark /></span><p>กำลังตรวจสอบบัญชี…</p></main>;
 
   return <div className="rr-shell">
     <header className="rr-topbar">
-      <Link className="rr-brand" href="/inbox"><span className="rr-brand__mark" aria-hidden="true">R</span><span className="rr-brand__name">Rental Radar</span></Link>
+      <Link className="rr-brand" href="/inbox" aria-label="rendar · ไปที่ Inbox"><span className="rr-brand__mark"><BrandMark /></span><BrandName /></Link>
       <div className="rr-topbar__actions">
         <div className="rr-menu-anchor">
           <button className="rr-profile" type="button" ref={accountButton} aria-label="เปิดเมนูบัญชี" aria-haspopup="menu" aria-expanded={accountOpen} onClick={() => setAccountOpen((value) => !value)}>
