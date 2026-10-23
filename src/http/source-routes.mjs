@@ -7,6 +7,7 @@ import {appendAudit,withTransaction} from '../db/transaction.mjs';
 import {publicSourceUpdatePatch} from '../automation/contracts.mjs';
 import {errorHandler} from './boundary.mjs';
 import {readPageConnections} from './settings-routes.mjs';
+import {nextScheduleCheckWithinMinutes,operationState} from '../sources/projection.mjs';
 
 const recoveryInput=z.strictObject({ttlSeconds:z.number().int().min(30).max(600)});
 
@@ -67,6 +68,7 @@ function publicGroup(row) {
     coverage:value.coverage,
     health:value.health,
     reason:value.reason??null,
+    acceptedCount:value.acceptedCount??value.accepted_count??null,
     createdAt:(value.createdAt??value.created_at)?.toISOString?.()??value.createdAt??value.created_at,
   }:null;
   return {
@@ -80,11 +82,12 @@ function publicGroup(row) {
     health:{session:row.session_health,selector:row.selector_health,sessionCircuit:row.session_circuit,selectorCircuit:row.selector_circuit},
     paused:row.kill_switch,
     revision:row.revision,
-    latestOperation:row.operation_id?{operationId:row.operation_id,state:row.operation_completed?'completed':row.operation_stuck?'stuck':'queued',createdAt:row.operation_created_at?.toISOString?.()??row.operation_created_at}:null,
-    latestReceipt:receipt(row.receipt_operation_id?{operationId:row.receipt_operation_id,coverage:row.receipt_coverage,health:row.receipt_health,reason:row.receipt_reason,createdAt:row.receipt_created_at}:null),
+    latestOperation:row.operation_id?{operationId:row.operation_id,state:operationState(row),jobState:row.operation_job_status??null,reason:row.operation_job_status==='failed'?'WORKER_FAILED':null,attempts:row.operation_job_attempts??0,createdAt:row.operation_created_at?.toISOString?.()??row.operation_created_at,updatedAt:row.operation_job_updated_at?.toISOString?.()??row.operation_job_updated_at??null}:null,
+    latestReceipt:receipt(row.receipt_operation_id?{operationId:row.receipt_operation_id,coverage:row.receipt_coverage,health:row.receipt_health,reason:row.receipt_reason,acceptedCount:row.receipt_accepted_count,createdAt:row.receipt_created_at}:null),
     receiptHistory:(row.receipt_history??[]).map(receipt),
     schedule:row.schedule_revision?{enabled:row.schedule_enabled,cadenceMinutes:row.schedule_cadence_minutes,timeZone:row.schedule_time_zone,days:row.schedule_days.map(Number),start:row.schedule_start_local,end:row.schedule_end_local,dailyLimit:row.schedule_daily_limit,maintenanceWindows:row.schedule_maintenance_windows,revision:row.schedule_revision}:null,
-    latestSchedule:row.schedule_receipt_id?{state:row.schedule_receipt_state,reasons:row.schedule_reason_codes,slot:row.schedule_slot?.toISOString?.()??row.schedule_slot,createdAt:row.schedule_receipt_created_at?.toISOString?.()??row.schedule_receipt_created_at}:null,
+    latestSchedule:row.schedule_receipt_id?{state:row.schedule_receipt_state,reasons:row.schedule_reason_codes,jobState:row.schedule_job_status??null,slot:row.schedule_slot?.toISOString?.()??row.schedule_slot,createdAt:row.schedule_receipt_created_at?.toISOString?.()??row.schedule_receipt_created_at}:null,
+    nextScheduleCheckWithinMinutes:nextScheduleCheckWithinMinutes(row),
     session:{owner:'group-worker',state:row.session_health==='healthy'?'available':row.session_health},
   };
 }
@@ -127,22 +130,26 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
         pool.query(`SELECT id,name,health,expires_at,updated_at FROM meta_page_sources WHERE organization_id=$1 ORDER BY updated_at DESC,id`,[request.actor.organizationId]),
         pool.query(`SELECT g.*,op.id operation_id,op.created_at operation_created_at,(op_receipt.operation_id IS NOT NULL) operation_completed,
           (op_receipt.operation_id IS NULL AND op.created_at<clock_timestamp()-interval '10 minutes') operation_stuck,
-          receipt.operation_id receipt_operation_id,receipt.coverage receipt_coverage,receipt.health receipt_health,receipt.reason receipt_reason,receipt.created_at receipt_created_at,
+          op_job.status operation_job_status,op_job.attempts operation_job_attempts,op_job.updated_at operation_job_updated_at,
+          receipt.operation_id receipt_operation_id,receipt.coverage receipt_coverage,receipt.health receipt_health,receipt.reason receipt_reason,
+          (receipt.response->>'acceptedCount')::int receipt_accepted_count,receipt.created_at receipt_created_at,
           coalesce(history.items,'[]'::jsonb) receipt_history,
           schedule.enabled schedule_enabled,schedule.cadence_minutes schedule_cadence_minutes,schedule.time_zone schedule_time_zone,schedule.days schedule_days,
           schedule.start_local schedule_start_local,schedule.end_local schedule_end_local,schedule.daily_limit schedule_daily_limit,
           schedule.maintenance_windows schedule_maintenance_windows,schedule.revision schedule_revision,
-          schedule_receipt.id schedule_receipt_id,schedule_receipt.state schedule_receipt_state,schedule_receipt.reason_codes schedule_reason_codes,
+          schedule_receipt.id schedule_receipt_id,schedule_receipt.state schedule_receipt_state,schedule_receipt.reason_codes schedule_reason_codes,schedule_job.status schedule_job_status,
           schedule_receipt.schedule_slot,schedule_receipt.created_at schedule_receipt_created_at
           FROM group_sources g
           LEFT JOIN group_source_schedules schedule ON schedule.organization_id=g.organization_id AND schedule.source_id=g.id
-          LEFT JOIN LATERAL (SELECT id,state,reason_codes,schedule_slot,created_at FROM group_schedule_receipts sr
+          LEFT JOIN LATERAL (SELECT id,state,reason_codes,schedule_slot,job_id,created_at FROM group_schedule_receipts sr
             WHERE sr.organization_id=g.organization_id AND sr.source_id=g.id ORDER BY sr.schedule_slot DESC LIMIT 1) schedule_receipt ON true
           LEFT JOIN LATERAL (SELECT id,created_at FROM group_operations WHERE organization_id=g.organization_id AND source_id=g.id AND kind='ScanCommand' ORDER BY operation_order DESC LIMIT 1) op ON true
+          LEFT JOIN LATERAL (SELECT status,attempts,updated_at FROM jobs WHERE organization_id=g.organization_id AND kind='group.scan' AND payload->>'operationId'=op.id ORDER BY created_at DESC,id DESC LIMIT 1) op_job ON true
+          LEFT JOIN jobs schedule_job ON schedule_job.organization_id=g.organization_id AND schedule_job.id=schedule_receipt.job_id
           LEFT JOIN group_scan_receipts op_receipt ON op_receipt.organization_id=g.organization_id AND op_receipt.operation_id=op.id
           LEFT JOIN LATERAL (SELECT r.* FROM group_scan_receipts r JOIN group_operations ro ON ro.organization_id=r.organization_id AND ro.id=r.operation_id
             WHERE r.organization_id=g.organization_id AND r.source_id=g.id ORDER BY ro.operation_order DESC LIMIT 1) receipt ON true
-          LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('operationId',h.operation_id,'coverage',h.coverage,'health',h.health,'reason',h.reason,'createdAt',h.created_at) ORDER BY h.operation_order DESC) items
+          LEFT JOIN LATERAL (SELECT jsonb_agg(jsonb_build_object('operationId',h.operation_id,'coverage',h.coverage,'health',h.health,'reason',h.reason,'acceptedCount',(h.response->>'acceptedCount')::int,'createdAt',h.created_at) ORDER BY h.operation_order DESC) items
             FROM (SELECT r.*,ro.operation_order FROM group_scan_receipts r JOIN group_operations ro ON ro.organization_id=r.organization_id AND ro.id=r.operation_id
               WHERE r.organization_id=g.organization_id AND r.source_id=g.id ORDER BY ro.operation_order DESC LIMIT 5) h) history ON true
           WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[request.actor.organizationId]),

@@ -118,10 +118,24 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
 
   const whilePending = await request("/api/sources");
   assert.equal(whilePending.body.groups[0].latestOperation.operationId, pending.body.operationId);
-  assert.equal(whilePending.body.groups[0].latestOperation.state, "queued");
+  assert.equal(whilePending.body.groups[0].latestOperation.state, "pending");
+  assert.equal(whilePending.body.groups[0].latestOperation.jobState, "pending");
   assert.equal(whilePending.body.groups[0].latestReceipt.operationId, completed.body.operationId, "new work must not hide prior evidence");
   assert.equal(whilePending.body.groups[0].latestReceipt.coverage, "complete");
+  assert.equal(whilePending.body.groups[0].latestReceipt.acceptedCount, null);
   assert.equal(whilePending.body.groups[0].receiptHistory.length, 1);
+  assert.equal(whilePending.body.groups[0].nextScheduleCheckWithinMinutes, 15);
+
+  await pool.query("UPDATE jobs SET status='running',lease_owner='test-worker',lease_expires_at=now()+interval '1 minute' WHERE payload->>'operationId'=$1", [pending.body.operationId]);
+  const whileRunning = await request("/api/sources");
+  assert.equal(whileRunning.body.groups[0].latestOperation.state, "running");
+  assert.equal(whileRunning.body.groups[0].latestOperation.jobState, "running");
+
+  await pool.query("UPDATE jobs SET status='failed',last_error='private upstream detail' WHERE payload->>'operationId'=$1", [pending.body.operationId]);
+  const afterFailure = await request("/api/sources");
+  assert.equal(afterFailure.body.groups[0].latestOperation.state, "failed");
+  assert.equal(afterFailure.body.groups[0].latestOperation.reason, "WORKER_FAILED");
+  assert.equal(JSON.stringify(afterFailure.body).includes("private upstream detail"), false);
 
   const { rows: [operation] } = await pool.query("SELECT command FROM group_operations WHERE id=$1", [pending.body.operationId]);
   const { signature: _signature, ...command } = operation.command;
@@ -135,6 +149,7 @@ dbtest("Sources API keeps pending operations separate from immutable scan eviden
   assert.equal(afterWorker.body.groups[0].latestOperation.state, "completed");
   assert.equal(afterWorker.body.groups[0].latestReceipt.operationId, pending.body.operationId);
   assert.equal(afterWorker.body.groups[0].latestReceipt.coverage, "partial");
+  assert.equal(afterWorker.body.groups[0].latestReceipt.acceptedCount, 0);
   assert.equal(afterWorker.body.groups[0].latestReceipt.health, "auth_required");
   assert.equal(afterWorker.body.groups[0].displayName, "autopost");
   assert.equal(afterWorker.body.groups[0].accessLevel, "admin");

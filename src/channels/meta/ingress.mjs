@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { normalizePageEvents, verifySignature } from "../../meta-webhook.mjs";
 import { appendAudit, withTransaction } from "../../db/transaction.mjs";
 import { enqueueJob } from "../../jobs/queue.mjs";
+import { operationReceipt } from "../../inbox/receipts.mjs";
 
 export async function acceptMetaWebhook({ pool, rawBody, signature, appSecret, environmentSource }) {
   if (!verifySignature(rawBody, signature, appSecret)) return { status: 403, acceptedEventIds: [] };
@@ -56,6 +57,10 @@ export async function acceptMetaWebhook({ pool, rawBody, signature, appSecret, e
         [messageId, organizationId, conversation.id, event.pageId, event.mid, event.text, event.timestamp, revision, JSON.stringify(evidence)]);
         if (!inserted.rowCount) continue;
         await tx.query("UPDATE conversations SET processing_revision=$2,updated_at=now() WHERE id=$1", [conversation.id, revision]);
+        const superseded=await tx.query(`UPDATE work_items SET status='superseded',updated_at=now()
+          WHERE organization_id=$1 AND conversation_id=$2 AND processing_revision<$3
+            AND status IN ('pending','preparing','needs_review','ready','failed') RETURNING id`,[organizationId,conversation.id,revision]);
+        for(const row of superseded.rows)await operationReceipt(tx,{organizationId,resourceId:row.id,resourceType:'work_item',state:'superseded'});
         const workItemId = randomUUID();
         await tx.query(`INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision) VALUES ($1,$2,$3,$4,$5)`, [workItemId, organizationId, conversation.id, messageId, revision]);
         await enqueueJob(tx, { organizationId, kind: "analyze_work_item", retrySafe: true, payload: { workItemId, conversationId: conversation.id, messageId, processingRevision: revision } });

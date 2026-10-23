@@ -24,6 +24,7 @@ export default function SourcesPage() {
   const [expanded, setExpanded] = useState(null);
   const [browserHealth, setBrowserHealth] = useState({});
   const [recovery, setRecovery] = useState(null);
+  const [recoveryReady, setRecoveryReady] = useState([]);
   const [pagePicker, setPagePicker] = useState(null);
   const [operationIssues, dispatchOperationIssue] = useReducer(operationStatusReducer, {});
   const csrfRef = useRef("");
@@ -49,7 +50,8 @@ export default function SourcesPage() {
     return () => { cancelled = true; };
   }, []);
   useEffect(() => {
-    const pendingSources = data.groups.filter((source) => source.latestOperation?.state === "queued" && operationIssues[source.latestOperation.operationId]?.state !== "retry_required");
+    const pendingStates = new Set(["pending", "queued", "running", "attempting", "awaiting_result"]);
+    const pendingSources = data.groups.filter((source) => pendingStates.has(source.latestOperation?.state) && operationIssues[source.latestOperation.operationId]?.state !== "retry_required");
     const pending = new Set(pendingSources.map((source) => source.latestOperation.operationId));
     for (const [operationId, poller] of pollersRef.current) {
       if (!pending.has(operationId)) { poller.destroy(); pollersRef.current.delete(operationId); }
@@ -133,16 +135,33 @@ export default function SourcesPage() {
   }
   async function beginRecovery(source) {
     setBusy(`${source.id}:recovery`);
-    try { setRecovery(await mutate(`/api/sources/${source.id}/recovery`, { body: { ttlSeconds: 300 } })); }
+    try { setRecovery(await mutate(`/api/sources/${source.id}/recovery`, { body: { ttlSeconds: 300 } })); setRecoveryReady((current) => current.filter((id) => id !== source.id)); await load({ quiet: true }); }
     catch (error) { setNotice(error.message); }
     finally { setBusy(""); }
   }
   async function closeRecovery() {
     const current = recovery; setRecovery(null);
     if (!current) return;
-    try { await mutate(`/api/sources/${current.sourceId}/recovery/${current.sessionId}`, { method: "DELETE" }); }
+    try { await mutate(`/api/sources/${current.sourceId}/recovery/${current.sessionId}`, { method: "DELETE" }); setRecoveryReady((ids) => ids.includes(current.sourceId) ? ids : [...ids, current.sourceId]); setNotice("ปิดหน้ากู้คืนแล้ว แหล่งข้อมูลยังพักอยู่จนกว่าจะยืนยันและสแกนทดสอบ"); }
     catch (error) { setNotice(`หน้าต่างถูกปิดแล้ว แต่การยกเลิก lease ต้องรอหมดอายุ: ${error.message}`); }
     finally { await load(); }
+  }
+  async function resumeAfterRecovery(source) {
+    if (!source) { setNotice("ไม่พบแหล่งข้อมูลสำหรับสแกนทดสอบ กรุณาปิดหน้าต่างแล้วลองอีกครั้ง"); return; }
+    const current = recovery?.sourceId === source.id ? recovery : null;
+    setBusy(`${source.id}:resume`);
+    try {
+      if (current) { await mutate(`/api/sources/${current.sourceId}/recovery/${current.sessionId}`, { method: "DELETE" }); setRecovery(null); }
+      const snapshot = await load({ quiet: true });
+      const latest = snapshot?.groups.find((entry) => entry.id === source.id);
+      if (!latest) throw new Error("ไม่พบแหล่งข้อมูลที่ต้องการเปิดใช้งาน");
+      const resumed = latest.paused ? await mutate(`/api/sources/groups/${source.id}`, { method: "PATCH", revision: latest.revision, body: { killSwitch: false } }) : latest;
+      await mutate(`/api/sources/groups/${source.id}/scans`, { revision: resumed.revision, body: { recovery: true } });
+      setRecoveryReady((ids) => ids.filter((id) => id !== source.id));
+      setNotice("เปิดแหล่งข้อมูลแล้ว กำลังสแกนทดสอบเพื่อยืนยัน session และตัวอ่านโพสต์");
+      await load();
+    } catch (error) { if (current) setRecoveryReady((ids) => ids.includes(source.id) ? ids : [...ids, source.id]); setNotice(error.status === 409 ? "ยังเปิดแหล่งข้อมูลไม่ได้ กรุณาตรวจว่า Facebook แสดงหน้ากลุ่มปกติ แล้วลองยืนยันอีกครั้ง" : error.message); await load(); }
+    finally { setBusy(""); }
   }
   async function connectPage() {
     setBusy("page-connect"); setNotice("");
@@ -183,11 +202,11 @@ export default function SourcesPage() {
         {loading ? <div className="ops-skeleton">กำลังโหลดการเชื่อมต่อ…</div> : data.pages.length ? data.pages.map((page) => <article className="page-source-row" key={page.id}><span className="page-source-row__mark"><MessagesSquare size={20}/></span><div className="page-source-row__identity"><strong>{page.name}</strong><p>รับและตอบข้อความผ่าน Facebook Page Inbox</p></div><span className={`health-label health-label--${page.health === "connected" ? "good" : "bad"}`}><i/>{page.health === "connected" ? "เชื่อมต่อแล้ว" : page.health === "disconnected" ? "ยกเลิกแล้ว" : "ต้องตรวจสอบ"}</span>{data.actorRole === "admin" ? <div className="page-row-actions"><button type="button" disabled={busy.startsWith(page.id)} onClick={() => void checkPage(page)}><RefreshCw size={15}/>ตรวจใหม่</button>{page.health !== "disconnected" ? <button className="is-danger" type="button" disabled={busy.startsWith(page.id)} onClick={() => void disconnectPage(page)}><Unplug size={15}/>ยกเลิกการเชื่อมต่อ</button> : null}</div> : null}</article>) : <div className="ops-empty"><ShieldCheck size={24}/><div><strong>ยังไม่ได้เชื่อมต่อ Facebook Page</strong><p>ผู้ดูแลระบบสามารถเริ่ม OAuth ของ Meta โดยไม่เก็บรหัสผ่าน Facebook ในระบบ</p></div>{data.actorRole === "admin" ? <button className="ops-button ops-button--primary" type="button" onClick={() => void connectPage()}>เชื่อมต่อ Facebook Page</button> : null}</div>}
       </section>
       <section className="ops-section" aria-labelledby="group-source-title"><div className="ops-section__head"><div><span className="ops-section__icon"><MessagesSquare size={18}/></span><div><h2 id="group-source-title">Facebook Groups</h2><p>ลิงก์ถาวรหลายกลุ่ม โหมดแยกต่อแหล่ง และหลักฐานการสแกนล่าสุด</p></div></div><span className="ops-count">{data.groups.length} กลุ่ม</span></div>
-        <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} operationIssue={operationIssues[source.latestOperation?.operationId]} onMode={setMode} onSchedule={setSchedule} onScan={scan} onRetry={retryOperation} onInspect={inspect} onRecovery={beginRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
+        <div className="source-list">{loading ? <div className="ops-skeleton">กำลังโหลดกลุ่ม…</div> : data.groups.length ? data.groups.map((source) => <SourceRow key={source.id} source={source} role={data.actorRole} busy={busy} expanded={expanded === source.id} browserHealth={browserHealth[source.id]} operationIssue={operationIssues[source.latestOperation?.operationId]} recoveryReady={recoveryReady.includes(source.id)} onMode={setMode} onSchedule={setSchedule} onScan={scan} onRetry={retryOperation} onInspect={inspect} onRecovery={beginRecovery} onResume={resumeAfterRecovery}/>) : <div className="ops-empty"><Plus size={24}/><div><strong>เพิ่มกลุ่มแรกเพื่อเริ่มสแกน</strong><p>ระบบรับเฉพาะลิงก์กลุ่มแบบตัวเลขและเปลี่ยนเป็น canonical URL ให้อัตโนมัติ</p></div></div>}</div>
       </section>
     </div>
     {addOpen ? <div className="ops-dialog-backdrop"><form className="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="add-group-title" onSubmit={addGroup}><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => { setAddOpen(false); setFormError(""); }}><X size={18}/></button><span className="ops-dialog__eyebrow">New source</span><h2 id="add-group-title">เพิ่ม Facebook Group</h2><p>วางลิงก์กลุ่มที่ทีมของคุณได้รับอนุญาตให้ติดตาม ระบบจะบันทึกเป็นลิงก์ถาวรให้</p><label>ลิงก์ Facebook Group<input aria-label="ลิงก์ Facebook Group" autoFocus value={groupUrl} onChange={(event) => setGroupUrl(event.target.value)} placeholder="https://www.facebook.com/groups/1742522453522327"/></label>{formError ? <div className="ops-field-error" role="alert">{formError}</div> : null}<footer><button className="ops-button ops-button--secondary" type="button" onClick={() => setAddOpen(false)}>ยกเลิก</button><button className="ops-button ops-button--primary" disabled={busy === "add"}>ยืนยันเพิ่มกลุ่ม</button></footer></form></div> : null}
     {pagePicker ? <div className="ops-dialog-backdrop"><section className="ops-dialog page-picker" role="dialog" aria-modal="true" aria-labelledby="page-picker-title"><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => setPagePicker(null)}><X size={18}/></button><span className="ops-dialog__eyebrow">Messenger access</span><h2 id="page-picker-title">เลือก Facebook Page</h2><p>เลือกเพจที่ต้องการรับข้อความและตอบผ่าน rendar</p><div className="page-picker__list">{pagePicker.pages.length ? pagePicker.pages.map((page) => <button type="button" key={page.id} disabled={busy === "page-select"} onClick={() => void selectPage(page.id)}><span className="page-source-row__mark"><MessagesSquare size={18}/></span><span><strong>{page.name}</strong><small>Page ID {page.id}</small></span><CheckCircle2 size={18}/></button>) : <div className="ops-empty"><AlertTriangle size={22}/><div><strong>ไม่พบเพจที่มีสิทธิ์ Messenger</strong><p>ตรวจสอบบทบาทในเพจและสิทธิ์ที่อนุญาตให้แอป</p></div></div>}</div></section></div> : null}
-    {recovery ? <BrowserRecovery recovery={recovery} onClose={closeRecovery}/> : null}
+    {recovery ? <BrowserRecovery recovery={recovery} busy={busy === `${recovery.sourceId}:resume`} onClose={closeRecovery} onResume={() => resumeAfterRecovery(data.groups.find((source) => source.id === recovery.sourceId))}/> : null}
   </div>;
 }

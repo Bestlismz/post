@@ -38,8 +38,12 @@ export function createInboxRouter({pool,config,events={},groupCommentEdits=null}
       body:{id:req.params.id,revision:command.expectedRevision},
     },async()=>{
       const context=await loadContext(tx,req.params.id,command.expectedRevision,req.actor.organizationId);
-      await enqueueJob(tx,{organizationId:req.actor.organizationId,kind:'analyze_work_item',retrySafe:true,
+      const kind=context.conversation.channel==='facebook_group'?'analyze_group_work_item':'analyze_work_item';
+      const active=(await tx.query(`SELECT 1 FROM jobs WHERE organization_id=$1 AND kind IN ('analyze_work_item','analyze_group_work_item')
+        AND payload->>'workItemId'=$2 AND status IN ('pending','running') LIMIT 1`,[req.actor.organizationId,context.item.id])).rowCount;
+      if(!active)await enqueueJob(tx,{organizationId:req.actor.organizationId,kind,retrySafe:true,
         payload:{workItemId:context.item.id,conversationId:context.conversation.id,processingRevision:command.expectedRevision}});
+      await tx.query("UPDATE work_items SET status='preparing',updated_at=now() WHERE organization_id=$1 AND id=$2 AND status IN ('pending','failed')",[req.actor.organizationId,context.item.id]);
       const operation=await operationReceipt(tx,{organizationId:req.actor.organizationId,resourceId:context.item.id,resourceType:'work_item'});
       return {status:202,body:{operation}};
     }));
@@ -60,6 +64,16 @@ export function createInboxRouter({pool,config,events={},groupCommentEdits=null}
     const result=await service.retryUnknownDelivery(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
     res.status(202).json(receiptResponse(result));
   });
+  router.post('/api/deliveries/:id/retry-failed',...write,async(req,res)=>{
+    const command=commandFor(req,empty.parse(req.body));
+    const result=await service.retryFailedDelivery(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
+    res.status(202).json(receiptResponse(result));
+  });
+  router.post('/api/deliveries/:id/retry-cancelled',...write,async(req,res)=>{
+    const command=commandFor(req,empty.parse(req.body));
+    const result=await service.retryCancelledDelivery(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
+    res.status(202).json(receiptResponse(result));
+  });
   router.post('/api/deliveries/:id/edit-comment',...write,async(req,res)=>{
     if(!groupCommentEdits)throw httpError(503,'Facebook comment editing is unavailable');
     const body=edit.parse(req.body),command=commandFor(req,body);
@@ -70,6 +84,11 @@ export function createInboxRouter({pool,config,events={},groupCommentEdits=null}
     const {reason}=z.strictObject({reason:z.string().trim().min(1).max(200)}).parse(req.body);
     const command=commandFor(req,{reason});
     const result=await service.requestHandoff(req.params.id,reason,req.actor,{idempotencyKey:command.idempotencyKey,expectedRevision:command.expectedRevision});
+    res.status(202).json(receiptResponse(result));
+  });
+  router.post('/api/inbox/:id/resume',...write,async(req,res)=>{
+    const command=commandFor(req,empty.parse(req.body));
+    const result=await service.resumeHandoff(req.params.id,req.actor,{idempotencyKey:command.idempotencyKey,expectedRevision:command.expectedRevision});
     res.status(202).json(receiptResponse(result));
   });
   router.use(['/api/inbox','/api/replies','/api/deliveries'],(_req,_res,next)=>next(httpError(404,'Resource not found')));

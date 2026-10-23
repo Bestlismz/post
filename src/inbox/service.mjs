@@ -150,10 +150,10 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
       organizationId:actor.organizationId,actorId:actor.id,route,key:options.idempotencyKey,body,
     },async()=>{
       const result=await persist(tx);
-      if(!['inbox.approveAndQueue','inbox.retryUnknownDelivery','inbox.requestHandoff'].includes(route))return {status:200,body:result};
+      if(!['inbox.approveAndQueue','inbox.retryUnknownDelivery','inbox.retryFailedDelivery','inbox.retryCancelledDelivery','inbox.requestHandoff','inbox.resumeHandoff'].includes(route))return {status:200,body:result};
       const operation=await operationReceipt(tx,{organizationId:actor.organizationId,
-        resourceId:result.id ?? body.workItemId,resourceType:route==='inbox.requestHandoff'?'work_item':'delivery_intent',
-        state:route==='inbox.requestHandoff'?'handoff':'queued'});
+        resourceId:result.id ?? body.workItemId,resourceType:['inbox.requestHandoff','inbox.resumeHandoff'].includes(route)?'work_item':'delivery_intent',
+        state:route==='inbox.requestHandoff'?'handoff':route==='inbox.resumeHandoff'?'resumed':'queued'});
       return {status:200,body:{...result,operation}};
     }));
     return result.body;
@@ -257,15 +257,17 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
     const organizationId=authorizeInboxActor(actor,{write:true});validateInboxText(id,'delivery intent ID');
     return mutation(actor,'inbox.retryUnknownDelivery',{id,expectedRevision,verification:'comment_not_present'},options,async tx=>{
       await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
-      const {rows:[prior]}=await tx.query(`SELECT d.*,rv.work_item_id,w.processing_revision,a.state AS attempt_state
+      const {rows:[prior]}=await tx.query(`SELECT d.*,rv.work_item_id,w.processing_revision,c.processing_revision AS current_processing_revision,c.human_takeover,a.state AS attempt_state
         FROM delivery_intents d
         JOIN reply_versions rv ON rv.organization_id=d.organization_id AND rv.id=d.reply_version_id
         JOIN work_items w ON w.organization_id=rv.organization_id AND w.id=rv.work_item_id
+        JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
         JOIN delivery_attempts a ON a.organization_id=d.organization_id AND a.delivery_intent_id=d.id
-        WHERE d.organization_id=$1 AND d.id=$2 FOR UPDATE OF d,w,a`,[organizationId,id]);
+        WHERE d.organization_id=$1 AND d.id=$2 FOR UPDATE OF d,w,c,a`,[organizationId,id]);
       if(!prior)throw httpError(404,'Delivery intent not found');
+      if(prior.human_takeover)fail('Conversation is assigned to a human','HUMAN_TAKEOVER');
       if(!prior.group_source_id)fail('Only Facebook Group delivery can be retried','RETRY_UNSUPPORTED');
-      if(prior.processing_revision!==expectedRevision)fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      if(prior.processing_revision!==expectedRevision||prior.current_processing_revision!==expectedRevision)fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
       if(prior.attempt_state!=='unknown')fail('Only an unresolved delivery can be retried','RETRY_NOT_UNKNOWN');
       if((await tx.query('SELECT 1 FROM delivery_cancellations WHERE organization_id=$1 AND delivery_intent_id=$2',[organizationId,id])).rowCount)fail('Delivery was cancelled','DELIVERY_CANCELLED');
       const existing=(await tx.query('SELECT * FROM delivery_intents WHERE organization_id=$1 AND retry_of_intent_id=$2',[organizationId,id])).rows[0];
@@ -276,6 +278,62 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
       await enqueueJob(tx,{organizationId,kind:'deliver_group_reply',retrySafe:false,payload:{deliveryIntentId:intent.id}});
       await appendAudit(tx,{organizationId,actorId:actor.id,action:'delivery.retry_authorized',entityType:'delivery_intent',entityId:intent.id,
         details:{priorIntentId:id,verification:'comment_not_present'}});
+      return intent;
+    });
+  }
+
+  async function retryFailedDelivery(id,expectedRevision,actor,options) {
+    const organizationId=authorizeInboxActor(actor,{write:true});validateInboxText(id,'delivery intent ID');
+    return mutation(actor,'inbox.retryFailedDelivery',{id,expectedRevision},options,async tx=>{
+      await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
+      const {rows:[prior]}=await tx.query(`SELECT d.*,rv.work_item_id,w.processing_revision,c.processing_revision AS current_processing_revision,c.human_takeover,a.state AS attempt_state
+        FROM delivery_intents d
+        JOIN reply_versions rv ON rv.organization_id=d.organization_id AND rv.id=d.reply_version_id
+        JOIN work_items w ON w.organization_id=rv.organization_id AND w.id=rv.work_item_id
+        JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
+        JOIN delivery_attempts a ON a.organization_id=d.organization_id AND a.delivery_intent_id=d.id
+        WHERE d.organization_id=$1 AND d.id=$2 FOR UPDATE OF d,w,c,a`,[organizationId,id]);
+      if(!prior)throw httpError(404,'Delivery intent not found');
+      if(prior.human_takeover)fail('Conversation is assigned to a human','HUMAN_TAKEOVER');
+      if(prior.processing_revision!==expectedRevision||prior.current_processing_revision!==expectedRevision)fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      if(prior.attempt_state!=='failed')fail('Only a failed delivery can be retried','RETRY_NOT_FAILED');
+      const existing=(await tx.query('SELECT * FROM delivery_intents WHERE organization_id=$1 AND retry_of_intent_id=$2',[organizationId,id])).rows[0];
+      if(existing)return existing;
+      const retryId=randomUUID();
+      const {rows:[intent]}=await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content,retry_of_intent_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[retryId,organizationId,prior.authorization_id,prior.reply_version_id,prior.conversation_id,prior.source_id,prior.group_source_id,prior.content,id]);
+      await enqueueJob(tx,{organizationId,kind:prior.group_source_id?'deliver_group_reply':'deliver_reply',retrySafe:false,payload:{deliveryIntentId:intent.id}});
+      await tx.query("UPDATE work_items SET status='ready',updated_at=now() WHERE organization_id=$1 AND id=$2",[organizationId,prior.work_item_id]);
+      await appendAudit(tx,{organizationId,actorId:actor.id,action:'delivery.failed_retry_authorized',entityType:'delivery_intent',entityId:intent.id,details:{priorIntentId:id}});
+      return intent;
+    });
+  }
+
+  async function retryCancelledDelivery(id,expectedRevision,actor,options) {
+    const organizationId=authorizeInboxActor(actor,{write:true});validateInboxText(id,'delivery intent ID');
+    return mutation(actor,'inbox.retryCancelledDelivery',{id,expectedRevision},options,async tx=>{
+      await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
+      const {rows:[prior]}=await tx.query(`SELECT d.*,rv.work_item_id,w.processing_revision,c.processing_revision AS current_processing_revision,c.human_takeover,dc.delivery_intent_id AS cancellation_id,a.state AS attempt_state
+        FROM delivery_intents d
+        JOIN reply_versions rv ON rv.organization_id=d.organization_id AND rv.id=d.reply_version_id
+        JOIN work_items w ON w.organization_id=rv.organization_id AND w.id=rv.work_item_id
+        JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
+        LEFT JOIN delivery_cancellations dc ON dc.organization_id=d.organization_id AND dc.delivery_intent_id=d.id
+        LEFT JOIN delivery_attempts a ON a.organization_id=d.organization_id AND a.delivery_intent_id=d.id
+        WHERE d.organization_id=$1 AND d.id=$2 FOR UPDATE OF d,w,c`,[organizationId,id]);
+      if(!prior)throw httpError(404,'Delivery intent not found');
+      if(prior.human_takeover)fail('Conversation is assigned to a human','HUMAN_TAKEOVER');
+      if(prior.processing_revision!==expectedRevision||prior.current_processing_revision!==expectedRevision)fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      if(!prior.cancellation_id)fail('Only a cancelled delivery can be retried','RETRY_NOT_CANCELLED');
+      const cancelledBeforeProviderAttempt=!prior.attempt_state;
+      if(!cancelledBeforeProviderAttempt)fail('Cancelled delivery has a provider attempt','FACEBOOK_RESULT_UNKNOWN');
+      const existing=(await tx.query('SELECT * FROM delivery_intents WHERE organization_id=$1 AND retry_of_intent_id=$2',[organizationId,id])).rows[0];
+      if(existing)return existing;
+      const {rows:[intent]}=await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content,retry_of_intent_id)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[randomUUID(),organizationId,prior.authorization_id,prior.reply_version_id,prior.conversation_id,prior.source_id,prior.group_source_id,prior.content,id]);
+      await enqueueJob(tx,{organizationId,kind:prior.group_source_id?'deliver_group_reply':'deliver_reply',retrySafe:false,payload:{deliveryIntentId:intent.id}});
+      await tx.query("UPDATE work_items SET status='ready',updated_at=now() WHERE organization_id=$1 AND id=$2",[organizationId,prior.work_item_id]);
+      await appendAudit(tx,{organizationId,actorId:actor.id,action:'delivery.cancelled_retry_authorized',entityType:'delivery_intent',entityId:intent.id,details:{priorIntentId:id}});
       return intent;
     });
   }
@@ -310,6 +368,12 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
         const conversation=(await tx.query('SELECT processing_revision FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,item.conversation_id])).rows[0];
         if(item.processing_revision!==expectedRevision || conversation.processing_revision!==expectedRevision) fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
       }
+      const unresolved=(await tx.query(`SELECT 1 FROM (
+          SELECT id,organization_id FROM delivery_intents WHERE organization_id=$1 AND conversation_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1
+        ) d JOIN LATERAL (
+          SELECT a.state FROM delivery_attempts a WHERE a.organization_id=d.organization_id AND a.delivery_intent_id=d.id ORDER BY a.started_at DESC,a.id DESC LIMIT 1
+        ) latest_attempt ON true WHERE latest_attempt.state IN ('attempting','unknown')`,[organizationId,item.conversation_id])).rowCount;
+      if(unresolved)fail('Delivery result must be reconciled before handoff','FACEBOOK_RESULT_UNKNOWN');
       await tx.query('UPDATE conversations SET human_takeover=true,updated_at=now() WHERE organization_id=$1 AND id=$2',[organizationId,item.conversation_id]);
       await tx.query("UPDATE work_items SET status='handoff',updated_at=now() WHERE organization_id=$1 AND conversation_id=$2 AND status NOT IN ('completed','superseded')",[organizationId,item.conversation_id]);
       await tx.query(`INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason,actor_id) SELECT organization_id,id,$3,$4 FROM delivery_intents WHERE organization_id=$1 AND conversation_id=$2 ON CONFLICT DO NOTHING`,[organizationId,item.conversation_id,reason,actor.id]);
@@ -318,5 +382,47 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
       return {status:'handoff'};
     });
   }
-  return {prepareReply,approveAndQueue,retryUnknownDelivery,editReply,requestHandoff};
+
+  async function resumeHandoff(workItemId,actor,options) {
+    const organizationId=authorizeInboxActor(actor,{write:true});validateInboxText(workItemId,'work item ID');
+    const expectedRevision=options?.expectedRevision;
+    return mutation(actor,'inbox.resumeHandoff',{workItemId,expectedRevision},options?{idempotencyKey:options.idempotencyKey}:undefined,async tx=>{
+      await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
+      const {rows:[item]}=await tx.query('SELECT * FROM work_items WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,workItemId]);
+      if(!item)throw httpError(404,'Work item not found');
+      const {rows:[conversation]}=await tx.query('SELECT * FROM conversations WHERE organization_id=$1 AND id=$2 FOR UPDATE',[organizationId,item.conversation_id]);
+      if(expectedRevision!==undefined&&(item.processing_revision!==expectedRevision||conversation.processing_revision!==expectedRevision))fail('Conversation revision superseded','CONVERSATION_SUPERSEDED');
+      if(!conversation.human_takeover&&item.status!=='handoff')return {id:item.id,status:item.status};
+      const {rows:[reply]}=await tx.query('SELECT id FROM reply_versions WHERE organization_id=$1 AND work_item_id=$2 ORDER BY version DESC LIMIT 1',[organizationId,item.id]);
+      const {rows:[delivery]}=await tx.query(`SELECT di.*,a.state AS attempt_state FROM delivery_intents di
+        JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id
+        LEFT JOIN LATERAL (SELECT da.state FROM delivery_attempts da WHERE da.organization_id=di.organization_id AND da.delivery_intent_id=di.id ORDER BY da.started_at DESC,da.id DESC LIMIT 1) a ON true
+        WHERE di.organization_id=$1 AND rv.work_item_id=$2 ORDER BY di.created_at DESC LIMIT 1`,[organizationId,item.id]);
+      if(delivery?.attempt_state==='unknown'||delivery?.attempt_state==='attempting')fail('Delivery result must be reconciled before resuming','FACEBOOK_RESULT_UNKNOWN');
+      await tx.query('UPDATE conversations SET human_takeover=false,updated_at=now() WHERE organization_id=$1 AND id=$2',[organizationId,item.conversation_id]);
+      await tx.query("UPDATE work_items SET status='superseded',updated_at=now() WHERE organization_id=$1 AND conversation_id=$2 AND id<>$3 AND status='handoff' AND processing_revision<$4",[organizationId,item.conversation_id,item.id,item.processing_revision]);
+      let status=reply?'needs_review':'preparing';
+      if(delivery?.attempt_state==='sent')status='completed';
+      else if(delivery?.attempt_state==='failed')status='failed';
+      else if(delivery) {
+        let retry=(await tx.query('SELECT * FROM delivery_intents WHERE organization_id=$1 AND retry_of_intent_id=$2',[organizationId,delivery.id])).rows[0];
+        if(!retry) {
+          const {rows:[created]}=await tx.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content,retry_of_intent_id)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,[randomUUID(),organizationId,delivery.authorization_id,delivery.reply_version_id,delivery.conversation_id,delivery.source_id,delivery.group_source_id,delivery.content,delivery.id]);
+          retry=created;
+          await enqueueJob(tx,{organizationId,kind:delivery.group_source_id?'deliver_group_reply':'deliver_reply',retrySafe:false,payload:{deliveryIntentId:retry.id}});
+        }
+        status='ready';
+      }
+      await tx.query('UPDATE work_items SET status=$3,updated_at=now() WHERE organization_id=$1 AND id=$2',[organizationId,item.id,status]);
+      if(!reply) {
+        const active=(await tx.query(`SELECT 1 FROM jobs WHERE organization_id=$1 AND kind IN ('analyze_work_item','analyze_group_work_item')
+          AND payload->>'workItemId'=$2 AND status IN ('pending','running') LIMIT 1`,[organizationId,item.id])).rowCount;
+        if(!active)await enqueueJob(tx,{organizationId,kind:conversation.channel==='facebook_group'?'analyze_group_work_item':'analyze_work_item',retrySafe:true,payload:{workItemId:item.id,conversationId:item.conversation_id,processingRevision:item.processing_revision}});
+      }
+      await appendAudit(tx,{organizationId,actorId:actor.id,action:'conversation.resumed',entityType:'conversation',entityId:item.conversation_id,details:{workItemId:item.id}});
+      return {id:item.id,status};
+    });
+  }
+  return {prepareReply,approveAndQueue,retryUnknownDelivery,retryFailedDelivery,retryCancelledDelivery,editReply,requestHandoff,resumeHandoff};
 }

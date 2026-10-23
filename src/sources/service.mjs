@@ -38,10 +38,11 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
           if(source.revision!==expectedRevision) fail(409,'Revision conflict');
           if(source.archived) fail(409,'Source is archived');
           if(action==='updateGroupSource') {
-            const previousMode=source.mode,{id:ignored,...patch}=input; source={...source,...patch};
+            const previousMode=source.mode,previousKillSwitch=source.killSwitch,{id:ignored,...patch}=input; source={...source,...patch};
             const stopping=patch.mode!=='automatic' && (patch.killSwitch===true || patch.archived===true);
             const editingPausedAutomatic=previousMode==='automatic'&&source.mode==='automatic'&&source.killSwitch&&patch.killSwitch!==false;
-            if(source.mode==='automatic' && !editingPausedAutomatic && !stopping) await requireAutomaticReadiness(tx,source);
+            const resumingExistingAutomatic=previousMode==='automatic'&&source.mode==='automatic'&&previousKillSwitch&&patch.killSwitch===false&&Object.keys(patch).every(key=>key==='killSwitch');
+            if(source.mode==='automatic' && !editingPausedAutomatic && !resumingExistingAutomatic && !stopping) await requireAutomaticReadiness(tx,source);
             source=await saveGroupSource(tx,source);
             await appendAudit(tx,{organizationId,actorId,action:'group.source_updated',entityType:'group_source',entityId:source.id,details:{revision:source.revision,mode:source.mode,archived:source.archived}});
           } else {

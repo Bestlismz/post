@@ -110,7 +110,10 @@ integration('automatic mode checks static readiness without requiring the curren
   const paused=await service.updateGroupSource(command({id:source.id,killSwitch:true},3));
   assert.equal(paused.killSwitch,true);
   await assert.rejects(service.requestGroupScan(command({id:source.id},4)),/paused/i);
-  const archived=await service.updateGroupSource(command({id:source.id,archived:true},4));
+  const resumed=await service.updateGroupSource(command({id:source.id,killSwitch:false},4));
+  assert.equal(resumed.killSwitch,false,'an existing automatic source can resume for an explicit recovery scan while delivery gates remain unhealthy');
+  assert.equal((await service.requestGroupScan(command({id:source.id,recovery:true},5))).command.kind,'ScanCommand');
+  const archived=await service.updateGroupSource(command({id:source.id,archived:true},5));
   assert.equal(archived.archived,true);
 });
 

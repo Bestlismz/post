@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { appendAudit, withTransaction } from '../db/transaction.mjs';
 import { freshnessConflictCodes, terminalPreparationCodes } from '../inbox/errors.mjs';
 import { findFreshPreparedReply } from '../inbox/service.mjs';
+import { operationReceipt } from '../inbox/receipts.mjs';
 
 export function createAutomationWorker({ pool, service, workerId, leaseSeconds = 60, maxAttempts = 5, retryBaseSeconds = 5, maxRetrySeconds = 300 }) {
   if (typeof workerId !== 'string' || !workerId.trim() || !Number.isSafeInteger(leaseSeconds) || leaseSeconds<1) throw new Error('Valid worker and lease required');
@@ -44,7 +45,8 @@ export function createAutomationWorker({ pool, service, workerId, leaseSeconds =
   }
   async function runOnce() {
     const leaseOwner=`${workerId}:${randomUUID()}`;
-    const {rows:[job]}=await pool.query(`WITH candidate AS (
+    const job=await withTransaction(pool,async tx=>{
+      const {rows:[claimed]}=await tx.query(`WITH candidate AS (
       SELECT j.id FROM jobs j WHERE j.kind IN ('analyze_work_item','analyze_group_work_item')
       AND ((j.status='pending' AND j.available_at<=now()) OR (j.status='running' AND j.retry_safe AND j.lease_expires_at<=now()))
       AND NOT EXISTS (SELECT 1 FROM jobs earlier WHERE earlier.organization_id=j.organization_id AND earlier.kind=j.kind
@@ -53,6 +55,11 @@ export function createAutomationWorker({ pool, service, workerId, leaseSeconds =
       ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE SKIP LOCKED)
       UPDATE jobs j SET status='running',lease_owner=$1,lease_expires_at=now()+$2*interval '1 second',attempts=attempts+1,updated_at=now()
       FROM candidate WHERE j.id=candidate.id RETURNING j.*`,[leaseOwner,leaseSeconds]);
+      if(!claimed)return null;
+      await tx.query("UPDATE work_items SET status='preparing',updated_at=now() WHERE organization_id=$1 AND id=$2 AND status IN ('pending','failed')",[claimed.organization_id,claimed.payload.workItemId]);
+      await operationReceipt(tx,{organizationId:claimed.organization_id,resourceId:claimed.payload.workItemId,resourceType:'work_item',state:'preparing'});
+      return claimed;
+    });
     if (!job) return null;
     // A heartbeat keeps a slow provider call from overlapping a healthy worker.
     const heartbeat=setInterval(() => {

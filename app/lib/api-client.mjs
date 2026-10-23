@@ -15,6 +15,12 @@ const safeReasonCodes = new Set([
   "SESSION_CIRCUIT_OPEN",
   "SELECTOR_CIRCUIT_OPEN",
 ]);
+const safeErrorCodes = new Set([
+  "CONVERSATION_SUPERSEDED", "HUMAN_TAKEOVER", "INVENTORY_CHANGED", "POLICY_CHANGED",
+  "PROFILE_CHANGED", "FORMAT_CHANGED", "SOURCE_CHANGED", "FACEBOOK_RESULT_UNKNOWN",
+  "PREPARATION_FAILED", "DELIVERY_CANCELLED", "DELIVERY_FAILED", "RETRY_NOT_UNKNOWN",
+  "RETRY_NOT_FAILED", "RETRY_NOT_CANCELLED", "RETRY_UNSUPPORTED", "TRIGGER_AUTHORIZED", "INVALID_REPLY_STATE",
+]);
 
 export class ApiError extends Error {
   constructor({ status = 0, code = "network_error", message, retryable = false, reasonCode = null } = {}) {
@@ -32,7 +38,8 @@ export class ApiError extends Error {
 }
 
 function mappedError(status, payload) {
-  const [code, message] = safeErrors.get(status) ?? ["server_error", "ระบบขัดข้องชั่วคราว กรุณาลองอีกครั้ง"];
+  const [fallbackCode, message] = safeErrors.get(status) ?? ["server_error", "ระบบขัดข้องชั่วคราว กรุณาลองอีกครั้ง"];
+  const code = safeErrorCodes.has(payload?.code) ? payload.code : fallbackCode;
   return new ApiError({ status, code, message, retryable: status === 0 || status === 429 || status >= 500, reasonCode: payload?.reasonCode });
 }
 

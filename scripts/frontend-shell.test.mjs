@@ -84,6 +84,15 @@ test("Inbox route is table-only and canonicalizes legacy workspace state into au
   assert.equal(inboxHref("?status=needs_review&channel=messenger", { status: null, channel: null }), "/inbox");
 });
 
+test("Inbox status filter only submits statuses accepted by the API", async () => {
+  const queue = await readFile(new URL("app/inbox/inbox-queue.jsx", projectRoot), "utf8");
+
+  assert.match(queue, /Object\.entries\(statusFilterLabels\)/);
+  assert.match(queue, /const statusFilterLabels\s*=\s*\{[^}]*pending_or_updated[^}]*needs_review[^}]*completed[^}]*handoff[^}]*failed[^}]*\}/s);
+  assert.doesNotMatch(queue, /statusFilterLabels\s*=\s*\{[^}]*reconciling/s);
+  assert.doesNotMatch(queue, /statusFilterLabels\s*=\s*\{[^}]*send_failed/s);
+});
+
 test("every navigation destination is backed by a real App Router page", async () => {
   const { routes } = await import("../app/lib/routes.mjs");
   for (const route of routes) {
@@ -197,6 +206,15 @@ test("API client distinguishes a retryable network failure", async () => {
       error.retryable === true &&
       !error.message.includes("internal-db"),
   );
+});
+
+test("API client preserves allow-listed Inbox conflict codes", async () => {
+  const { createApiClient } = await import("../app/lib/api-client.mjs");
+  const api = createApiClient(async () => new Response(
+    JSON.stringify({ error: "stale", code: "INVENTORY_CHANGED" }),
+    { status: 409, headers: { "content-type": "application/json" } },
+  ));
+  await assert.rejects(api.request("/api/inbox/item"), (error) => error.status === 409 && error.code === "INVENTORY_CHANGED");
 });
 
 test("API client preserves only allow-listed operational reason codes", async () => {

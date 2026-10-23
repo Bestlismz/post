@@ -152,6 +152,7 @@ dbtest('an operator may create one audited retry only after an unresolved Group 
   let calls=0;
   const worker=createGroupDeliveryWorker({pool,client:{reply:async command=>{calls++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'9'.repeat(64),remoteId:'remote-retry'},{key,keyId,now:instant});}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   assert.equal((await worker.deliverGroupIntent(retry.id)).state,'sent');assert.equal(calls,1);
+  assert.equal((await service.requestHandoff(workItemId,'ส่งต่อหลังยืนยันผลแล้ว',actor,{idempotencyKey:'handoff-after-resolved-retry',expectedRevision:1})).status,'handoff');
 });
 
 dbtest('handoff atomically fences pending and running Messenger and Group work with a durable reason',async({pool,actor,workItemId,conversationId})=>{
@@ -187,6 +188,23 @@ dbtest('handoff atomically fences pending and running Messenger and Group work w
   let sends=0;
   const delivery=createGroupDeliveryWorker({pool,client:{reply:async()=>{sends++;}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
   assert.equal((await delivery.deliverGroupIntent(intent.id)).state,'cancelled');assert.equal(sends,0);
+});
+
+dbtest('handoff refuses an unresolved provider attempt without changing ownership or jobs',async({pool,actor,workItemId,conversationId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');
+  const service=createInboxService({pool});
+  const reply=await service.prepareReply(workItemId,1,actor);
+  const intent=await service.approveAndQueue(reply.id,1,actor);
+  await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state) VALUES('attempting-handoff','org_default',$1,'attempting')",[intent.id]);
+
+  await assert.rejects(
+    service.requestHandoff(workItemId,'เจ้าหน้าที่รับช่วง',actor,{idempotencyKey:'blocked-handoff',expectedRevision:1}),
+    error=>error.code==='FACEBOOK_RESULT_UNKNOWN',
+  );
+  assert.equal((await pool.query('SELECT human_takeover FROM conversations WHERE id=$1',[conversationId])).rows[0].human_takeover,false);
+  assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[workItemId])).rows[0].status,'ready');
+  assert.equal((await pool.query("SELECT status FROM jobs WHERE kind='deliver_group_reply' AND payload->>'deliveryIntentId'=$1",[intent.id])).rows[0].status,'pending');
+  assert.equal((await pool.query('SELECT count(*)::int AS n FROM delivery_cancellations WHERE delivery_intent_id=$1',[intent.id])).rows[0].n,0);
 });
 
 dbtest('group worker commits attempting before private dispatch and accepts only bound signed visible evidence',async({pool,actor,workItemId})=>{

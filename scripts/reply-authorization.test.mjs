@@ -93,6 +93,46 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       assert.equal((await pool.query("SELECT human_takeover FROM conversations WHERE id='one'")).rows[0].human_takeover,true);
       assert.equal((await pool.query("SELECT count(*)::int AS n FROM delivery_cancellations")).rows[0].n,2);
     });
+    await t.test('resume clears takeover and safely replaces a cancelled queued delivery', async () => {
+      const resumed=await service.resumeHandoff('two',actor,{idempotencyKey:'resume-two',expectedRevision:2});
+      assert.equal(resumed.status,'ready');
+      assert.equal((await pool.query("SELECT human_takeover FROM conversations WHERE id='one'")).rows[0].human_takeover,false);
+      assert.equal((await pool.query("SELECT status FROM work_items WHERE id='two'")).rows[0].status,'ready');
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM delivery_intents WHERE retry_of_intent_id IS NOT NULL")).rows[0].n,1);
+      assert.equal((await service.resumeHandoff('two',actor,{idempotencyKey:'resume-two',expectedRevision:2})).status,'ready');
+    });
+    await t.test('resume exposes a failed delivery for explicit retry instead of sending again', async () => {
+      await seed('failed-handoff');
+      const failedReply=await service.prepareReply('failed-handoff',1,actor);
+      const failedIntent=await service.approveAndQueue(failedReply.id,1,actor);
+      await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,outcome_code,finished_at) VALUES($1,'org_default',$2,'failed','PROVIDER_REJECTED',now())",[randomUUID(),failedIntent.id]);
+      await pool.query("UPDATE conversations SET human_takeover=true WHERE id='failed-handoff'");
+      await pool.query("UPDATE work_items SET status='handoff' WHERE id='failed-handoff'");
+      await pool.query("INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason,actor_id) VALUES('org_default',$1,'operator handoff','operator')",[failedIntent.id]);
+
+      await assert.rejects(service.retryFailedDelivery(failedIntent.id,1,actor,{idempotencyKey:'retry-during-handoff'}),error=>error.code==='HUMAN_TAKEOVER');
+
+      const resumed=await service.resumeHandoff('failed-handoff',actor,{idempotencyKey:'resume-failed',expectedRevision:1});
+      assert.equal(resumed.status,'failed');
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM delivery_intents WHERE retry_of_intent_id=$1",[failedIntent.id])).rows[0].n,0);
+      assert.equal((await pool.query("SELECT count(*)::int AS n FROM jobs WHERE payload->>'deliveryIntentId'=$1",[failedIntent.id])).rows[0].n,1);
+    });
+    await t.test('cancelled-before-send recovery is idempotent and refuses any provider attempt', async () => {
+      await seed('cancelled-safe');
+      const safeReply=await service.prepareReply('cancelled-safe',1,actor);
+      const safeIntent=await service.approveAndQueue(safeReply.id,1,actor);
+      await pool.query("INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason,actor_id) VALUES('org_default',$1,'operator cancelled','operator')",[safeIntent.id]);
+      const retry=await service.retryCancelledDelivery(safeIntent.id,1,actor,{idempotencyKey:'retry-cancelled-safe'});
+      assert.equal(retry.retry_of_intent_id,safeIntent.id);
+      assert.equal((await service.retryCancelledDelivery(safeIntent.id,1,actor,{idempotencyKey:'retry-cancelled-safe'})).id,retry.id);
+
+      await seed('cancelled-attempted');
+      const attemptedReply=await service.prepareReply('cancelled-attempted',1,actor);
+      const attemptedIntent=await service.approveAndQueue(attemptedReply.id,1,actor);
+      await pool.query("INSERT INTO delivery_cancellations(organization_id,delivery_intent_id,reason,actor_id) VALUES('org_default',$1,'operator cancelled','operator')",[attemptedIntent.id]);
+      await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,outcome_code,finished_at) VALUES($1,'org_default',$2,'failed','PROVIDER_REJECTED',now())",[randomUUID(),attemptedIntent.id]);
+      await assert.rejects(service.retryCancelledDelivery(attemptedIntent.id,1,actor,{idempotencyKey:'retry-cancelled-attempted'}),error=>error.code==='FACEBOOK_RESULT_UNKNOWN');
+    });
     await t.test('automatic authorization uses the same ledger and failure falls to review', async () => {
       await pool.query(`UPDATE organizations SET automation_policy='{"mode":"automatic","minimumConfidence":0}'`);
       await seed('auto'); const automatic = await service.prepareReply('auto',1,actor);

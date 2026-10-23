@@ -14,10 +14,11 @@ export function operationStatusReducer(state, action) {
     return next;
   }
   if (action.type === "reconcile") {
+    const activeStates = new Set(["pending", "queued", "running", "attempting", "awaiting_result"]);
     const current = new Map(action.groups.map((source) => [source.id, source.latestOperation]));
     const next = Object.fromEntries(Object.entries(state).filter(([operationId, issue]) => {
       const operation = current.get(issue.sourceId);
-      return operation?.operationId === operationId && operation.state === "queued";
+      return operation?.operationId === operationId && activeStates.has(operation.state);
     }));
     const unchanged = Object.keys(next).length === Object.keys(state).length && Object.keys(next).every((key) => next[key] === state[key]);
     return unchanged ? state : next;

@@ -4,7 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { Inbox, MessageCircleMore, RotateCcw, Search, SlidersHorizontal, UsersRound, X } from "lucide-react";
 import { SelectControl } from "../components/select-control";
 
-const statusLabels = { pending: "ใหม่", pending_or_updated: "ใหม่หรืออัปเดต", preparing: "กำลังวิเคราะห์", needs_review: "ต้องตรวจ", ready: "รอส่ง", completed: "เสร็จแล้ว", superseded: "มีข้อมูลใหม่", handoff: "ทีมดูแล", failed: "ต้องแก้ไข" };
+const statusFilterLabels = { pending: "ใหม่", pending_or_updated: "ใหม่หรืออัปเดต", preparing: "กำลังวิเคราะห์", needs_review: "ต้องตรวจ", ready: "รอส่ง", completed: "เสร็จแล้ว", superseded: "มีข้อมูลใหม่", handoff: "ทีมดูแล", failed: "ต้องแก้ไข" };
+const statusLabels = { ...statusFilterLabels, observed: "รอเตรียมคำตอบ", analyzing: "กำลังวิเคราะห์", review_required: "รอตรวจคำตอบ", queued: "เข้าคิวส่งแล้ว", sending: "กำลังส่ง", reconciling: "รอตรวจผล", sent: "ส่งแล้ว", send_failed: "ส่งไม่สำเร็จ", handed_off: "ทีมดูแลรับช่วง" };
 function timeLabel(value) {
   const date = new Date(value); if (!Number.isFinite(date.valueOf())) return "";
   return new Intl.DateTimeFormat("th-TH", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Asia/Bangkok" }).format(date);
@@ -42,7 +43,7 @@ function InboxFilterBar({ filters, onChange, resultCount }) {
           <header><div><strong id="inbox-filter-title">ตัวกรอง Inbox</strong><span>เลือกหลายเงื่อนไขพร้อมกันได้</span></div><button type="button" aria-label="ปิดตัวกรอง" onClick={() => setOpen(false)}><X size={18}/></button></header>
           <div className="inbox-filter-grid">
             <label><span>ช่องทาง</span><SelectControl aria-label="ช่องทาง" value={draft.channel} onChange={(event) => setDraft((value) => ({ ...value, channel: event.target.value }))}><option value="">ทุกช่องทาง</option><option value="facebook_group">Facebook Group</option><option value="messenger">Messenger</option></SelectControl></label>
-            <label><span>สถานะ</span><SelectControl aria-label="สถานะ" value={draft.status} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value }))}><option value="">ทุกสถานะ</option>{Object.entries(statusLabels).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</SelectControl></label>
+            <label><span>สถานะ</span><SelectControl aria-label="สถานะ" value={draft.status} onChange={(event) => setDraft((value) => ({ ...value, status: event.target.value }))}><option value="">ทุกสถานะ</option>{Object.entries(statusFilterLabels).map(([value,label]) => <option value={value} key={value}>{label}</option>)}</SelectControl></label>
             <label className="inbox-filter-wide"><span>ทำเล</span><input aria-label="ทำเล" value={draft.location} onChange={(event) => setDraft((value) => ({ ...value, location: event.target.value }))} placeholder="เช่น อโศก" /></label>
             <label><span>งบต่ำสุด</span><input aria-label="งบต่ำสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMin} onChange={(event) => setDraft((value) => ({ ...value, budgetMin: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="฿0" /></label>
             <label><span>งบสูงสุด</span><input aria-label="งบสูงสุด" inputMode="numeric" pattern="[0-9]*" value={draft.budgetMax} onChange={(event) => setDraft((value) => ({ ...value, budgetMax: event.target.value.replace(/\D/g, "").slice(0, 10) }))} placeholder="ไม่จำกัด" /></label>
@@ -57,7 +58,7 @@ function InboxFilterBar({ filters, onChange, resultCount }) {
 }
 
 export function InboxTable({ items, resultCount = items.length, nextCursor = null, selectedId, onSelect, state, onRetry, onLoadMore, filters, onFiltersChange, obscured = false }) {
-  const content = items.map((item) => ({ ...item, location: item.summary?.location ?? "ยังไม่ระบุ", budget: budgetLabel(item.summary?.budgetMax), assigneeLabel: item.summary?.assignee?.label ?? "ยังไม่มอบหมาย" }));
+  const content = items.map((item) => ({ ...item, status: item.workflow?.phase ?? item.status, location: item.summary?.location ?? "ยังไม่ระบุ", budget: budgetLabel(item.summary?.budgetMax), assigneeLabel: item.summary?.assignee?.label ?? "ยังไม่มอบหมาย" }));
   const empty = !state.loading && !state.error && !content.length;
   return <section className="inbox-table" aria-label="Inbox แบบตาราง" aria-hidden={obscured || undefined} inert={obscured || undefined}>
     <header className="inbox-table__header"><div><h1>Inbox</h1><p>คัดแยกงานจำนวนมากโดยไม่เสียบริบท</p></div></header>

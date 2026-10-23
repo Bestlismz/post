@@ -36,10 +36,10 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
     await pool.query("UPDATE work_items SET created_at='2026-10-01T00:00:00.123456Z'");
     let first;
     await t.test("identical timestamps paginate with no gaps or duplicates and explicit safe DTOs", async () => {
-      first = await inbox.listInbox({ limit: 2 }, actor);
+      first = await inbox.listInbox({ limit: 2, status: "pending_or_updated" }, actor);
       assert.equal(first.items.length, 2);
       assert.ok(first.nextCursor);
-      const second = await inbox.listInbox({ limit: 2, cursor: first.nextCursor }, actor);
+      const second = await inbox.listInbox({ limit: 2, status: "pending_or_updated", cursor: first.nextCursor }, actor);
       assert.equal(second.items.length, 2);
       assert.equal(second.nextCursor, null);
       const ids = [...first.items, ...second.items].map((item) => item.id);
@@ -51,7 +51,7 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       assert.equal(detail.participant.label, "Messenger customer");
       const serialized = JSON.stringify({ first, second, detail });
       for (const forbidden of ["private-psid", "another-psid", "page-secret", "raw_evidence", "provider_timestamp", "organization_id", "ciphertext", "envelope", "outside"]) assert.equal(serialized.includes(forbidden), false, forbidden);
-      assert.deepEqual(Object.keys(first.items[0]).sort(), ["channel", "conversationId", "createdAt", "id", "message", "participant", "processingRevision", "source", "status", "summary"].sort());
+      assert.deepEqual(Object.keys(first.items[0]).sort(), ["channel", "conversationId", "createdAt", "id", "message", "participant", "processingRevision", "source", "status", "summary", "workflow"].sort());
     });
     await t.test("list summary exposes normalized durable requirements and explicit nulls without provider identities", async () => {
       await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
@@ -59,7 +59,7 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
           '{"extraction":{"requirements":{"district":"  อโศก  ","budgetMax":20000}},"providerId":"page-secret"}'::jsonb
         FROM work_items w JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id
         WHERE w.organization_id='org_default' AND m.mid='first'`);
-      const populated = (await inbox.listInbox({ search: "first" }, actor)).items[0];
+      const populated = (await inbox.listInbox({ search: "first", status: "pending_or_updated" }, actor)).items[0];
       const empty = (await inbox.listInbox({ search: "third" }, actor)).items[0];
       assert.deepEqual(populated.summary, { location: "อโศก", budgetMax: 20000, assignee: null });
       assert.deepEqual(empty.summary, { location: null, budgetMax: null, assignee: null });
@@ -128,7 +128,7 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
         }
       }
       await pool.query("UPDATE messages SET text='ห้องใกล้รถไฟฟ้า 🏠' WHERE mid='first'");
-      assert.equal((await inbox.listInbox({ search: "ห้องใกล้รถไฟฟ้า 🏠" }, actor)).items.length, 1);
+      assert.equal((await inbox.listInbox({ search: "ห้องใกล้รถไฟฟ้า 🏠", status: "pending_or_updated" }, actor)).items.length, 1);
       assert.equal((await inbox.listInbox({ sourceId: "แหล่งข้อมูล 🏠" }, actor)).items.length, 0);
       assert.equal(await inbox.getInboxItem("รายการ 🏠", actor), null);
     });

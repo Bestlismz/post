@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { httpError } from "../auth/authorize.mjs";
 import { authorizeInboxActor } from "./repository.mjs";
 import { validateInboxText } from "./validation.mjs";
+import { projectWorkItemWorkflow } from "./workflow.mjs";
 
 const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   w.created_at AS sort_created_at,
@@ -13,15 +14,43 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health,
   CASE WHEN c.channel='facebook_group' THEN g.mode END AS source_mode,
   CASE WHEN c.channel='facebook_group' THEN g.group_id END AS group_id,
-  latest_reply.context AS latest_reply_context`;
+  c.human_takeover,
+  latest_reply.id AS latest_reply_id,latest_reply.context AS latest_reply_context,
+  successor.id AS successor_id,
+  latest_delivery.id AS latest_delivery_id,latest_delivery.state AS latest_delivery_state,
+  latest_delivery.outcome_code AS latest_delivery_outcome_code,latest_delivery.edit_state AS latest_delivery_edit_state,
+  analysis.active_analysis,analysis.failed_analysis,
+  latest_authorization.actor_kind AS authorization_actor_kind`;
 const relations = `FROM work_items w
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
   JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id AND m.conversation_id=c.id
   LEFT JOIN meta_page_sources s ON c.channel='messenger' AND s.organization_id=c.organization_id AND s.page_id=c.page_id
   LEFT JOIN group_sources g ON c.channel='facebook_group' AND g.organization_id=c.organization_id AND 'facebook_group:' || g.group_id=c.page_id
-  LEFT JOIN LATERAL (SELECT rv.context FROM reply_versions rv
+  LEFT JOIN LATERAL (SELECT rv.id,rv.context FROM reply_versions rv
     WHERE rv.organization_id=w.organization_id AND rv.work_item_id=w.id
-    ORDER BY rv.version DESC LIMIT 1) latest_reply ON true`;
+    ORDER BY rv.version DESC LIMIT 1) latest_reply ON true
+  LEFT JOIN LATERAL (SELECT newer.id FROM work_items newer
+    WHERE newer.organization_id=w.organization_id AND newer.conversation_id=w.conversation_id
+      AND newer.processing_revision>w.processing_revision
+    ORDER BY newer.processing_revision DESC,newer.id DESC LIMIT 1) successor ON true
+  LEFT JOIN LATERAL (SELECT di.id,
+      CASE WHEN da.state='attempting' THEN 'attempting' ELSE coalesce(da.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
+      da.outcome_code,edit.state AS edit_state
+    FROM delivery_intents di
+    JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id
+    LEFT JOIN LATERAL (SELECT * FROM delivery_attempts a WHERE a.organization_id=di.organization_id AND a.delivery_intent_id=di.id ORDER BY a.started_at DESC,a.id DESC LIMIT 1) da ON true
+    LEFT JOIN delivery_cancellations dc ON dc.organization_id=di.organization_id AND dc.delivery_intent_id=di.id
+    LEFT JOIN LATERAL (SELECT gce.state FROM group_comment_edits gce WHERE gce.organization_id=di.organization_id AND gce.delivery_intent_id=di.id ORDER BY gce.created_at DESC LIMIT 1) edit ON true
+    WHERE di.organization_id=w.organization_id AND rv.work_item_id=w.id
+    ORDER BY di.created_at DESC,di.id DESC LIMIT 1) latest_delivery ON true
+  LEFT JOIN LATERAL (SELECT
+      bool_or(j.status IN ('pending','running')) AS active_analysis,
+      bool_or(j.status='failed') AS failed_analysis
+    FROM jobs j WHERE j.organization_id=w.organization_id
+      AND j.kind IN ('analyze_work_item','analyze_group_work_item') AND j.payload->>'workItemId'=w.id) analysis ON true
+  LEFT JOIN LATERAL (SELECT ra.actor_kind FROM reply_authorizations ra
+    WHERE ra.organization_id=w.organization_id AND ra.work_item_id=w.id
+    ORDER BY ra.created_at DESC,ra.id DESC LIMIT 1) latest_authorization ON true`;
 const locationSql = `coalesce(latest_reply.context#>>'{snapshot,requirements,geography,districts,0}',latest_reply.context#>>'{snapshot,requirements,district}',latest_reply.context#>>'{extraction,requirements,geography,districts,0}',latest_reply.context#>>'{extraction,requirements,district}',latest_reply.context#>>'{extraction,fields,district,value}')`;
 const budgetTextSql = `coalesce(latest_reply.context#>>'{snapshot,requirements,budgetMax}',latest_reply.context#>>'{extraction,requirements,budgetMax}',latest_reply.context#>>'{extraction,fields,budgetMax,value}')`;
 const budgetSql = `(CASE WHEN ${budgetTextSql} ~ '^\\d{1,10}$' THEN (${budgetTextSql})::bigint END)`;
@@ -46,12 +75,25 @@ function safeSummaryBudget(context) {
 }
 
 function itemDto(row) {
+  const workflow = projectWorkItemWorkflow({
+    channel: row.channel,
+    status: row.status,
+    humanTakeover: row.human_takeover,
+    successorId: row.successor_id,
+    sourceMode: row.source_mode,
+    latestReply: row.latest_reply_id ? { id: row.latest_reply_id } : null,
+    latestDelivery: row.latest_delivery_id ? { id: row.latest_delivery_id, state: row.latest_delivery_state, outcomeCode: row.latest_delivery_outcome_code, editState: row.latest_delivery_edit_state } : null,
+    activeAnalysis: row.active_analysis === true,
+    failedAnalysis: row.failed_analysis === true,
+    authorizationActorKind: row.authorization_actor_kind,
+  });
   return {
     id: row.id,
     conversationId: row.conversation_id,
     channel: row.channel,
     processingRevision: row.processing_revision,
     status: row.status,
+    workflow,
     createdAt: row.created_at,
     participant: { id: row.conversation_id, label: row.author_label || (row.channel === "facebook_group" ? "Group participant" : "Messenger customer") },
     source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable", mode: row.source_mode ?? null },

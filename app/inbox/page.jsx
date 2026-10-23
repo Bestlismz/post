@@ -32,6 +32,7 @@ function InboxWorkspace() {
   const [detailState, setDetailState] = useState({ loading: false, error: null }), [csrfToken, setCsrfToken] = useState("");
   const tableTriggerRef = useRef(null), sheetWasOpenRef = useRef(false), selectedRef = useRef(selectedId), detailRef = useRef(detail);
   const listAbortRef = useRef(null), listRequestRef = useRef(0);
+  const detailAbortRef = useRef(null), detailRequestRef = useRef(0);
   const routeSearchRef = useRef(searchParams.toString() ? `?${searchParams}` : "");
   selectedRef.current = selectedId; detailRef.current = detail;
 
@@ -71,11 +72,16 @@ function InboxWorkspace() {
     }
   }, [filterKey, navigateSelection]);
   const loadDetail = useCallback(async (id) => {
-    if (!id) { setDetail(null); return; }
+    const requestId = ++detailRequestRef.current;
+    detailAbortRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortRef.current = controller;
+    if (!id) { setDetail(null); setDetailState({ loading: false, error: null }); return; }
     setDetailState({ loading: true, error: null });
-    try { const payload = await api.request(`/api/inbox/${encodeURIComponent(id)}`); if (selectedRef.current === id) { setDetail(payload); setDetailState({ loading: false, error: null }); } }
-    catch (error) { if (selectedRef.current === id) setDetailState({ loading: false, error }); }
+    try { const payload = await api.request(`/api/inbox/${encodeURIComponent(id)}`, { signal: controller.signal }); if (!controller.signal.aborted && requestId === detailRequestRef.current && selectedRef.current === id) { setDetail(payload); setDetailState({ loading: false, error: null }); } }
+    catch (error) { if (!controller.signal.aborted && requestId === detailRequestRef.current && selectedRef.current === id) setDetailState({ loading: false, error }); }
   }, []);
+  const refreshWorkspace = useCallback(async () => { await Promise.all([loadList(), loadDetail(selectedRef.current)]); }, [loadDetail, loadList]);
 
   useEffect(() => {
     const canonical = canonicalInboxHref(window.location.search);
@@ -83,6 +89,7 @@ function InboxWorkspace() {
     if (`${window.location.pathname}${window.location.search}` !== canonical) router.replace(canonical, { scroll: false });
   }, [router, searchParams]);
   useEffect(() => { void loadList(); return () => listAbortRef.current?.abort(); }, [loadList]);
+  useEffect(() => () => detailAbortRef.current?.abort(), []);
   useEffect(() => { void api.request("/api/auth/csrf", { method: "POST" }).then((value) => setCsrfToken(value?.csrfToken ?? "")).catch(() => undefined); }, []);
   useEffect(() => { applySelection(requestedId); }, [applySelection, requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
@@ -91,6 +98,10 @@ function InboxWorkspace() {
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadDetail(selectedRef.current); }, 5000);
     return () => window.clearInterval(timer);
   }, [loadDetail, selectedId]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadList(); }, 15000);
+    return () => window.clearInterval(timer);
+  }, [loadList]);
   useEffect(() => {
     const open = Boolean(selectedId);
     if (sheetWasOpenRef.current && !open) requestAnimationFrame(() => { if (tableTriggerRef.current?.isConnected) tableTriggerRef.current.focus({ preventScroll: true }); });
@@ -115,22 +126,31 @@ function InboxWorkspace() {
   const closeFocusSheet = useCallback(() => { applySelection(null); navigateState({ item: null }, { history: "push" }); }, [applySelection, navigateState]);
   const runCommand = useCallback(async (action, input = {}) => {
     if (!detail) return null;
+    if (action === "open-successor") {
+      if (detail.workflow?.successorId) navigateSelection(detail.workflow.successorId, { history: "replace" });
+      return null;
+    }
     const revision = detail.processingRevision;
     const request = (token) => {
       if (action === "prepare") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/prepare`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: "{}" });
       if (action === "handoff") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/handoff`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: JSON.stringify({ reason: input.reason ?? "ส่งต่อให้ทีมดูแลจาก Inbox" }) });
+      if (action === "resume") return api.request(`/api/inbox/${encodeURIComponent(detail.id)}/resume`, { method: "POST", headers: commandHeaders({ action, id: detail.id, revision, csrfToken: token }), body: "{}" });
       if (action === "edit") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/edit`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
       if (action === "approve") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/approve`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: "{}" });
       if (action === "retry") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/retry`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: JSON.stringify({ verification: "comment_not_present" }) });
+      if (action === "retry-failed") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/retry-failed`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: "{}" });
+      if (action === "retry-cancelled") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/retry-cancelled`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: "{}" });
       if (action === "edit-delivered") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/edit-comment`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
       throw new Error("Unsupported Inbox command");
     };
-    return retryOnceWithFreshCsrf({ token: csrfToken, request, refresh: async () => (await api.request("/api/auth/csrf", { method: "POST" })).csrfToken, onRefresh: setCsrfToken });
-  }, [csrfToken, detail]);
+    const result = await retryOnceWithFreshCsrf({ token: csrfToken, request, refresh: async () => (await api.request("/api/auth/csrf", { method: "POST" })).csrfToken, onRefresh: setCsrfToken });
+    await refreshWorkspace();
+    return result;
+  }, [csrfToken, detail, navigateSelection, refreshWorkspace]);
 
   return <section className="inbox-table-view" aria-label="กล่องข้อความรวม">
     <InboxTable items={items} resultCount={resultCount} nextCursor={nextCursor} selectedId={selectedId} onSelect={choose} state={listState} onRetry={loadList} onLoadMore={() => loadList({ append: true, cursor: nextCursor })} filters={filters} onFiltersChange={changeFilters} obscured={Boolean(selectedId)} />
-    <FocusSheet open={Boolean(selectedId)} detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} onClose={closeFocusSheet} runCommand={runCommand} onRefresh={() => loadDetail(selectedId)} commandsReady={Boolean(csrfToken)} />
+    <FocusSheet open={Boolean(selectedId)} detail={detail} loading={detailState.loading} error={detailState.error} onRetry={() => loadDetail(selectedId)} onClose={closeFocusSheet} runCommand={runCommand} onRefresh={refreshWorkspace} commandsReady={Boolean(csrfToken)} />
   </section>;
 }
 

@@ -3,6 +3,7 @@ import { appendAudit, withTransaction } from '../db/transaction.mjs';
 import { enqueueJob } from '../jobs/queue.mjs';
 import { canonicalSerialize, signCommand, verifyCommand, verifyResult } from '../channels/groups/contracts.mjs';
 import { insertGroupOperation } from '../sources/repository.mjs';
+import { operationReceipt } from '../inbox/receipts.mjs';
 
 const hash=value=>createHash('sha256').update(value).digest('hex');
 function conflict(message) {return Object.assign(new Error(message),{status:409});}
@@ -103,10 +104,12 @@ async function persistObservation(tx,operation,source,result,item) {
     VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(organization_id,page_id,mid) DO NOTHING RETURNING id`,[messageId,organizationId,conversation.id,pageId,`facebook_group_message:${item.targetId}:${operation.operation_order}:${item.contentHash}`,item.text,item.providerTimestamp?Date.parse(item.providerTimestamp):null,revision,JSON.stringify({observationId,evidenceHash:item.evidenceHash,contentHash:item.contentHash,selectorVersion:result.selectorVersion})]);
   if(!inserted.rowCount) return;
   await tx.query('UPDATE conversations SET processing_revision=$2,updated_at=now() WHERE id=$1',[conversation.id,revision]);
-  await tx.query(`UPDATE work_items SET status='superseded',updated_at=now()
+  const superseded=await tx.query(`UPDATE work_items SET status='superseded',updated_at=now()
     WHERE organization_id=$1 AND conversation_id=$2 AND processing_revision<$3
-      AND status IN ('pending','preparing','needs_review','ready','failed')`,[organizationId,conversation.id,revision]);
+      AND status IN ('pending','preparing','needs_review','ready','failed') RETURNING id`,[organizationId,conversation.id,revision]);
+  for(const row of superseded.rows)await operationReceipt(tx,{organizationId,resourceId:row.id,resourceType:'work_item',state:'superseded'});
   const workItemId=randomUUID();
   await tx.query('INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision) VALUES($1,$2,$3,$4,$5)',[workItemId,organizationId,conversation.id,messageId,revision]);
   await enqueueJob(tx,{organizationId,kind:'analyze_group_work_item',retrySafe:true,payload:{workItemId,conversationId:conversation.id,messageId,processingRevision:revision}});
+  await operationReceipt(tx,{organizationId,resourceId:workItemId,resourceType:'work_item',state:'preparing'});
 }

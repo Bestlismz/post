@@ -89,20 +89,20 @@ test("Sources adds only canonical Groups, changes mode, and makes scan/recovery 
 
   const source = page.getByTestId("source-group-source-1");
   await source.getByRole("button", { name: "Approval" }).click();
-  await expect(source.getByText("จะไม่ส่งข้อความอัตโนมัติ")).toBeVisible();
+  await expect(source.getByText("เตรียมคำตอบและรอคนอนุมัติ")).toBeVisible();
   await source.getByRole("button", { name: "สแกนตอนนี้" }).click();
-  await expect(source.getByText("รอ worker รับงาน")).toBeVisible();
-  await expect(source.getByText("สแกนได้บางส่วน")).toBeVisible();
-  await expect(source.getByText("ต้องเข้าสู่ระบบ Facebook ใหม่")).toBeVisible();
-  await source.getByRole("button", { name: "ตรวจสอบเซสชัน" }).click();
-  await expect(source.getByText("group-worker เป็นเจ้าของ browser session นี้")).toBeVisible();
-  await source.getByRole("button", { name: "เปิดหน้ากู้คืนเซสชัน" }).click();
+  await expect(source.locator(".source-run-state strong").getByText("อยู่ในคิวสแกน", { exact: true })).toBeVisible();
+  await expect(source.getByText("สแกนล่าสุดต้องตรวจสอบ")).toBeVisible();
+  await expect(source.getByText("ต้องเข้าสู่ระบบใหม่")).toBeVisible();
+  await source.getByRole("button", { name: "ดูรายละเอียดการสแกน" }).click();
+  await expect(source.getByText(/เจ้าของ session: group-worker/)).toBeVisible();
+  await source.getByRole("button", { name: "กู้คืนการเชื่อมต่อ" }).click();
   await expect(page.getByTitle("Facebook session recovery")).toHaveAttribute("src", /\/api\/sources\/group-source-1\/recovery\/recovery-1\/novnc\/vnc\.html/);
   await expect(page.locator("body")).toHaveCSS("overflow-x", "clip");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });
 
-test("circuit-open source sends an explicit recovery scan", async ({ page }) => {
+test("circuit-open source recovers the browser before sending an explicit recovery scan", async ({ page }) => {
   const scanRequests = [];
   await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "Admin", role: "admin" } } }));
@@ -123,10 +123,14 @@ test("circuit-open source sends an explicit recovery scan", async ({ page }) => 
     scanRequests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { operationId: "recovery-operation", state: "queued" } });
   });
+  await page.route("**/api/sources/group-source-recovery/recovery", (route) => route.fulfill({ status: 201, json: { sourceId: "group-source-recovery", sessionId: "recovery-operation", expiresAt: "2026-10-22T09:10:00.000Z", tunnelUrl: "/api/sources/group-source-recovery/recovery/recovery-operation/novnc/vnc.html" } }));
+  await page.route("**/api/sources/group-source-recovery/recovery/recovery-operation", (route) => route.fulfill({ status: 204 }));
+  await page.route("**/api/sources/group-source-recovery/recovery/recovery-operation/novnc/vnc.html", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>recovery</title>" }));
 
   await page.goto("/sources");
   const source = page.getByTestId("source-group-source-recovery");
-  await source.getByRole("button", { name: "สแกนกู้คืน" }).click();
+  await source.getByRole("button", { name: "กู้คืนการเชื่อมต่อ" }).click();
+  await page.getByRole("button", { name: "ยืนยันและสแกนทดสอบ" }).click();
   await expect.poll(() => scanRequests).toEqual([{ recovery: true }]);
 });
 
@@ -174,35 +178,35 @@ test("retry-required scan state stays scoped to its group through unrelated load
   await page.route("**/api/sources/source-a/recovery/session-a/novnc/vnc.html", (route) => route.fulfill({ contentType: "text/html", body: "<!doctype html><title>recovery</title>" }));
 
   await page.goto("/sources");
-  await expect(page.getByTestId("source-source-a").getByText("รอ worker รับงาน")).toBeVisible();
+  await expect(page.getByTestId("source-source-a").locator(".source-run-state strong").getByText("อยู่ในคิวสแกน", { exact: true })).toBeVisible();
   await page.clock.fastForward(12 * 60_000 + 1_000);
   const sourceA = page.getByTestId("source-source-a"), sourceB = page.getByTestId("source-source-b");
-  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
-  await expect(sourceA.getByRole("button", { name: "ลองตรวจอีกครั้ง" })).toBeVisible();
+  await expect(sourceA.getByText("ตรวจสถานะล่าสุดไม่ได้")).toBeVisible();
+  await expect(sourceA.getByRole("button", { name: "โหลดสถานะ" })).toBeVisible();
   const loadsAtFailure = sourceLoads;
 
   failPolls = false;
   await sourceB.getByRole("button", { name: "สแกนตอนนี้" }).click();
   const loadsAfterB = sourceLoads;
-  await sourceA.getByRole("button", { name: "ตรวจสอบเซสชัน" }).click();
+  await sourceA.getByRole("button", { name: "ดูรายละเอียดการสแกน" }).click();
   await sourceA.getByRole("button", { name: "เปิดหน้ากู้คืนเซสชัน" }).click();
   await page.getByRole("button", { name: "ปิดหน้ากู้คืน" }).evaluate((button) => button.click());
   await page.clock.fastForward(1);
   await expect.poll(() => sourceLoads).toBeGreaterThan(loadsAfterB);
-  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
+  await expect(sourceA.getByText("ตรวจสถานะล่าสุดไม่ได้")).toBeVisible();
   const loadsAfterRecovery = sourceLoads;
   await page.clock.fastForward(60_000);
   expect(loadsAfterRecovery).toBeGreaterThan(loadsAtFailure);
   expect(sourceLoads).toBe(loadsAfterRecovery);
-  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toBeVisible();
-  await expect(sourceB.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
+  await expect(sourceA.getByText("ตรวจสถานะล่าสุดไม่ได้")).toBeVisible();
+  await expect(sourceB.getByText("ตรวจสถานะล่าสุดไม่ได้")).toHaveCount(0);
 
   completeA = true;
-  await sourceA.getByRole("button", { name: "ลองตรวจอีกครั้ง" }).evaluate((button) => button.click());
+  await sourceA.getByRole("button", { name: "โหลดสถานะ" }).evaluate((button) => button.click());
   await page.clock.fastForward(1_000);
-  await expect(sourceA.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
-  await expect(sourceA.getByText("สแกนครบแล้ว")).toBeVisible();
-  await expect(sourceB.getByText("ยืนยันสถานะสแกนไม่ได้")).toHaveCount(0);
+  await expect(sourceA.getByText("ตรวจสถานะล่าสุดไม่ได้")).toHaveCount(0);
+  await expect(sourceA.getByText("สแกนล่าสุดเสร็จแล้ว")).toBeVisible();
+  await expect(sourceB.getByText("ตรวจสถานะล่าสุดไม่ได้")).toHaveCount(0);
 });
 
 test("Automations previews the production decision and persists pause/format receipts", async ({ page }) => {
@@ -263,7 +267,7 @@ test("browser recovery is visible but unavailable to non-admin users", async ({ 
   await mockOperations(page, { role: "operator" });
   await page.goto("/sources");
   const source = page.getByTestId("source-group-source-1");
-  await source.getByRole("button", { name: "ตรวจสอบเซสชัน" }).click();
+  await source.getByRole("button", { name: "ดูรายละเอียดการสแกน" }).click();
   await expect(source.getByText("เฉพาะผู้ดูแลระบบเท่านั้นที่เปิดหน้ากู้คืนได้")).toBeVisible();
   await expect(source.getByRole("button", { name: "เปิดหน้ากู้คืนเซสชัน" })).toHaveCount(0);
 });
