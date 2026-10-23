@@ -178,7 +178,7 @@ export async function getInboxItem(pool, id, actor) {
     requiredPetPolicy:rawRequirements.requiredPetPolicy ?? null,
     moveInDate:rawRequirements.moveInDate ?? null,
   };
-  const requirementFields=["district","budgetMax","bedrooms","requiredPetPolicy","moveInDate"];
+  const requirementFields=["district","budgetMax","bedrooms","roomType","requiredPetPolicy","moveInDate"];
   const candidates=new Map((context.snapshot?.candidates ?? []).map(candidate=>[candidate.unitId,candidate]));
   const matches=(context.snapshot?.factSnapshot ?? []).map(fact=>({...fact,score:candidates.get(fact.unitId)?.score ?? null}));
   const latestObservedAt=row.timeline.reduce((latest,message)=>(message.observedAt&&(!latest||message.observedAt>latest))?message.observedAt:latest,null);

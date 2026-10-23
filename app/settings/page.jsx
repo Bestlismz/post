@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Database, History, LockKeyhole, MessagesSquare, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Database, History, KeyRound, LockKeyhole, MessagesSquare, RefreshCw, ShieldCheck } from "lucide-react";
 import { api } from "../lib/api-client.mjs";
 import { AuditView } from "./audit-view";
 import { BusinessProfile } from "./business-profile";
@@ -43,9 +43,31 @@ function FacebookSessionPanel({ sources, summary, busy, onOpen, recovery, onClos
   return <><section className="settings-panel facebook-session-panel" aria-labelledby="facebook-session-title"><header className="settings-panel__head"><span className="settings-panel__icon settings-panel__icon--facebook"><MessagesSquare size={18}/></span><div><h2 id="facebook-session-title">บัญชี Facebook สำหรับกลุ่ม</h2><p>ใช้ browser session เดียวกับการสแกน ตอบ และแก้ไขความคิดเห็น</p></div><span className={`facebook-session-state${connected?" is-connected":""}`}><i/>{connected?"เชื่อมต่อแล้ว":"ต้องเข้าสู่ระบบ"}</span></header><div className="facebook-session-body"><div className="facebook-session-security"><LockKeyhole size={18}/><div><strong>เข้าสู่ระบบจากหน้าเว็บนี้ได้อย่างปลอดภัย</strong><p>อีเมล รหัสผ่าน และ 2FA กรอกในหน้าต่าง Facebook โดยตรง Rendar ไม่อ่านและไม่บันทึกรหัสผ่าน</p></div></div><label><span>ใช้ session กับกลุ่ม</span><select aria-label="กลุ่มสำหรับเข้าสู่ระบบ Facebook" value={selected} onChange={(event)=>setSelected(event.target.value)}>{groups.map(group=><option key={group.id} value={group.id}>{group.displayName||group.canonicalUrl}</option>)}</select></label><footer><small>{groups.length?`${groups.length} กลุ่ม · session ใช้ร่วมกันใน group-worker`:"เพิ่ม Facebook Group ในหน้า Sources ก่อน"}</small><button className="settings-button settings-button--primary" type="button" disabled={!chosen||Boolean(busy)} onClick={()=>onOpen(chosen)}>{busy?"กำลังเปิด…":connected?"ตรวจสอบ / เข้าสู่ระบบใหม่":"เข้าสู่ระบบ Facebook"}</button></footer></div></section>{recovery?<BrowserRecovery recovery={recovery} onClose={onClose}/>:null}</>;
 }
 
+function OpenAIProviderPanel({ value, busy, onSave }) {
+  const [apiKey, setApiKey] = useState("");
+  const [error, setError] = useState("");
+  async function submit(event) {
+    event.preventDefault(); setError("");
+    const next = apiKey.trim();
+    if (!/^sk-[A-Za-z0-9_-]{17,}$/u.test(next)) { setError("รูปแบบ API key ไม่ถูกต้อง"); return; }
+    const saved = await onSave(next);
+    if (saved) setApiKey("");
+  }
+  const configured = value?.configured;
+  return <section className="settings-panel provider-panel" aria-labelledby="openai-provider-title">
+    <header className="settings-panel__head"><span className="settings-panel__icon"><KeyRound size={18}/></span><div><h2 id="openai-provider-title">OpenAI</h2><p>ใช้วิเคราะห์ความต้องการ เลือกห้อง และร่างคำตอบที่อ้างอิงข้อมูลจริง</p></div><span className={`provider-state${configured ? " is-configured" : ""}`}><i/>{configured ? "พร้อมใช้งาน" : "ยังไม่ตั้งค่า"}</span></header>
+    <form className="settings-form provider-form" onSubmit={submit} noValidate>
+      <div className="provider-summary"><LockKeyhole size={17}/><div><strong>{value?.source === "secure_store" ? "จัดเก็บในระบบแบบเข้ารหัส" : value?.source === "environment" ? "ใช้ key จาก deployment environment" : "ยังไม่มี API key"}</strong><p>ระบบไม่แสดง key เดิมกลับมา การบันทึกใหม่จะแทนที่ค่าที่ใช้อยู่สำหรับองค์กรนี้</p></div></div>
+      <label><span>OpenAI API key ใหม่</span><input aria-label="OpenAI API key ใหม่" type="password" autoComplete="new-password" spellCheck="false" placeholder="sk-••••••••••••••••" value={apiKey} onChange={(event) => { setApiKey(event.target.value); setError(""); }}/></label>
+      {error ? <p className="settings-field-error" role="alert">{error}</p> : null}
+      <footer><button className="settings-button settings-button--primary" disabled={busy || !apiKey.trim()} type="submit">{busy ? "กำลังบันทึก…" : configured ? "เปลี่ยน API key" : "บันทึก API key"}</button></footer>
+    </form>
+  </section>;
+}
+
 export default function SettingsPage() {
   const [actor, setActor] = useState(null);
-  const [data, setData] = useState({ users: [], profile: null, retention: null, readiness: null, sources: null, sessionSummary: null });
+  const [data, setData] = useState({ users: [], profile: null, retention: null, readiness: null, sources: null, sessionSummary: null, openAIProvider: null });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
@@ -60,11 +82,11 @@ export default function SettingsPage() {
       const user = identity.user;
       setActor(user);
       if (user?.role !== "admin") return;
-      const [users, profile, retention, readiness, sources, sessionSummary] = await Promise.all([
+      const [users, profile, retention, readiness, sources, sessionSummary, openAIProvider] = await Promise.all([
         api.request("/api/settings/users"), api.request("/api/settings/business-profile"),
-        api.request("/api/settings/retention"), api.request("/api/settings/readiness"), api.request("/api/sources"), api.request("/api/facebook/session-summary"),
+        api.request("/api/settings/retention"), api.request("/api/settings/readiness"), api.request("/api/sources"), api.request("/api/facebook/session-summary"), api.request("/api/settings/providers/openai"),
       ]);
-      setData({ users: users.users ?? [], profile, retention, readiness, sources, sessionSummary });
+      setData({ users: users.users ?? [], profile, retention, readiness, sources, sessionSummary, openAIProvider });
     } catch (error) { setLoadError(error.message); }
     finally { setLoading(false); }
   }, []);
@@ -101,6 +123,14 @@ export default function SettingsPage() {
     const saved = await run("retention", () => mutate("/api/settings/retention", input, data.retention.revision), "บันทึกระยะเวลาการเก็บข้อมูลแล้ว");
     if (saved) setData((current) => ({ ...current, retention: saved }));
   }
+  async function saveOpenAIProvider(apiKey) {
+    const saved = await run("openai", async () => {
+      const token = await csrf();
+      return api.request("/api/settings/providers/openai", { method: "PUT", headers: { "X-CSRF-Token": token, "Idempotency-Key": key() }, body: JSON.stringify({ apiKey }) });
+    }, "บันทึก OpenAI API key แล้ว");
+    if (saved) setData((current) => ({ ...current, openAIProvider: saved, readiness: { ...current.readiness, openaiConfigured: true, openaiProvider: saved, integrations: current.readiness.integrations.map((item) => item.id === "openai" ? { id: "openai", label: "OpenAI", status: "configured" } : item) } }));
+    return saved;
+  }
   async function openFacebookSession(source){
     setBusy("facebook-session");setNotice("");
     try{const token=await csrf();const result=await api.request(`/api/sources/${encodeURIComponent(source.id)}/recovery`,{method:"POST",headers:{"X-CSRF-Token":token},body:JSON.stringify({ttlSeconds:300})});setRecovery(result);}
@@ -122,6 +152,7 @@ export default function SettingsPage() {
     <div className="settings-grid">
       <BusinessProfile value={data.profile} busy={busy === "profile"} onSave={saveProfile}/>
       <FacebookSessionPanel sources={data.sources} summary={data.sessionSummary} busy={busy === "facebook-session"} onOpen={openFacebookSession} recovery={recovery} onClose={closeFacebookSession}/>
+      <OpenAIProviderPanel value={data.openAIProvider} busy={busy === "openai"} onSave={saveOpenAIProvider}/>
       <Readiness value={data.readiness}/>
       <UsersPanel users={data.users} currentUserId={actor.id} busy={busy} onRoleChange={changeRole}/>
       <RetentionPanel value={data.retention} busy={busy === "retention"} onSave={saveRetention}/>

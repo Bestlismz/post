@@ -55,7 +55,7 @@ test('Messenger final delivery gate and durable attempts', {skip:!process.env.TE
     const storeToken=expiresAt=>credentials.store({organizationId:'org_default',actorId:'operator',id:'source',kind:'page',value:{token:'private-token'},expiresAt});
     await storeToken(null);
     const actor={id:'operator',role:'operator',organizationId:'org_default'};
-    const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
+    const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district','roomType'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
     const generator={responses:{create:async request=>({status:'completed',output_text:JSON.stringify(request.text.format.name==='rental_requirements'?fields:{units:[],templateId:'clarify'})})}};
     const service=createInboxService({pool,client:generator});
     const seed=async(id,revision=1,conversation=id)=>{

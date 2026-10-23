@@ -74,7 +74,7 @@ test('signed inquiry becomes exactly one grounded sent reply through authenticat
       const body=JSON.stringify({object:'page',entry:[{id:'page',messaging:[{sender:{id:psid},recipient:{id:'page'},timestamp,message:{mid,text}}]}]});
       return fetch(`${base}/webhooks/meta`,{method:'POST',headers:{'Content-Type':'application/json','X-Hub-Signature-256':`sha256=${createHmac('sha256','webhook-secret').update(body).digest('hex')}`},body});
     };
-    const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
+    const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district','roomType'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
     const generator=new OpenAI({apiKey:'fake-test-only',maxRetries:0,fetch:async(url,init)=>{
       assert.equal(String(url),'https://api.openai.com/v1/responses');
       const request=JSON.parse(init.body);assert.equal(request.text.format.type,'json_schema');assert.equal(request.text.format.strict,true);

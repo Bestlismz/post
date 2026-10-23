@@ -9,6 +9,26 @@ test("OpenAI readiness accepts a redacted provider flag without exposing the key
   assert.equal(openAIProviderConfigured({ OPENAI_PROVIDER_CONFIGURED: "false" }), false);
 });
 
+test("admin can replace the organization OpenAI key without secret readback", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, pool, login, request }) => {
+  await bootstrap();
+  const admin = await login();
+  const apiKey = "sk-proj-test-provider-key-1234567890";
+  const before = await request("/api/settings/providers/openai", admin);
+  assert.deepEqual(before.body, { configured: false, source: "missing", secretReadback: false });
+  const saved = await request("/api/settings/providers/openai", { ...admin, method: "PUT", body: { apiKey }, headers: { "Idempotency-Key": "save-openai-provider" } });
+  assert.equal(saved.status, 200);
+  assert.deepEqual(saved.body, { configured: true, source: "secure_store", secretReadback: false });
+  const after = await request("/api/settings/providers/openai", admin);
+  assert.deepEqual(after.body, saved.body);
+  const stored = await pool.query("SELECT envelope FROM meta_credentials WHERE organization_id='org_default' AND kind='openai'");
+  assert.equal(stored.rowCount, 1);
+  assert.equal(JSON.stringify(stored.rows).includes(apiKey), false);
+  assert.equal(JSON.stringify((await request("/api/settings/audit?action=provider.openai_configured", admin)).body).includes(apiKey), false);
+}, { environment: {
+  META_TOKEN_KEY_VERSION: "one",
+  META_TOKEN_KEYS: JSON.stringify({ one: Buffer.alloc(32, 9).toString("base64") }),
+} }));
+
 test("settings GET ETags round trip through If-Match and reject reuse after a change", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, login, request, mutate }) => {
   await bootstrap();
   const admin = await login();

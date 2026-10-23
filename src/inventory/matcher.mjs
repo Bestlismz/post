@@ -11,6 +11,7 @@ export const requirementsSchema = z.strictObject({
   bedrooms: z.number().int().nonnegative().optional(),
   moveInDate: date.optional(),
   requiredPetPolicy: z.enum(["allowed", "case_by_case", "not_allowed"]).optional(),
+  roomType: z.enum(["studio", "1_bedroom", "2_bedroom", "3_bedroom"]).optional(),
   geography: z.strictObject({ projectIds: names.optional(), districts: names.optional(), provinces: names.optional(), stations: names.optional() }).optional(),
 }).refine(value => value.budgetMin == null || value.budgetMax == null || value.budgetMin <= value.budgetMax, "Invalid budget range");
 export const policySchema = z.strictObject({ minimumScore: z.number().int().min(0).max(100).default(0), limit: z.number().int().positive().max(100).default(20) });
@@ -37,6 +38,11 @@ export function matchInventory(requirements, units, policy = {}) {
     if (r.bedrooms !== undefined) {
       if (unit.bedrooms !== r.bedrooms) continue;
       explanations.push("bedrooms_match"); score += 20;
+    }
+    if (r.roomType !== undefined) {
+      const normalized = String(unit.roomType ?? "").toLocaleLowerCase("en-US").replace(/[\s_-]+/gu, "_").replace(/^([123])_bedrooms$/u, "$1_bedroom");
+      if (normalized !== r.roomType) continue;
+      explanations.push("room_type_match"); score += 20;
     }
     if (r.geography && Object.keys(r.geography).length) {
       const g = r.geography, project = unit.project;

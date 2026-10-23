@@ -1,13 +1,39 @@
 import { Router } from "express";
+import { z } from "zod";
 import { requireRole } from "../auth/authorize.mjs";
 import { changeSetting, readAudit, readSetting } from "../auth/settings.mjs";
 import { groupCommandKeyConfig } from "../channels/groups/keys.mjs";
+import { createMetaCredentialRepository } from "../channels/meta/credentials.mjs";
+import { metaConnectionConfig } from "../channels/meta/oauth.mjs";
+import { appendAudit, runIdempotent, withTransaction } from "../db/transaction.mjs";
 import { commandFor, sendEntity } from "./boundary.mjs";
 
 const missingEnvironment = (env, names) => names.filter((name) => !env[name]);
 
 export const openAIProviderConfigured = (env) =>
   env.OPENAI_PROVIDER_CONFIGURED === "true" || Boolean(env.OPENAI_API_KEY);
+
+const openAIInput = z.strictObject({ apiKey: z.string().trim().min(20).max(512).regex(/^sk-[A-Za-z0-9_-]+$/u) });
+const openAICredentialId = (organizationId) => `${organizationId}:provider:openai`;
+
+export async function readOpenAIProvider(pool, organizationId, env) {
+  const id = openAICredentialId(organizationId);
+  const stored = (await pool.query("SELECT 1 FROM meta_credential_read($1,$2) WHERE kind='openai'", [organizationId, id])).rowCount > 0;
+  const environment = openAIProviderConfigured(env);
+  return { configured: stored || environment, source: stored ? "secure_store" : environment ? "environment" : "missing", secretReadback: false };
+}
+
+async function saveOpenAIProvider({ pool, repository, command }) {
+  const input = openAIInput.parse(command.input), id = openAICredentialId(command.organizationId);
+  return (await withTransaction(pool, (tx) => runIdempotent(tx, {
+    organizationId: command.organizationId, actorId: command.actorId, route: "settings.provider.openai", key: command.idempotencyKey,
+    body: input,
+  }, async () => {
+    await repository.store({ organizationId: command.organizationId, id, actorId: command.actorId, kind: "openai", value: { apiKey: input.apiKey } }, tx);
+    await appendAudit(tx, { organizationId: command.organizationId, actorId: command.actorId, action: "provider.openai_configured", entityType: "provider", entityId: "openai", details: { secretReadback: false } });
+    return { status: 200, body: { configured: true, source: "secure_store", secretReadback: false } };
+  }))).body;
+}
 
 function metaOauthConfigurationIsValid(env) {
   try {
@@ -40,6 +66,8 @@ export async function readPageConnections(pool, organizationId) {
 
 export function settingsRoutes({ pool, write, env }) {
   const router = Router();
+  const tokenConfig = metaConnectionConfig(env);
+  const providerCredentials = createMetaCredentialRepository({ pool, keys: tokenConfig.keys, keyVersion: tokenConfig.keyVersion });
   router.use("/api/settings", requireRole("admin"));
   for (const [route, kind] of [["users", "users"], ["business-profile", "profile"], ["retention", "retention"]]) {
     router.get(`/api/settings/${route}`, async (request, response) => sendEntity(response, await readSetting(pool, request.actor.organizationId, kind)));
@@ -48,6 +76,8 @@ export function settingsRoutes({ pool, write, env }) {
   router.post("/api/settings/users", ...write, async (request, response) => sendEntity(response, await changeSetting(pool, "user", commandFor(request, request.body, true)), 201));
   router.patch("/api/settings/users/:id", ...write, async (request, response) => sendEntity(response, await changeSetting(pool, "role", commandFor(request, { ...request.body, id: request.params.id }))));
   router.get("/api/settings/audit", async (request, response) => response.json(await readAudit(pool, request.actor.organizationId, request.query)));
+  router.get("/api/settings/providers/openai", async (request, response) => response.json(await readOpenAIProvider(pool, request.actor.organizationId, env)));
+  router.put("/api/settings/providers/openai", ...write, async (request, response) => response.json(await saveOpenAIProvider({ pool, repository: providerCredentials, command: commandFor(request, request.body, true) })));
   router.get("/api/settings/readiness", async (request, response) => {
     const metaApp = ["META_APP_ID", "META_APP_SECRET"];
     const metaWebhook = ["META_APP_SECRET", "META_VERIFY_TOKEN"];
@@ -55,7 +85,8 @@ export function settingsRoutes({ pool, write, env }) {
     const appMissing = missingEnvironment(env, metaApp);
     const webhookMissing = missingEnvironment(env, metaWebhook);
     const oauthMissing = missingEnvironment(env, metaOauth);
-    const openaiConfigured = openAIProviderConfigured(env);
+    const openaiProvider = await readOpenAIProvider(pool, request.actor.organizationId, env);
+    const openaiConfigured = openaiProvider.configured;
     const metaInfrastructure = {
       appConfigured: appMissing.length === 0,
       webhookConfigured: webhookMissing.length === 0,
@@ -76,6 +107,7 @@ export function settingsRoutes({ pool, write, env }) {
     response.json({
       databaseConfigured: true,
       openaiConfigured,
+      openaiProvider,
       messengerConfigured,
       groupWorkerConfigured,
       metaInfrastructure,

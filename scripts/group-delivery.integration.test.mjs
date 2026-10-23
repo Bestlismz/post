@@ -124,7 +124,7 @@ const failSettlementOnConnection=(pool,target)=>{let connections=0;return {query
 dbtest('group analysis uses DB-owned format and source policy, then authorization creates the shared immutable intent ledger',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');
   const {createAutomationWorker}=await import('../src/workers/automation-worker.mjs');
-  const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district'].map(name=>[name,{status:'missing',value:null,evidence:[]} ]));
+  const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district','roomType'].map(name=>[name,{status:'missing',value:null,evidence:[]} ]));
   const generator={responses:{create:async request=>({status:'completed',output_text:JSON.stringify(request.text.format.name==='rental_requirements'?fields:{units:[],templateId:'clarify'})})}};
   const service=createInboxService({pool,client:generator});const automation=createAutomationWorker({pool,service,workerId:'group-analysis'});
   assert.equal(await automation.runOnce(),'analysis-job');

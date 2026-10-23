@@ -22,11 +22,15 @@ try {
     FROM pg_roles r WHERE r.rolname=current_user`);
   if(!role || Object.values(role).some(Boolean))throw Error('Restricted runtime database role required');
   const tokenConfig=metaConnectionConfig();
-  if(!tokenConfig.keys[tokenConfig.keyVersion] || tokenConfig.keys[tokenConfig.keyVersion].length!==32 || !process.env.OPENAI_API_KEY)throw Error('Worker provider configuration required');
-  const client=new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:30000,maxRetries:0});
-  const service=createInboxService({pool,client,model:process.env.OPENAI_MODEL ?? 'gpt-5-mini'});
-  const automation=createAutomationWorker({pool,service,workerId:`messenger-${process.pid}`});
+  if(!tokenConfig.keys[tokenConfig.keyVersion] || tokenConfig.keys[tokenConfig.keyVersion].length!==32)throw Error('Worker provider configuration required');
   const credentials=createMetaCredentialRepository({pool,keys:tokenConfig.keys,keyVersion:tokenConfig.keyVersion});
+  const environmentClient=process.env.OPENAI_API_KEY?new OpenAI({apiKey:process.env.OPENAI_API_KEY,timeout:30000,maxRetries:0}):null;
+  const clientProvider=async organizationId=>credentials.withCredential(organizationId,`${organizationId}:provider:openai`,({apiKey})=>new OpenAI({apiKey,timeout:30000,maxRetries:0}),{kind:'openai'}).catch(error=>{
+    if(environmentClient)return environmentClient;
+    throw error;
+  });
+  const service=createInboxService({pool,client:environmentClient,clientProvider,model:process.env.OPENAI_MODEL ?? 'gpt-5-mini'});
+  const automation=createAutomationWorker({pool,service,workerId:`messenger-${process.pid}`});
   const delivery=createMetaDeliveryWorker({pool,credentials});
   const groupSigning=groupSchedulerConfig(process.env);if(!groupSigning)throw Error('Group signing configuration required');
   const groupClient=createGroupWorkerClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',...groupSigning});

@@ -101,7 +101,7 @@ export default function SourcesPage() {
   }
   async function setMode(source, mode) {
     setBusy(`${source.id}:mode`);
-    try { const next = await mutate(`/api/sources/groups/${source.id}`, { method: "PATCH", revision: source.revision, body: { mode } }); setData((current) => ({ ...current, groups: current.groups.map((entry) => entry.id === source.id ? { ...entry, ...next } : entry) })); setNotice(`เปลี่ยนโหมดเป็น ${mode === "observe" ? "Observe" : mode === "approval" ? "Approval" : "Automatic"} แล้ว`); }
+    try { const next = await mutate(`/api/sources/groups/${source.id}`, { method: "PATCH", revision: source.revision, body: { mode, ...(mode === "automatic" ? { allowListed: true } : {}) } }); setData((current) => ({ ...current, groups: current.groups.map((entry) => entry.id === source.id ? { ...entry, ...next } : entry) })); setNotice(`เปลี่ยนโหมดเป็น ${mode === "observe" ? "Observe" : mode === "approval" ? "Approval" : "Automatic"} แล้ว`); }
     catch (error) { setNotice(error.status === 409 ? "ยังเปิด Automatic ไม่ได้ กรุณาแก้สถานะสุขภาพและกติกาก่อน" : error.message); }
     finally { setBusy(""); }
   }

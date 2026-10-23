@@ -1,5 +1,5 @@
 // Mounted read-only by the container lifecycle test; never copied into the image.
-const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
+const fields=Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district','roomType'].map(k=>[k,{status:'missing',value:null,evidence:[]}]));
 globalThis.fetch=async(url,init)=>{
   if(String(url)!=='https://api.openai.com/v1/responses')throw Error('External network disabled in lifecycle test');
   const request=JSON.parse(init.body);

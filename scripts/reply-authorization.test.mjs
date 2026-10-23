@@ -35,7 +35,7 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       await pool.query(`INSERT INTO messages(id,organization_id,conversation_id,page_id,mid,text,processing_revision,raw_evidence,provider_timestamp_ms) VALUES($1,'org_default',$2,'page',$1,'Hello',$3,'{}',$4)`, [`m-${id}`,conversation,revision,Date.now()]);
       await pool.query(`INSERT INTO work_items(id,organization_id,conversation_id,message_id,processing_revision) VALUES($1,'org_default',$2,$3,$4)`, [id,conversation,`m-${id}`,revision]);
     };
-    const fields = Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district'].map(k => [k,{ status: 'missing', value: null, evidence: [] }]));
+    const fields = Object.fromEntries(['budgetMin','budgetMax','bedrooms','moveInDate','requiredPetPolicy','district','roomType'].map(k => [k,{ status: 'missing', value: null, evidence: [] }]));
     const client = { responses: { create: async request => ({ status: 'completed', output_text: JSON.stringify(request.text.format.name === 'rental_requirements' ? fields : { units: [], templateId: 'clarify' }) }) } };
     const service = createInboxService({ pool, client });
     await seed('one');

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractRequirements } from "../src/replies/extractor.mjs";
+import { extractRequirements, requirementConfidence } from "../src/replies/extractor.mjs";
 import { composeSelections } from "../src/replies/composer.mjs";
 import { renderReply, defaultReplyFormat } from "../src/replies/renderer.mjs";
 import { validateReply } from "../src/replies/validator.mjs";
@@ -15,12 +15,19 @@ const context = { snapshot, selections, format };
 const clone = value => structuredClone(value);
 const evidence = quote => { const start = conversation.messages[0].text.indexOf(quote); return { messageId: "m1", messageRevision: 1, start, end: start + quote.length, quote }; };
 const missing = () => ({ status: "missing", value: null, evidence: [] });
-const extraction = () => ({ budgetMin: missing(), budgetMax: { status: "known", value: 18000, evidence: [evidence("Maximum budget 18,000")] }, bedrooms: { status: "known", value: 1, evidence: [evidence("1 bedroom")] }, moveInDate: { status: "known", value: "2026-11-01", evidence: [evidence("2026-11-01")] }, requiredPetPolicy: missing(), district: { status: "known", value: "Asoke", evidence: [evidence("Asoke")] } });
+const extraction = () => ({ budgetMin: missing(), budgetMax: { status: "known", value: 18000, evidence: [evidence("Maximum budget 18,000")] }, bedrooms: { status: "known", value: 1, evidence: [evidence("1 bedroom")] }, moveInDate: { status: "known", value: "2026-11-01", evidence: [evidence("2026-11-01")] }, requiredPetPolicy: missing(), district: { status: "known", value: "Asoke", evidence: [evidence("Asoke")] }, roomType: { status: "known", value: "1_bedroom", evidence: [evidence("1 bedroom")] } });
 function fake(value, inspect = () => {}) { return { responses: { create: async request => { inspect(request); return { output_text: JSON.stringify(value), status: "completed" }; } } }; }
+
+test("automatic qualification requires location, budget and room size while keeping preferences optional", () => {
+  const fields = extraction();
+  assert.equal(requirementConfidence(fields), 1);
+  assert.equal(requirementConfidence({ roomType: fields.roomType }), 1 / 3);
+  assert.equal(requirementConfidence({ moveInDate: fields.moveInDate, requiredPetPolicy: fields.requiredPetPolicy }), 0);
+});
 
 test("structured extraction maps exact immutable evidence and missing values into matcher requirements", async () => {
   const result = await extractRequirements({ conversation, client: fake(extraction(), request => { assert.equal(request.text.format.strict, true); assert.equal(request.text.format.schema.additionalProperties, false); }) });
-  assert.deepEqual(result.requirements, { budgetMax: 18000, bedrooms: 1, moveInDate: "2026-11-01", geography: { districts: ["Asoke"] } });
+  assert.deepEqual(result.requirements, { budgetMax: 18000, bedrooms: 1, moveInDate: "2026-11-01", geography: { districts: ["Asoke"] }, roomType: "1_bedroom" });
   assert.equal(result.conversationRevision, 2);
   assert.equal(result.fields.requiredPetPolicy.status, "missing");
   assert.equal(Object.isFrozen(result.fields.budgetMax.evidence[0]), true);

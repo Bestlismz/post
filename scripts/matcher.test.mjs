@@ -5,13 +5,19 @@ import { matchInventory } from "../src/inventory/matcher.mjs";
 import { createCatalog } from "../src/inventory/catalog.mjs";
 import { createPool } from "../src/db/pool.mjs";
 import { migrate } from "../src/db/migrate.mjs";
+import { sampleInventory } from "./seed-sample-inventory.mjs";
 
-const requirements = { budgetMin: 10000, budgetMax: 20000, bedrooms: 1, moveInDate: "2026-11-01", requiredPetPolicy: "allowed", geography: { districts: ["วัฒนา"] } };
+const requirements = { budgetMin: 10000, budgetMax: 20000, bedrooms: 1, roomType: "1_bedroom", moveInDate: "2026-11-01", requiredPetPolicy: "allowed", geography: { districts: ["วัฒนา"] } };
 const project = { id: "project", revision: 1, name: "บ้าน", district: "วัฒนา", province: "กรุงเทพมหานคร", transit: [{ station: "อโศก", walkingDistanceM: 300 }], amenities: ["สระว่ายน้ำ"] };
 const unit = { id: "a", organizationId: "org_default", projectId: "project", revision: 3, unitCode: "101", status: "available", publishedAt: "2026-10-22T00:00:00Z", availableFrom: "2026-11-01", monthlyRentThb: 15000, bedrooms: 1, roomType: "1 bedroom", petPolicy: "allowed", project };
 
+test("customer sample inventory contains ten publishable room variants", () => {
+  assert.equal(sampleInventory.flatMap((entry) => entry.units).length, 10);
+  assert.deepEqual(new Set(sampleInventory.flatMap((entry) => entry.units).map((entry) => entry.roomType)), new Set(["studio", "1 bedroom", "2 bedroom"]));
+});
+
 test("hard filters exclude unpublished, unavailable, late, over/under budget, wrong bedrooms, unknown pets and geography", () => {
-  const patches = [{ publishedAt: null }, ...["draft", "unknown", "held", "rented", "archived"].map(status => ({ status })), { availableFrom: "2026-11-02" }, { availableFrom: null }, { monthlyRentThb: 20001 }, { monthlyRentThb: 9999 }, { bedrooms: 0 }, { bedrooms: null }, { petPolicy: "unknown" }, { petPolicy: "case_by_case" }, { project: { ...project, district: "บางรัก" } }];
+  const patches = [{ publishedAt: null }, ...["draft", "unknown", "held", "rented", "archived"].map(status => ({ status })), { availableFrom: "2026-11-02" }, { availableFrom: null }, { monthlyRentThb: 20001 }, { monthlyRentThb: 9999 }, { bedrooms: 0 }, { bedrooms: null }, { roomType: "studio" }, { petPolicy: "unknown" }, { petPolicy: "case_by_case" }, { project: { ...project, district: "บางรัก" } }];
   const units = [unit, ...patches.map((patch, i) => ({ ...unit, id: `bad-${i}`, ...patch }))];
   assert.deepEqual(matchInventory(requirements, units).candidates.map(x => x.unitId), ["a"]);
 });
@@ -20,7 +26,7 @@ test("matching is deterministic with stable scores, revision evidence and explan
   const units = [{ ...unit, id: "b" }, unit];
   const before = JSON.stringify(units);
   const result = matchInventory(requirements, units, { minimumScore: 90, limit: 2 });
-  assert.deepEqual(result, { matcherVersion: "inventory-v1", candidates: ["a", "b"].map(unitId => ({ unitId, unitRevision: 3, projectId: "project", projectRevision: 1, score: 100, explanations: ["published_available", "available_by_move_in", "within_budget", "bedrooms_match", "geography_match", "pet_policy_match"] })) });
+  assert.deepEqual(result, { matcherVersion: "inventory-v1", candidates: ["a", "b"].map(unitId => ({ unitId, unitRevision: 3, projectId: "project", projectRevision: 1, score: 120, explanations: ["published_available", "available_by_move_in", "within_budget", "bedrooms_match", "room_type_match", "geography_match", "pet_policy_match"] })) });
   assert.deepEqual(matchInventory(requirements, [...units].reverse(), { minimumScore: 90, limit: 2 }), result);
   assert.equal(JSON.stringify(units), before);
   assert.equal(matchInventory({}, [unit], { minimumScore: 1 }).candidates.length, 0);

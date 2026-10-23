@@ -8,6 +8,7 @@
     "worker": "NODE_ENV=production node src/worker.mjs",
     "create:admin": "node scripts/create-admin.mjs",
     "migrate": "node scripts/migrate.mjs",
+    "seed:inventory": "node scripts/seed-sample-inventory.mjs",
     "provision:runtime": "node scripts/provision-runtime.mjs",
     "provision:worker": "node scripts/provision-runtime.mjs --worker",
     "import:legacy": "node scripts/import-json-state.mjs",

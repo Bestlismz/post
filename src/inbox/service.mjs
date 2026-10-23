@@ -6,7 +6,7 @@ import { authorizeInboxActor } from './repository.mjs';
 import { validateInboxText } from './validation.mjs';
 import { httpError } from '../auth/authorize.mjs';
 import { inboxConflict, freshnessConflictCodes } from './errors.mjs';
-import { extractRequirements } from '../replies/extractor.mjs';
+import { extractRequirements, requirementConfidence } from '../replies/extractor.mjs';
 import { composeSelections } from '../replies/composer.mjs';
 import { defaultReplyFormat, renderReply } from '../replies/renderer.mjs';
 import { validateReply } from '../replies/validator.mjs';
@@ -126,7 +126,7 @@ async function policyContext(tx, context, reply, now) {
     optOut: conversation.opted_out, humanTakeover: conversation.human_takeover, counts };
 }
 
-export function createInboxService({ pool, client, model, clock = () => new Date() }) {
+export function createInboxService({ pool, client, clientProvider, model, clock = () => new Date() }) {
   async function latestReply(tx,context) {
     const {org,item}=context;
     const existing=(await tx.query('SELECT * FROM reply_versions WHERE organization_id=$1 AND work_item_id=$2 ORDER BY version DESC LIMIT 1',[org.id,item.id])).rows[0];
@@ -197,8 +197,9 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     });
     if (initial.reusable) return initial.reusable;
     const before = evidence(initial.context), format = before.format;
+    const providerClient = clientProvider ? await clientProvider(organizationId) : client;
     let extraction, generationFailed = false;
-    try { extraction = await extractRequirements({ conversation: { id: initial.context.conversation.id,revision: expectedRevision,messages: initial.context.messages.map(({id,text,revision}) => ({id,text,revision})) },businessProfile:initial.context.org.business_profile,client,model }); }
+    try { extraction = await extractRequirements({ conversation: { id: initial.context.conversation.id,revision: expectedRevision,messages: initial.context.messages.map(({id,text,revision}) => ({id,text,revision})) },businessProfile:initial.context.org.business_profile,client:providerClient,model }); }
     catch { generationFailed = true; extraction = { requirements: {},fields: {} }; }
     const snapshot = await withTransaction(pool,async tx => {
       const context = await loadContext(tx,workItemId,expectedRevision,organizationId);
@@ -217,14 +218,13 @@ export function createInboxService({ pool, client, model, clock = () => new Date
     let selections, content;
     try {
       if (generationFailed) throw new Error('Extraction failed');
-      selections = await composeSelections({ snapshot,format,extraction,client,model });
+      selections = await composeSelections({ snapshot,format,extraction,client:providerClient,model });
       content = renderReply(selections,snapshot,format); validateReply(content,{snapshot,selections,format});
     } catch {
       generationFailed = true; selections = { units: [],templateId: 'handoff' };
       content = { ...renderReply(selections,snapshot,format),grounded:false,automaticEligible:false,editKind:'human_free_edit' };
     }
-    const known = Object.values(extraction.fields).filter(f => f.status === 'known').length;
-    const confidence = generationFailed ? 0 : known / 6;
+    const confidence = generationFailed ? 0 : requirementConfidence(extraction.fields);
     return withTransaction(pool,async tx => {
       const context = await loadContext(tx,workItemId,expectedRevision,organizationId);
       const {existing,reusable}=await latestReply(tx,context);
