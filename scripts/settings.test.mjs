@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { databaseUrl, httpFixture } from "./http-test-helpers.mjs";
+import { openAIProviderConfigured } from "../src/http/settings-routes.mjs";
+
+test("OpenAI readiness accepts a redacted provider flag without exposing the key to web", () => {
+  assert.equal(openAIProviderConfigured({ OPENAI_PROVIDER_CONFIGURED: "true" }), true);
+  assert.equal(openAIProviderConfigured({ OPENAI_API_KEY: "test-key" }), true);
+  assert.equal(openAIProviderConfigured({ OPENAI_PROVIDER_CONFIGURED: "false" }), false);
+});
 
 test("settings GET ETags round trip through If-Match and reject reuse after a change", { skip: !databaseUrl }, () => httpFixture(async ({ bootstrap, login, request, mutate }) => {
   await bootstrap();

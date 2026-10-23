@@ -85,6 +85,8 @@ test('Compose production worker uses its restricted URL and only environment sec
     assert.equal(config.services[name].stop_grace_period,'2m0s','Allow two 30s OpenAI calls plus database settlement');
   }
   assert.deepEqual(worker.command,['node','src/worker.mjs'],'SIGTERM must reach the runner without an npm wrapper');assert.match(worker.environment.DATABASE_URL,/rental_radar_worker/);
+  assert.equal(config.services.web.environment.OPENAI_PROVIDER_CONFIGURED,'true');
+  assert.equal(config.services.web.environment.OPENAI_API_KEY,undefined,'The OpenAI secret belongs only in the worker');
   for(const name of ['MIGRATION_DATABASE_URL','POSTGRES_PASSWORD','SESSION_SECRET'])assert.equal(worker.environment[name],undefined);
   assert.equal(worker.environment.OPENAI_API_KEY,'fake-no-live-calls');assert.equal(worker.environment.META_TOKEN_KEYS,'{}');
   assert.equal(worker.environment.GROUP_COMMAND_KEY_ID,'group-current');assert.equal(worker.environment.GROUP_COMMAND_KEYS,'{"group-current":"encoded"}');

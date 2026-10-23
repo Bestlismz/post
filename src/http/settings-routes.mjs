@@ -6,6 +6,9 @@ import { commandFor, sendEntity } from "./boundary.mjs";
 
 const missingEnvironment = (env, names) => names.filter((name) => !env[name]);
 
+export const openAIProviderConfigured = (env) =>
+  env.OPENAI_PROVIDER_CONFIGURED === "true" || Boolean(env.OPENAI_API_KEY);
+
 function metaOauthConfigurationIsValid(env) {
   try {
     const keys = JSON.parse(env.META_TOKEN_KEYS ?? "{}");
@@ -52,7 +55,7 @@ export function settingsRoutes({ pool, write, env }) {
     const appMissing = missingEnvironment(env, metaApp);
     const webhookMissing = missingEnvironment(env, metaWebhook);
     const oauthMissing = missingEnvironment(env, metaOauth);
-    const openaiConfigured = Boolean(env.OPENAI_API_KEY);
+    const openaiConfigured = openAIProviderConfigured(env);
     const metaInfrastructure = {
       appConfigured: appMissing.length === 0,
       webhookConfigured: webhookMissing.length === 0,

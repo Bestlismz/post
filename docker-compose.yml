@@ -32,6 +32,7 @@ services:
       DATABASE_URL: ${RUNTIME_DATABASE_URL:?Set RUNTIME_DATABASE_URL using rental_radar_web and host postgres}
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to at least 32 characters}
+      OPENAI_PROVIDER_CONFIGURED: ${OPENAI_API_KEY:+true}
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
