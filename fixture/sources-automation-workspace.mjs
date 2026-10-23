@@ -113,6 +113,7 @@ function bodyDigest(value) {
 export function createSourcesAutomationWorkspaceFixture({
   operationalClock = () => new Date(),
   policyEvaluationClock = () => new Date("2026-10-22T03:00:00.000Z"),
+  onObservation = () => undefined,
 } = {}) {
   let groups = structuredClone(seededSources);
   const pages = [{ id: "fixture-page", name: "Rental Radar Thailand", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }];
@@ -321,6 +322,7 @@ export function createSourcesAutomationWorkspaceFixture({
           if (known) Object.assign(entry, known);
           entry.latestReceipt = receipt;
           entry.receiptHistory = [receipt, ...entry.receiptHistory].slice(0, 5);
+          if (healthy) onObservation(fixtureObservation(entry, receipt.createdAt));
         };
         const timer = setTimeout(finish, 75);
         timer.unref?.();
@@ -450,5 +452,37 @@ export function createSourcesAutomationWorkspaceFixture({
         return { sourceId: id, schedule: structuredClone(parsed), revision: entry.schedule.revision };
       });
     },
+  };
+}
+
+function fixtureObservation(entry, observedAt) {
+  const known = {
+    "1742522453522327": {
+      remoteId: "autopost-looking-for-room",
+      authorId: "best-warut",
+      authorName: "B'Best Warut",
+      text: "หาห้องถูกๆ",
+      summary: { location: null, budgetMax: null, assignee: null },
+    },
+    "2625323481252008": {
+      remoteId: "test-autopost-rental-inquiry",
+      authorId: "group-member",
+      authorName: "สมาชิกกลุ่ม",
+      text: "สนใจห้องเช่าใกล้รถไฟฟ้า งบไม่เกิน 18,000 บาทครับ",
+      summary: { location: null, budgetMax: 18000, assignee: null },
+    },
+  }[entry.groupId] ?? {
+    remoteId: "fixture-rental-inquiry",
+    authorId: "group-member",
+    authorName: "สมาชิกกลุ่ม",
+    text: "สนใจห้องเช่าใกล้รถไฟฟ้า งบไม่เกิน 18,000 บาทครับ",
+    summary: { location: null, budgetMax: 18000, assignee: null },
+  };
+  return {
+    ...known,
+    sourceId: entry.id,
+    groupId: entry.groupId,
+    sourceName: entry.displayName ?? entry.canonicalUrl,
+    observedAt,
   };
 }

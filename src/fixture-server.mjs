@@ -35,7 +35,10 @@ const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
 const inventoryWorkspace = createInventoryWorkspaceFixture();
-const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({ operationalClock: fixtureOperationalClock(process.env) });
+const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({
+  operationalClock: fixtureOperationalClock(process.env),
+  onObservation: (observation) => inboxWorkspace.ingestGroupObservation(observation),
+});
 const settingsWorkspace = createSettingsWorkspaceFixture();
 const desktopSockets = new Set();
 let browserBusy = false;
