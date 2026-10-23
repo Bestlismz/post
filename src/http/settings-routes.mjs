@@ -88,6 +88,16 @@ export function settingsRoutes({ pool, write, env }) {
         { id: "group-worker", label: "Group worker", status: groupWorkerConfigured ? "configured" : "missing", ...(!groupWorkerConfigured ? { missing: groupWorkerMissing.length ? groupWorkerMissing : ["GROUP_COMMAND_KEYS"] } : {}) },
       ],
       configuration: { method: "deployment_environment", secretReadback: false },
+      metaPoc: {
+        mode: env.POC_MODE === "fixture" ? "fixture" : "production",
+        callbackPath: "/webhooks/meta",
+        callbackUrl: env.META_PUBLIC_WEBHOOK_URL || null,
+        tunnelStatus: env.META_PUBLIC_WEBHOOK_URL?.startsWith("https://") ? "connected" : "inactive",
+        verifyTokenConfigured: Boolean(env.META_VERIFY_TOKEN),
+        appSecretConfigured: Boolean(env.META_APP_SECRET),
+        pageAccessTokenConfigured: Boolean(env.META_PAGE_ACCESS_TOKEN) || messengerConfigured,
+        externalDeliveryEnabled: env.POC_LIVE_SUBMISSION === "true",
+      },
     });
   });
   return router;

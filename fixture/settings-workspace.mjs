@@ -7,7 +7,7 @@ function failure(status, message) { throw Object.assign(new Error(message), { st
 function digest(value) { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
 function positiveDays(value) { return Number.isInteger(value) && value >= 1 && value <= 3650; }
 
-export function createSettingsWorkspaceFixture() {
+export function createSettingsWorkspaceFixture({ env = process.env } = {}) {
   let users = [
     { id: "fixture-admin", email: "admin@rentalradar.test", displayName: "ณัฐวุฒิ", role: "admin", revision: 1 },
     { id: "fixture-operator", email: "ops@rentalradar.test", displayName: "พิมพ์ชนก", role: "operator", revision: 1 },
@@ -53,6 +53,16 @@ export function createSettingsWorkspaceFixture() {
         { id: "group-worker", label: "Group worker", status: "configured" },
       ],
       configuration: { method: "deployment_environment", secretReadback: false },
+      metaPoc: {
+        mode: "fixture",
+        callbackPath: "/webhooks/meta",
+        callbackUrl: env.META_PUBLIC_WEBHOOK_URL || null,
+        tunnelStatus: env.META_PUBLIC_WEBHOOK_URL?.startsWith("https://") ? "connected" : "inactive",
+        verifyTokenConfigured: Boolean(env.META_VERIFY_TOKEN),
+        appSecretConfigured: Boolean(env.META_APP_SECRET),
+        pageAccessTokenConfigured: Boolean(env.META_PAGE_ACCESS_TOKEN),
+        externalDeliveryEnabled: env.POC_LIVE_SUBMISSION === "true",
+      },
     }),
     changeRole(id, input, revision, key, actor) {
       return once(`settings.role.${id}`, key, { input, revision }, () => {

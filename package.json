@@ -15,7 +15,8 @@
     "test:e2e:fixture": "npm run build && playwright test --config=playwright.fixture.config.mjs",
     "verify": "node scripts/verify-poc.mjs",
     "verify:command-center": "node scripts/verify-command-center.mjs",
-    "verify:messenger": "node scripts/verify-messenger.mjs"
+    "verify:messenger": "node scripts/verify-messenger.mjs",
+    "poc:webhook-relay": "node scripts/webhook-relay.mjs"
   },
   "dependencies": {
     "@fontsource-variable/noto-sans-thai": "^5.3.0",

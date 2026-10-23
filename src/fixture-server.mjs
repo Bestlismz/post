@@ -42,7 +42,7 @@ const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({
   initialGroups: readFixtureSourceGroups(fixtureSourcesFile),
   onGroupsChange: (groups) => writeFixtureSourceGroups(fixtureSourcesFile, groups),
 });
-const settingsWorkspace = createSettingsWorkspaceFixture();
+const settingsWorkspace = createSettingsWorkspaceFixture({ env: process.env });
 const desktopSockets = new Set();
 let browserBusy = false;
 let browserOperation = {

@@ -9,12 +9,21 @@ test("fixture Settings uses stateful production-shaped APIs without exposing sec
     expect.objectContaining({ id: "messenger", status: "missing" }),
   ]));
   expect(readinessBody.configuration.secretReadback).toBe(false);
+  expect(readinessBody.metaPoc).toEqual(expect.objectContaining({
+    callbackPath: "/webhooks/meta",
+    callbackUrl: null,
+    tunnelStatus: "inactive",
+    appSecretConfigured: false,
+    pageAccessTokenConfigured: false,
+  }));
   expect(JSON.stringify(readinessBody)).not.toMatch(/sk-proj-|fixture-token|fixture-secret/);
 
   await page.goto("/settings");
   await expect(page.getByRole("heading", { name: "การตั้งค่าระบบ" })).toBeVisible();
   await expect(page.getByText("OpenAI configured")).toBeVisible();
   await expect(page.getByText("Messenger missing")).toBeVisible();
+  await expect(page.getByText("Meta Messenger POC")).toBeVisible();
+  await expect(page.getByText("ยังไม่ได้เปิด temporary HTTPS tunnel")).toBeVisible();
   await page.getByLabel("ชื่อธุรกิจ").fill("Rental Radar Customer Demo");
   await page.getByRole("button", { name: "บันทึกข้อมูลธุรกิจ" }).click();
   await expect(page.getByText("บันทึกข้อมูลธุรกิจแล้ว")).toBeVisible();
