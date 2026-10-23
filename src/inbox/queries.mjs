@@ -11,6 +11,8 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   CASE WHEN c.channel='facebook_group' THEN (SELECT o.kind FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(m.raw_evidence->>'observationId') LIMIT 1) END AS target_kind,
   coalesce(s.id,g.id) AS source_id,CASE WHEN c.channel='facebook_group' THEN coalesce(g.display_name,'Facebook group') ELSE s.name END AS source_name,
   CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health,
+  CASE WHEN c.channel='facebook_group' THEN g.mode END AS source_mode,
+  CASE WHEN c.channel='facebook_group' THEN g.group_id END AS group_id,
   latest_reply.context AS latest_reply_context`;
 const relations = `FROM work_items w
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
@@ -52,7 +54,7 @@ function itemDto(row) {
     status: row.status,
     createdAt: row.created_at,
     participant: { id: row.conversation_id, label: row.author_label || (row.channel === "facebook_group" ? "Group participant" : "Messenger customer") },
-    source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable" },
+    source: { id: row.source_id, name: row.source_name ?? "Messenger", health: row.source_health ?? "unavailable", mode: row.source_mode ?? null },
     message: { id: row.message_id, text: row.message_text },
     summary: { location: safeSummaryLocation(row.latest_reply_context), budgetMax: safeSummaryBudget(row.latest_reply_context), assignee: null },
   };
@@ -136,18 +138,26 @@ export async function getInboxItem(pool, id, actor) {
       'direction',tm.direction,'processingRevision',tm.processing_revision,
       'author',CASE WHEN c.channel='facebook_group' THEN (SELECT o.author_label FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
       'kind',CASE WHEN c.channel='facebook_group' THEN (SELECT o.kind FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
+      'postId',CASE WHEN c.channel='facebook_group' THEN (SELECT o.post_id FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
+      'commentId',CASE WHEN c.channel='facebook_group' THEN (SELECT o.comment_id FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
+      'reactionCount',CASE WHEN c.channel='facebook_group' THEN (SELECT o.reaction_count FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
+      'commentCount',CASE WHEN c.channel='facebook_group' THEN (SELECT o.comment_count FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
+      'observedAt',CASE WHEN c.channel='facebook_group' THEN (SELECT to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') FROM group_observations o WHERE o.organization_id=w.organization_id AND o.id=(tm.raw_evidence->>'observationId') LIMIT 1) END,
       'uiId',tm.id,'isTarget',tm.id=m.id,
       'createdAt',to_char(tm.created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"'))
       ORDER BY tm.processing_revision,tm.id),'[]'::jsonb)
       FROM (SELECT * FROM messages WHERE organization_id=w.organization_id AND conversation_id=w.conversation_id ORDER BY processing_revision DESC LIMIT 100) tm) AS timeline,
     (SELECT coalesce(jsonb_agg(r),'[]') FROM (SELECT id,version,conversation_revision AS "processingRevision",content->>'text' AS text
       FROM reply_versions WHERE organization_id=w.organization_id AND work_item_id=w.id ORDER BY version DESC LIMIT 20) r) AS replies,
-    (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",
+    (SELECT coalesce(jsonb_agg(d),'[]') FROM (SELECT di.id,di.reply_version_id AS "replyId",rv.content->>'text' AS text,
       CASE WHEN a.state='attempting' THEN 'unknown' ELSE coalesce(a.state,CASE WHEN dc.delivery_intent_id IS NOT NULL THEN 'cancelled' ELSE 'queued' END) END AS state,
-      a.outcome_code AS "outcomeCode",a.provider_message_id AS "providerMessageId",di.retry_of_intent_id AS "retryOfIntentId"
+      a.outcome_code AS "outcomeCode",a.provider_message_id AS "providerMessageId",di.retry_of_intent_id AS "retryOfIntentId",
+      to_char(coalesce(a.finished_at,a.started_at,di.created_at) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt",
+      edit.id AS "editId",edit.text AS "editedText",edit.state AS "editState",edit.outcome_code AS "editOutcomeCode"
       FROM delivery_intents di JOIN reply_versions rv ON rv.organization_id=di.organization_id AND rv.id=di.reply_version_id
       LEFT JOIN delivery_attempts a ON a.organization_id=di.organization_id AND a.delivery_intent_id=di.id
       LEFT JOIN delivery_cancellations dc ON dc.organization_id=di.organization_id AND dc.delivery_intent_id=di.id
+      LEFT JOIN LATERAL (SELECT gce.* FROM group_comment_edits gce WHERE gce.organization_id=di.organization_id AND gce.delivery_intent_id=di.id ORDER BY gce.created_at DESC LIMIT 1) edit ON true
       WHERE di.organization_id=w.organization_id AND rv.work_item_id=w.id ORDER BY di.created_at DESC LIMIT 20) d) AS deliveries,
     (SELECT coalesce(jsonb_agg(jsonb_build_object('receiptId',e.payload->'receiptId','resourceId',e.payload->'resourceId',
       'resourceType',e.payload->'resourceType','state',e.payload->'state') ORDER BY e.event_position),'[]') FROM (SELECT payload,event_position FROM outbox
@@ -171,11 +181,13 @@ export async function getInboxItem(pool, id, actor) {
   const requirementFields=["district","budgetMax","bedrooms","requiredPetPolicy","moveInDate"];
   const candidates=new Map((context.snapshot?.candidates ?? []).map(candidate=>[candidate.unitId,candidate]));
   const matches=(context.snapshot?.factSnapshot ?? []).map(fact=>({...fact,score:candidates.get(fact.unitId)?.score ?? null}));
-  return { ...itemDto(row), target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, stale:row.status==='superseded',
+  const latestObservedAt=row.timeline.reduce((latest,message)=>(message.observedAt&&(!latest||message.observedAt>latest))?message.observedAt:latest,null);
+  return { ...itemDto(row), target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, facebook:row.channel==='facebook_group'?{groupId:row.group_id,permalink:row.timeline.find(message=>message.isTarget)?.postId?`https://www.facebook.com/groups/${row.group_id}/posts/${row.timeline.find(message=>message.isTarget).postId}/`:null,observedAt:latestObservedAt,autoReply:row.source_mode==='automatic'}:null, stale:row.status==='superseded',
     staleReason:row.status==='superseded'?'มีข้อความหรือข้อมูลห้องที่ใหม่กว่า กรุณาโหลดข้อมูลล่าสุด':null,
     requirements,missingRequirements:requirementFields.filter(name=>fields[name]?.status !== 'known'),matches,
     timeline: row.timeline.map((message) => ({
     id: message.id, uiId:message.uiId, text: message.text, direction: message.direction, author: message.author, kind:message.kind, isTarget:message.isTarget,
-    processingRevision: message.processingRevision, createdAt: message.createdAt,
+    processingRevision: message.processingRevision, createdAt: message.createdAt, postId:message.postId, commentId:message.commentId,
+    reactionCount:message.reactionCount,commentCount:message.commentCount,observedAt:message.observedAt,
   })), replies:row.replies,deliveries:row.deliveries,events:row.events };
 }

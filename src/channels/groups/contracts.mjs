@@ -6,13 +6,15 @@ const id=z.string().min(1).max(200), hash=z.string().regex(/^[a-f0-9]{64}$/), ti
 const common={version:z.literal(1),operationId:id,sourceId:id,groupId:z.string().regex(/^[0-9]+$/).max(MAX_GROUP_ID_LENGTH),canonicalTarget:z.string().max(200),issuedAt:timestamp,expiresAt:timestamp,keyId:id};
 const scan=z.strictObject({...common,kind:z.literal('ScanCommand')});
 const reply=z.strictObject({...common,kind:z.literal('GroupReplyCommand'),targetId:id,text:z.string().min(1).max(10000),textHash:hash});
+const edit=z.strictObject({...common,kind:z.literal('GroupEditCommand'),targetId:id,text:z.string().min(1).max(4000),textHash:hash});
 const reconcile=z.strictObject({...common,kind:z.literal('ReconcileCommand'),attemptOperationId:id,targetId:id,textHash:hash,senderId:id.nullable(),attemptStartedAt:timestamp,attemptFinishedAt:timestamp});
-export const ScanCommand=scan, GroupReplyCommand=reply, ReconcileCommand=reconcile;
-export const commandSchema=z.discriminatedUnion('kind',[scan,reply,reconcile]);
+export const ScanCommand=scan, GroupReplyCommand=reply, GroupEditCommand=edit, ReconcileCommand=reconcile;
+export const commandSchema=z.discriminatedUnion('kind',[scan,reply,edit,reconcile]);
 const evidence={targetId:id,senderId:id,textHash:hash,attemptStartedAt:timestamp,attemptFinishedAt:timestamp,evidenceHash:hash,remoteId:id.nullable()};
 const resultUnion=z.discriminatedUnion('kind',[
-  z.strictObject({...common,kind:z.literal('ScanResult'),selectorVersion:id,coverage:z.enum(['complete','partial','none']),health:z.enum(['healthy','auth_required','checkpoint','expired','quarantined','selector_failure','failed']),reason:z.enum(['selector_changed','identity_missing','identity_ambiguous','scan_limit','page_changed','session_unavailable','session_lost','scan_failed','scan_timeout','scan_cancelled']).nullable().optional(),groupName:z.string().min(1).max(300).nullable().optional(),accessLevel:z.enum(['unknown','reader','admin']).optional(),cursor:id.nullable().optional(),observations:z.array(z.strictObject({targetId:id,text:z.string().max(20000),observedAt:timestamp,evidenceHash:hash,kind:z.enum(['post','comment']).optional(),postId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).optional(),commentId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).nullable().optional(),authorLabel:z.string().max(300).optional(),providerTimestamp:timestamp.nullable().optional()})).max(1000)}),
+  z.strictObject({...common,kind:z.literal('ScanResult'),selectorVersion:id,coverage:z.enum(['complete','partial','none']),health:z.enum(['healthy','auth_required','checkpoint','expired','quarantined','selector_failure','failed']),reason:z.enum(['selector_changed','identity_missing','identity_ambiguous','scan_limit','page_changed','session_unavailable','session_lost','scan_failed','scan_timeout','scan_cancelled']).nullable().optional(),groupName:z.string().min(1).max(300).nullable().optional(),accessLevel:z.enum(['unknown','reader','admin']).optional(),cursor:id.nullable().optional(),observations:z.array(z.strictObject({targetId:id,text:z.string().max(20000),observedAt:timestamp,evidenceHash:hash,kind:z.enum(['post','comment']).optional(),postId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).optional(),commentId:z.string().regex(/^\d+$/).max(MAX_GROUP_ID_LENGTH).nullable().optional(),authorLabel:z.string().max(300).optional(),providerTimestamp:timestamp.nullable().optional(),reactionCount:z.number().int().nonnegative().max(1000000000).nullable().optional(),commentCount:z.number().int().nonnegative().max(1000000000).nullable().optional()})).max(1000)}),
   z.strictObject({...common,...evidence,kind:z.literal('GroupReplyResult'),state:z.enum(['sent','failed','unknown'])}),
+  z.strictObject({...common,...evidence,kind:z.literal('GroupEditResult'),state:z.enum(['sent','failed','unknown'])}),
   z.strictObject({...common,...evidence,attemptOperationId:id,kind:z.literal('ReconcileResult'),state:z.enum(['sent','not_found','unknown'])}),
 ]);
 export const resultSchema=resultUnion.superRefine((value,context)=>{
@@ -37,7 +39,7 @@ function validate(value,schema,now) {
   const issued=Date.parse(parsed.issuedAt),expiry=Date.parse(parsed.expiresAt),time=+now;
   if(!Number.isFinite(time)||issued>time+30000||expiry<=issued||expiry-issued>600000) throw new Error('Invalid envelope time or lifetime');
   if(expiry<=time) throw new Error('Envelope expired');
-  if(parsed.kind==='GroupReplyCommand' && createHash('sha256').update(parsed.text,'utf8').digest('hex')!==parsed.textHash) throw new Error('Reply text hash mismatch');
+  if(['GroupReplyCommand','GroupEditCommand'].includes(parsed.kind) && createHash('sha256').update(parsed.text,'utf8').digest('hex')!==parsed.textHash) throw new Error('Reply text hash mismatch');
   if(parsed.attemptStartedAt && (Date.parse(parsed.attemptFinishedAt)<Date.parse(parsed.attemptStartedAt)||Date.parse(parsed.attemptFinishedAt)>time+30000)) throw new Error('Invalid attempt time');
   if(parsed.kind==='ScanResult' && parsed.observations.some(item=>Date.parse(item.observedAt)>time+30000)) throw new Error('Invalid observation time');
   return parsed;
@@ -68,10 +70,10 @@ export const signResult=(value,options)=>sign(value,resultSchema,options);
 export const verifyResult=(value,options)=>verify(value,resultSchema,options);
 export function assertResultBoundToCommand(resultValue,commandValue) {
   const {signature:_resultSignature,...result}=resultValue,{signature:_commandSignature,...command}=commandValue;
-  const expected=command.kind==='ScanCommand'?'ScanResult':command.kind==='GroupReplyCommand'?'GroupReplyResult':'ReconcileResult';
+  const expected=command.kind==='ScanCommand'?'ScanResult':command.kind==='GroupReplyCommand'?'GroupReplyResult':command.kind==='GroupEditCommand'?'GroupEditResult':'ReconcileResult';
   if(result.kind!==expected||['operationId','sourceId','groupId','canonicalTarget'].some(field=>result[field]!==command[field]))throw new Error('Result command binding mismatch');
   if(command.kind!=='ScanCommand'&&['targetId','textHash'].some(field=>result[field]!==command[field]))throw new Error('Result evidence binding mismatch');
-  if(command.kind==='GroupReplyCommand') {
+  if(command.kind==='GroupReplyCommand'||command.kind==='GroupEditCommand') {
     if(Date.parse(result.attemptStartedAt)<Date.parse(command.issuedAt)-30000||Date.parse(result.attemptFinishedAt)>Date.parse(command.expiresAt)+30000)throw new Error('Result attempt binding mismatch');
   }
   if(command.kind==='ReconcileCommand') {

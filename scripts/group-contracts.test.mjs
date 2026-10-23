@@ -40,6 +40,8 @@ test('reply command preserves exact text and verifies its hash without admitting
   const text='ห้องว่าง\nExact text';
   const reply={...base,kind:'GroupReplyCommand',targetId:'post-1',text,textHash:createHash('sha256').update(text).digest('hex')};
   const signed=signCommand(reply,options); assert.equal(verifyCommand(signed,verify).text,text);
+  const edit=signCommand({...reply,kind:'GroupEditCommand',operationId:'edit-op'},options);
+  assert.equal(verifyCommand(edit,verify).kind,'GroupEditCommand');
   assert.throws(()=>signCommand({...reply,textHash:'0'.repeat(64)},options),/hash/i);
   assert.throws(()=>signCommand({...reply,inventory:[{rent:100}]},options));
   const reconcile={...base,kind:'ReconcileCommand',attemptOperationId:'reply-op',targetId:'post-1',textHash:reply.textHash,senderId:'sender-1',attemptStartedAt:base.issuedAt,attemptFinishedAt:base.issuedAt};
@@ -67,4 +69,7 @@ test('delivery result binding rejects wrong evidence fields, impossible remote I
   for(const patch of [{targetId:'post:2'},{textHash:'0'.repeat(64)},{attemptStartedAt:'2026-10-22T11:00:00.000Z',attemptFinishedAt:base.issuedAt}]) assert.throws(()=>assertResultBoundToCommand({...result,...patch},reply),/binding/i);
   assert.throws(()=>signResult({...body,remoteId:null},options));
   assert.throws(()=>signResult({...body,state:'unknown',remoteId:'remote'},options));
+  const edit=signCommand({...Object.fromEntries(Object.entries(reply).filter(([name])=>name!=='signature')),kind:'GroupEditCommand',operationId:'edit-op'},options);
+  const editResult=signResult({...body,kind:'GroupEditResult',operationId:'edit-op'},{key:options.key,keyId:options.keyId,now});
+  assert.doesNotThrow(()=>assertResultBoundToCommand(editResult,edit));
 });

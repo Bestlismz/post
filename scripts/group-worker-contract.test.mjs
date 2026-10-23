@@ -69,18 +69,21 @@ test('client rejects signed results for another operation and bounds response st
   assert.throws(()=>createGroupWorkerClient({baseUrl:'https://evil.test',keys,keyId:'current',key}),/internal/);
 });
 
-test('private server and client carry only signed exact group reply and reconciliation commands',async t=>{
+test('private server and client carry only signed exact group reply, edit, and reconciliation commands',async t=>{
   const {createGroupWorkerServer}=await load('group-worker/server');
   const {createGroupWorkerClient}=await load('channels/groups/client');
   const now=new Date(),base={version:1,operationId:'reply-op',sourceId:'source-1',groupId:'100',canonicalTarget:'https://www.facebook.com/groups/100',targetId:'comment:900:901',textHash:createHash('sha256').update('Exact reply').digest('hex'),keyId:'current',issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString()};
   const reply=signCommand({...base,kind:'GroupReplyCommand',text:'Exact reply'},{key,keyId:'current'});
+  const edit=signCommand({...base,kind:'GroupEditCommand',operationId:'edit-op',text:'Edited reply',textHash:createHash('sha256').update('Edited reply').digest('hex')},{key,keyId:'current'});
   const reconcile=signCommand({...base,operationId:'reconcile-op',kind:'ReconcileCommand',attemptOperationId:'reply-op',senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString()},{key,keyId:'current'});
   const server=createGroupWorkerServer({keys,keyId:'current',key,allowedGroups:['100'],stagingSendEnabled:true,stagingAllowedGroups:['100'],scan:async()=>assert.fail('scan ran'),
     reply:async command=>({state:'sent',targetId:command.targetId,textHash:command.textHash,senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString(),evidenceHash:'b'.repeat(64),remoteId:'remote-1'}),
+    edit:async command=>({state:'sent',targetId:command.targetId,textHash:command.textHash,senderId:'sender-1',attemptStartedAt:now.toISOString(),attemptFinishedAt:now.toISOString(),evidenceHash:'d'.repeat(64),remoteId:'remote-1'}),
     reconcile:async command=>({state:'not_found',targetId:command.targetId,textHash:command.textHash,senderId:command.senderId,attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'c'.repeat(64),remoteId:null})});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const client=createGroupWorkerClient({baseUrl:`http://127.0.0.1:${server.address().port}`,keys,keyId:'current',key});
   assert.equal((await client.reply(reply)).remoteId,'remote-1');
+  assert.equal((await client.edit(edit)).remoteId,'remote-1');
   assert.equal((await client.reconcile(reconcile)).state,'not_found');
 });
 
@@ -193,6 +196,28 @@ test('recorded Facebook DOM driver locates an exact target sends once and reconc
   assert.equal(await page.evaluate(()=>window.clicked),'target');
   const evidence=await driver.findReplyEvidence({...replyCommand,textHash:createHash('sha256').update('Exact reply').digest('hex')});
   assert.equal(evidence.length,1);assert.equal(evidence[0].text,'Exact reply');assert.equal(evidence[0].senderId,sender);assert.equal(evidence[0].remoteId,'902');
+});
+
+test('Facebook comment editing targets one owned comment and verifies the updated visible text',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header>
+    <div role="article"><a href="/groups/100/posts/900/"></a>
+      <div role="article"><a href="/me">Me</a><a href="/groups/100/posts/900/?comment_id=901"></a>
+        <div data-ad-preview="message" id="message">Old reply</div>
+        <button aria-label="Actions for this comment" id="actions">...</button>
+        <div role="menu" id="menu" style="display:none"><div role="menuitem" id="edit">Edit</div></div>
+        <div contenteditable="true" role="textbox" aria-label="Edit comment" id="editor" style="display:none">Old reply</div>
+      </div>
+    </div>
+    <script>
+      document.querySelector('#actions').onclick=()=>document.querySelector('#menu').style.display='block';
+      document.querySelector('#edit').onclick=()=>{document.querySelector('#menu').style.display='none';const box=document.querySelector('#editor');box.style.display='block';box.focus();};
+      document.querySelector('#editor').onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();document.querySelector('#message').textContent='Updated reply';event.currentTarget.style.display='none';}};
+    </script>`);
+  await page.goto('https://www.facebook.com/groups/100/posts/900/?comment_id=901');
+  const driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'comment:900:901'});
+  const result=await driver.editExact(target,'Updated reply',{deadline:Date.now()+3000});
+  assert.equal(await page.locator('#message').textContent(),'Updated reply');assert.equal(result.state,'sent');assert.equal(result.remoteId,'901');
 });
 
 test('post delivery locates the unique composer in Facebook current permalink dialog without role article or permalink anchors',async t=>{

@@ -87,6 +87,11 @@ function InboxWorkspace() {
   useEffect(() => { applySelection(requestedId); }, [applySelection, requestedId]);
   useEffect(() => { setDetail(null); void loadDetail(selectedId); }, [selectedId, loadDetail]);
   useEffect(() => {
+    if (!selectedId) return undefined;
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void loadDetail(selectedRef.current); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [loadDetail, selectedId]);
+  useEffect(() => {
     const open = Boolean(selectedId);
     if (sheetWasOpenRef.current && !open) requestAnimationFrame(() => { if (tableTriggerRef.current?.isConnected) tableTriggerRef.current.focus({ preventScroll: true }); });
     sheetWasOpenRef.current = open;
@@ -117,6 +122,7 @@ function InboxWorkspace() {
       if (action === "edit") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/edit`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
       if (action === "approve") return api.request(`/api/replies/${encodeURIComponent(input.replyId)}/approve`, { method: "POST", headers: commandHeaders({ action, id: input.replyId, revision, csrfToken: token }), body: "{}" });
       if (action === "retry") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/retry`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: JSON.stringify({ verification: "comment_not_present" }) });
+      if (action === "edit-delivered") return api.request(`/api/deliveries/${encodeURIComponent(input.deliveryIntentId)}/edit-comment`, { method: "POST", headers: commandHeaders({ action, id: input.deliveryIntentId, revision, csrfToken: token }), body: JSON.stringify({ text: input.text }) });
       throw new Error("Unsupported Inbox command");
     };
     return retryOnceWithFreshCsrf({ token: csrfToken, request, refresh: async () => (await api.request("/api/auth/csrf", { method: "POST" })).csrfToken, onRefresh: setCsrfToken });

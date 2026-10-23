@@ -24,8 +24,33 @@ function identity(href,groupId) {
   if(commentId&&!new RegExp(`^[0-9]{1,${MAX_GROUP_ID_LENGTH}}$`).test(commentId)) throw new Error('Invalid observation identity');
   return {targetId:commentId?`comment:${match[2]}:${commentId}`:`post:${match[2]}`,kind:commentId?'comment':'post',postId:match[2],commentId};
 }
+async function expandVisibleComments(page,{maxClicks=24,signal}={}) {
+  if(typeof page.locator!=='function')return 0;
+  const label=/^(?:View (?:all |more |previous )?(?:\d+ )?(?:comments?|replies?)|ดูความคิดเห็น(?:ทั้งหมด|เพิ่มเติม|ก่อนหน้า)?(?:อีก \d+ รายการ)?|ดูการตอบกลับ(?:ทั้งหมด|เพิ่มเติม)?(?:อีก \d+ รายการ)?)$/i;
+  let clicks=0;
+  while(clicks<maxClicks&&!signal?.aborted) {
+    const controls=page.locator('button, [role="button"]').filter({hasText:label});
+    const count=Math.min(await controls.count(),50);let clicked=false;
+    for(let index=0;index<count;index++) {
+      const control=controls.nth(index);
+      if(!await control.isVisible().catch(()=>false))continue;
+      try {await control.click({timeout:3000});} catch {continue;}
+      clicks++;clicked=true;
+      if(typeof page.waitForTimeout==='function')await page.waitForTimeout(120);
+      break;
+    }
+    if(!clicked)break;
+  }
+  return clicks;
+}
 async function readPage(page,groupId) {
   return page.evaluate(({groupId,maxIdLength})=>{
+    const countFrom=value=>{
+      const raw=String(value??'').replace(/,/g,'').trim();
+      const match=raw.match(/(\d+(?:\.\d+)?)\s*([KMB]|พัน|หมื่น|แสน|ล้าน)?/i);if(!match)return null;
+      const factor={k:1000,m:1000000,b:1000000000,'พัน':1000,'หมื่น':10000,'แสน':100000,'ล้าน':1000000}[String(match[2]??'').toLowerCase()]??1;
+      const count=Math.round(Number(match[1])*factor);return Number.isSafeInteger(count)&&count>=0?count:null;
+    };
     const groupName=(document.querySelector('main h1, [role="main"] h1, h1')?.textContent??'').slice(0,300);
     const accessLevel=document.querySelector('a[href*="/admin_assistant/"], a[href*="/member-requests/"], a[href*="/admin_activities/"], a[href*="/edit/"]')?'admin':'reader';
     const feed=document.querySelector('[role="feed"]');
@@ -62,7 +87,10 @@ async function readPage(page,groupId) {
         continue;
       }
       const [link]=targets.values();
-      items.push({href:link.href.slice(0,2000),authorLabel:(heading.textContent??'').slice(0,300),text:text.textContent.slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null});
+      const labels=owned('[aria-label], button, [role="button"]').map(node=>`${node.getAttribute('aria-label')??''} ${node.textContent??''}`.trim());
+      const reactionLabel=labels.find(value=>/reaction|ถูกใจ|การตอบสนอง/i.test(value));
+      const commentLabel=labels.find(value=>/comments?|ความคิดเห็น/i.test(value));
+      items.push({href:link.href.slice(0,2000),authorLabel:(heading.textContent??'').slice(0,300),text:text.textContent.slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null,reactionCount:countFrom(reactionLabel),commentCount:countFrom(commentLabel)});
     }
     return {groupName,accessLevel,selectorValid:!!feed&&items.length>0&&!reason,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});
@@ -123,6 +151,7 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
   }
   for(let pass=0;pass<Math.min(maxPasses,10);pass++) {
     const before=await checkSession();if(before)return before;
+    try {await abortable(()=>expandVisibleComments(page,{signal}),signal);} catch {if(signal?.aborted)return batch(observations.length?'partial':'none','failed','scan_cancelled');}
     let snapshot;
     try { snapshot=await abortable(()=>readPage(page,command.groupId),signal); }
     catch {
@@ -150,7 +179,9 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
       const text=clean(raw.text,20000),authorLabel=clean(raw.authorLabel,300);
       if(!text)continue;
       const providerTimestamp=raw.providerTimestamp&&Number.isFinite(Date.parse(raw.providerTimestamp))?new Date(raw.providerTimestamp).toISOString():null;
-      const item={...ids,text,authorLabel,providerTimestamp,observedAt:new Date().toISOString()};
+      const reactionCount=Number.isSafeInteger(raw.reactionCount)&&raw.reactionCount>=0?raw.reactionCount:null;
+      const commentCount=Number.isSafeInteger(raw.commentCount)&&raw.commentCount>=0?raw.commentCount:null;
+      const item={...ids,text,authorLabel,providerTimestamp,reactionCount,commentCount,observedAt:new Date().toISOString()};
       item.evidenceHash=createHash('sha256').update(JSON.stringify([command.groupId,ids.targetId,authorLabel,text,providerTimestamp])).digest('hex');
       bytes+=Buffer.byteLength(JSON.stringify(item));
       if(bytes>180000)return batch('partial','healthy','scan_limit');

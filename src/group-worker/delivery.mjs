@@ -23,7 +23,7 @@ function common(command,now) {
     targetId:command.targetId,textHash:command.textHash,issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString(),keyId:command.keyId};
 }
 function resultEvidence(command,{state,senderId,started,finished,remoteId=null,code}) {
-  const body={...common(command,finished),kind:'GroupReplyResult',state,senderId,textHash:command.textHash,
+  const body={...common(command,finished),kind:command.kind==='GroupEditCommand'?'GroupEditResult':'GroupReplyResult',state,senderId,textHash:command.textHash,
     attemptStartedAt:started.toISOString(),attemptFinishedAt:finished.toISOString(),remoteId};
   body.evidenceHash=digest(canonicalSerialize([body.canonicalTarget,body.targetId,body.senderId,body.textHash,body.attemptStartedAt,body.attemptFinishedAt,body.remoteId,body.state]));
   return {...body,code};
@@ -68,6 +68,29 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
       return finish(resultEvidence(command,{state:error?.possibleClick?'unknown':'failed',senderId,started,finished:clock(),code:error?.possibleClick?'POSSIBLE_SEND':'SEND_REJECTED'}));
     }
   }
+  async function edit(input,options={}) {
+    const command=plainCommand(input);if(command.kind!=='GroupEditCommand')throw new Error('Group edit command required');
+    const reservation=await reserve(command);
+    if(reservation.existing) {
+      if(reservation.existing.result)return reservation.existing.result;
+      const now=clock(),result=resultEvidence(command,{state:'unknown',senderId:reservation.existing.senderId??'unknown',started:new Date(reservation.existing.attemptStartedAt??now),finished:new Date(reservation.existing.attemptFinishedAt??now),code:'ATTEMPT_INTERRUPTED'});
+      await durableReplace(reservation.path,{...reservation.existing,state:'unknown',phase:'terminal',attemptFinishedAt:result.attemptFinishedAt,result});await syncDirectory(ledgerPath);return result;
+    }
+    const started=clock();let senderId='unknown';
+    const finish=async result=>{await durableReplace(reservation.path,{commandHash:reservation.commandHash,state:result.state,phase:'terminal',senderId,attemptStartedAt:result.attemptStartedAt,attemptFinishedAt:result.attemptFinishedAt,result});await syncDirectory(ledgerPath);return result;};
+    try {
+      const target=await driver.locateExactTarget(command);
+      if(target?.canonicalTarget!==command.canonicalTarget||target?.targetId!==command.targetId)return finish(resultEvidence(command,{state:'failed',senderId,started,finished:clock(),code:'TARGET_MISMATCH'}));
+      senderId=await driver.identifySender(command);
+      await durableReplace(reservation.path,{commandHash:reservation.commandHash,state:'attempting',phase:'possible_edit',senderId,attemptStartedAt:started.toISOString(),attemptDeadlineAt:command.expiresAt});await syncDirectory(ledgerPath);
+      const edited=await driver.editExact(target,command.text,{signal:options.signal,deadline:Date.parse(command.expiresAt)});
+      if(edited?.state==='sent'&&edited.visible===true)return finish(resultEvidence(command,{state:'sent',senderId,started,finished:clock(),remoteId:edited.remoteId,code:'VISIBLE_VERIFIED'}));
+      return finish(resultEvidence(command,{state:edited?.possibleClick?'unknown':'failed',senderId,started,finished:clock(),remoteId:null,code:edited?.possibleClick?'POSSIBLE_EDIT':'EDIT_REJECTED'}));
+    } catch(error) {
+      if(error?.abrupt)throw error;
+      return finish(resultEvidence(command,{state:error?.possibleClick?'unknown':'failed',senderId,started,finished:clock(),code:error?.possibleClick?'POSSIBLE_EDIT':'EDIT_REJECTED'}));
+    }
+  }
   async function reconcile(input) {
     const command=plainCommand(input);if(command.kind!=='ReconcileCommand')throw new Error('Reconcile command required');
     const attempt=await readRecord(pathFor(ledgerPath,command.attemptOperationId));
@@ -83,5 +106,5 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
     body.evidenceHash=digest(canonicalSerialize([body.canonicalTarget,body.targetId,body.senderId,body.textHash,body.attemptStartedAt,body.attemptFinishedAt,body.remoteId,body.state]));
     return body;
   }
-  return {deliver,reconcile};
+  return {deliver,edit,reconcile};
 }

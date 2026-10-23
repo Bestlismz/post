@@ -18,6 +18,8 @@ import { createGroupRecoveryClient } from './channels/groups/recovery-client.mjs
 import { groupCommandKeyConfig } from './channels/groups/keys.mjs';
 import { httpError } from './auth/authorize.mjs';
 import { createSourceService } from './sources/service.mjs';
+import { createGroupWorkerClient } from './channels/groups/client.mjs';
+import { createGroupCommentEditService } from './inbox/group-comment-edit.mjs';
 
 const config = loadConfig();
 const pool = createPool(config);
@@ -31,6 +33,8 @@ const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig
 const groupSigning=groupCommandKeyConfig(process.env,{optional:true});
 const groupKeys=groupSigning?.keys??{},groupKeyId=groupSigning?.keyId??'',groupKey=groupSigning?.key;
 const sourceService=createSourceService(pool,{signingKey:groupKey,keyId:groupKeyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v3').split(',').map(value=>value.trim()).filter(Boolean)});
+const groupClient=groupKey?createGroupWorkerClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',keys:groupKeys,keyId:groupKeyId,key:groupKey}):null;
+const groupCommentEdits=groupClient?createGroupCommentEditService({pool,client:groupClient,signingKey:groupKey,keyId:groupKeyId}):null;
 const recoveryClient=groupKey?createGroupRecoveryClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',keys:groupKeys,keyId:groupKeyId,key:groupKey}):null;
 const recovery={
   start:input=>recoveryClient?recoveryClient.start(input):Promise.reject(httpError(503,'Group worker unavailable')),
@@ -49,7 +53,7 @@ app.use(createMetaRouter({ pool, environmentSource: (pageId) => metaConnection.r
 app.use(express.json({ limit: "32kb" }));
 app.use(createApplicationRouter({ pool, config }));
 app.use(createMetaConnectionRouter({ pool, config, connection: metaConnection }));
-app.use(createInboxRouter({pool,config,events:{signal:shutdown.signal}}));
+app.use(createInboxRouter({pool,config,events:{signal:shutdown.signal},groupCommentEdits}));
 app.use(createAutomationRouter({pool,config}));
 app.use(createSourceRouter({pool,config,recovery,registry:recoveryRegistry,proxyHttp:(request,response)=>recoveryProxy.web(request,response),sourceService}));
 app.get("/health", async (_request, response) => {

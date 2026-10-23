@@ -15,7 +15,9 @@ function normalizeObservation(item) {
     (item.kind==='comment'?(!match[3]||item.commentId!==match[3]):(match[3]||item.commentId))) throw new Error('Invalid observation identity');
   const text=clean(item.text,20000),authorLabel=clean(item.authorLabel,300);
   if(!text) throw new Error('Empty observation text');
-  return {...item,text,authorLabel,contentHash:hash(canonicalSerialize([text,authorLabel,item.providerTimestamp??null]))};
+  const reactionCount=Number.isSafeInteger(item.reactionCount)&&item.reactionCount>=0?item.reactionCount:null;
+  const commentCount=Number.isSafeInteger(item.commentCount)&&item.commentCount>=0?item.commentCount:null;
+  return {...item,text,authorLabel,reactionCount,commentCount,contentHash:hash(canonicalSerialize([text,authorLabel,item.providerTimestamp??null]))};
 }
 
 export function createGroupResultService(pool,{keys,signingKey,keyId,clock=()=>new Date(),supportedSelectorVersions=[]}={}) {
@@ -81,8 +83,8 @@ export function createGroupResultService(pool,{keys,signingKey,keyId,clock=()=>n
 
 async function persistObservation(tx,operation,source,result,item) {
   const organizationId=operation.organization_id,observationId=randomUUID();
-  await tx.query(`INSERT INTO group_observations(id,organization_id,source_id,operation_id,target_id,post_id,comment_id,kind,text,author_label,observed_at,provider_timestamp,evidence_hash,content_hash,selector_version)
-    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,[observationId,organizationId,source.id,operation.id,item.targetId,item.postId,item.commentId??null,item.kind,item.text,item.authorLabel,item.observedAt,item.providerTimestamp??null,item.evidenceHash,item.contentHash,result.selectorVersion]);
+  await tx.query(`INSERT INTO group_observations(id,organization_id,source_id,operation_id,target_id,post_id,comment_id,kind,text,author_label,observed_at,provider_timestamp,evidence_hash,content_hash,selector_version,reaction_count,comment_count)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,[observationId,organizationId,source.id,operation.id,item.targetId,item.postId,item.commentId??null,item.kind,item.text,item.authorLabel,item.observedAt,item.providerTimestamp??null,item.evidenceHash,item.contentHash,result.selectorVersion,item.reactionCount,item.commentCount]);
   const {rows:[previous]}=await tx.query(`SELECT o.content_hash FROM group_targets t
     JOIN group_observations o ON o.organization_id=t.organization_id AND o.id=t.observation_id
     WHERE t.organization_id=$1 AND t.source_id=$2 AND t.target_id=$3 FOR UPDATE OF t`,[organizationId,source.id,item.targetId]);

@@ -19,7 +19,7 @@ const empty=z.strictObject({});
 const edit=z.strictObject({text:z.string().trim().min(1).max(4000)});
 const receiptResponse=result=>({operation:result.operation});
 
-export function createInboxRouter({pool,config,events={}}) {
+export function createInboxRouter({pool,config,events={},groupCommentEdits=null}) {
   const router=Router(),queries=createInboxQueries({pool}),service=createInboxService({pool});
   const write=[requireRole('admin','operator'),checkOrigin(config),checkCsrf];
   router.use(['/api/inbox','/api/replies','/api/deliveries'],authenticate(pool));
@@ -59,6 +59,12 @@ export function createInboxRouter({pool,config,events={}}) {
     const body=z.strictObject({verification:z.literal('comment_not_present')}).parse(req.body),command=commandFor(req,body);
     const result=await service.retryUnknownDelivery(req.params.id,command.expectedRevision,req.actor,{idempotencyKey:command.idempotencyKey});
     res.status(202).json(receiptResponse(result));
+  });
+  router.post('/api/deliveries/:id/edit-comment',...write,async(req,res)=>{
+    if(!groupCommentEdits)throw httpError(503,'Facebook comment editing is unavailable');
+    const body=edit.parse(req.body),command=commandFor(req,body);
+    const result=await groupCommentEdits.edit({organizationId:req.actor.organizationId,actorId:req.actor.id,deliveryIntentId:req.params.id,text:body.text,idempotencyKey:command.idempotencyKey,expectedRevision:command.expectedRevision});
+    res.status(result.state==='attempting'?202:200).json({edit:result});
   });
   router.post('/api/inbox/:id/handoff',...write,async(req,res)=>{
     const {reason}=z.strictObject({reason:z.string().trim().min(1).max(200)}).parse(req.body);

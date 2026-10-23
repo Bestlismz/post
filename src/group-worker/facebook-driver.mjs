@@ -173,5 +173,44 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
     catch(error) {error.possibleClick=true;throw error;}
     return {state:'unknown',visible:false,remoteId:null,possibleClick:true,observedAt:clock().toISOString()};
   }
-  return {locateExactTarget,identifySender,sendExact,findReplyEvidence};
+  async function editExact(target,text,{signal,deadline=Date.now()+10000}={}) {
+    if(target?.identity?.kind!=='comment'||typeof text!=='string'||!text)throw Error('Exact Facebook edit unavailable');
+    assertActive({signal,deadline});
+    senderId??=await identifySender();
+    const actionButtons=await directOwned(target,'button, [role="button"]','visible');
+    const editMenus=[];
+    for(const button of actionButtons) {
+      const label=((await button.getAttribute('aria-label'))??'').trim();
+      if(/actions? for (?:this )?comment|การดำเนินการ.*ความคิดเห็น/i.test(label))editMenus.push(button);
+    }
+    if(editMenus.length!==1)throw Error('Exact Facebook comment menu unavailable');
+    await editMenus[0].click();assertActive({signal,deadline});
+    const menuItems=page.locator('[role="menuitem"], [role="menu"] [role="button"]');
+    const indexes=await menuItems.evaluateAll(nodes=>nodes.flatMap((node,index)=>/^(edit|แก้ไข)$/i.test((node.textContent??'').trim())?[index]:[]));
+    if(indexes.length!==1)throw Error('Exact Facebook edit action unavailable');
+    await menuItems.nth(indexes[0]).click();
+    let editor;
+    do {
+      assertActive({signal,deadline});
+      const records=await editorRecords(await locateExactTarget({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:target.targetId}));
+      const candidates=records.filter(record=>record.role==='edit'||/edit|แก้ไข/i.test(record.label));
+      if(candidates.length>1)throw Error('Exact Facebook edit composer ambiguous');
+      if(candidates.length===1){editor=candidates[0].locator;break;}
+      await page.waitForTimeout(50);
+    } while(Date.now()<deadline);
+    if(!editor)throw Error('Exact Facebook edit composer unavailable');
+    await editor.fill(text);assertActive({signal,deadline});
+    try {await editor.press('Enter');}catch(error){error.possibleClick=true;throw error;}
+    const remoteId=target.identity.commentId;
+    try {
+      do {
+        assertActive({signal,deadline});
+        const matches=(await findReplyEvidence({groupId:target.groupId,canonicalTarget:target.canonicalTarget,targetId:`post:${target.identity.postId}`})).filter(item=>item.remoteId===remoteId&&item.text===text);
+        if(matches.length===1)return {state:'sent',visible:true,remoteId};
+        await page.waitForTimeout(250);
+      } while(Date.now()<deadline);
+    } catch(error){error.possibleClick=true;throw error;}
+    return {state:'unknown',visible:false,remoteId,possibleClick:true};
+  }
+  return {locateExactTarget,identifySender,sendExact,editExact,findReplyEvidence};
 }

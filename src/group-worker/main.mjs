@@ -23,6 +23,6 @@ const ledgerPath=process.env.GROUP_OPERATION_LEDGER_PATH??'/data/group-operation
 const deliver=(method)=>(command,options)=>session.withGroup(command,(page)=>createGroupDeliveryBoundary({ledgerPath,driver:createFacebookGroupDriver(page)})[method](command,options),options);
 const cdpUrl=process.env.CHROME_CDP_URL??'http://127.0.0.1:9222';
 const server=createGroupWorkerServer({keys:allKeys,keyId,key,allowedGroups,recoveryGate,sessionHealth:()=>probeBrowserHealth({cdpUrl,ownership:session.getHealth()}),stagingSendEnabled:process.env.STAGING_FACEBOOK_SEND==='true',stagingAllowedGroups,
-  scan:(command,options)=>session.withGroup(command,observeGroupPage,options),reply:deliver('deliver'),reconcile:deliver('reconcile')});
+  scan:(command,options)=>session.withGroup(command,observeGroupPage,options),reply:deliver('deliver'),edit:deliver('edit'),reconcile:deliver('reconcile')});
 server.listen(Number(process.env.PORT??3001),'0.0.0.0',()=>process.stdout.write('Group browser worker listening.\n'));
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>server.close(()=>process.exit()));

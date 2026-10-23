@@ -4,7 +4,7 @@ import { readBounded, verifyTransport } from '../channels/groups/transport.mjs';
 import { abortable, settleWithin } from './cancellation.mjs';
 import { SELECTOR_VERSION } from './observer.mjs';
 
-export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply,reconcile,recoveryGate=null,sessionHealth=null,stagingSendEnabled=false,stagingAllowedGroups=[],commandTimeoutMs=30000,cleanupTimeoutMs=600}) {
+export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply,edit,reconcile,recoveryGate=null,sessionHealth=null,stagingSendEnabled=false,stagingAllowedGroups=[],commandTimeoutMs=30000,cleanupTimeoutMs=600}) {
   const allowed=new Set(allowedGroups),sendAllowed=new Set(stagingAllowedGroups);
   const server=createServer(async(req,res)=>{
     const controller=new AbortController();let timer;
@@ -41,12 +41,12 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
       let command;
       try { verifyTransport(raw,req.headers,{keys}); command=verifyCommand(raw.toString('utf8'),{keys}); }
       catch { res.writeHead(401).end('Untrusted command'); return; }
-      if(!allowed.has(command.groupId)||!{ScanCommand:scan,GroupReplyCommand:reply,ReconcileCommand:reconcile}[command.kind]) { res.writeHead(403).end('Command refused'); return; }
+      if(!allowed.has(command.groupId)||!{ScanCommand:scan,GroupReplyCommand:reply,GroupEditCommand:edit,ReconcileCommand:reconcile}[command.kind]) { res.writeHead(403).end('Command refused'); return; }
       if(recoveryGate&&!recoveryGate.permitsAutomation()) {res.writeHead(423).end('Recovery active');return;}
-      if(command.kind==='GroupReplyCommand'&&(!stagingSendEnabled||!sendAllowed.has(command.groupId))) {res.writeHead(403).end('Staging send disabled');return;}
+      if(['GroupReplyCommand','GroupEditCommand'].includes(command.kind)&&(!stagingSendEnabled||!sendAllowed.has(command.groupId))) {res.writeHead(403).end('Staging send disabled');return;}
       let timedOut=false;
       timer=setTimeout(()=>{timedOut=true;controller.abort(new Error('Command deadline exceeded'));},Math.max(0,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now())));
-      const handler={ScanCommand:scan,GroupReplyCommand:reply,ReconcileCommand:reconcile}[command.kind];
+      const handler={ScanCommand:scan,GroupReplyCommand:reply,GroupEditCommand:edit,ReconcileCommand:reconcile}[command.kind];
       const pending=Promise.resolve().then(()=>handler(command,{signal:controller.signal}));
       let batch;
       try {batch=await abortable(()=>pending,controller.signal);}
@@ -62,7 +62,7 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
       const common={version:1,operationId:command.operationId,sourceId:command.sourceId,groupId:command.groupId,canonicalTarget:command.canonicalTarget,issuedAt:now.toISOString(),expiresAt:new Date(+now+60000).toISOString(),keyId};
       let body;
       if(command.kind==='ScanCommand') body={...common,...batch,kind:'ScanResult'};
-      else body={...common,kind:command.kind==='GroupReplyCommand'?'GroupReplyResult':'ReconcileResult',targetId:command.targetId,textHash:command.textHash,
+      else body={...common,kind:command.kind==='GroupReplyCommand'?'GroupReplyResult':command.kind==='GroupEditCommand'?'GroupEditResult':'ReconcileResult',targetId:command.targetId,textHash:command.textHash,
         ...(command.kind==='ReconcileCommand'?{attemptOperationId:command.attemptOperationId}:{}),senderId:batch.senderId,attemptStartedAt:batch.attemptStartedAt,attemptFinishedAt:batch.attemptFinishedAt,evidenceHash:batch.evidenceHash,remoteId:batch.remoteId,state:batch.state};
       const result=signResult(body,{key,keyId});
       res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(result));

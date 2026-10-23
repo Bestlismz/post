@@ -28,6 +28,7 @@ const grants = {
   delivery_cancellations: "SELECT, INSERT",
   group_delivery_attempts: "SELECT",
   group_send_receipts: "SELECT",
+  group_comment_edits: "SELECT, INSERT, UPDATE (state, outcome_code, finished_at)",
   meta_oauth_states: "SELECT, INSERT, UPDATE (used_at)",
   meta_page_sources: "SELECT, INSERT, UPDATE (name, health, expires_at, updated_at)",
   group_sources: "SELECT, INSERT, UPDATE (mode, allow_listed, policy, kill_switch, archived, revision, updated_at)",

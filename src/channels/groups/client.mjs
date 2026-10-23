@@ -17,5 +17,5 @@ export function createGroupWorkerClient({baseUrl,keys,keyId,key,fetchImpl=fetch,
       return result;
     } catch { throw new Error('Worker request failed'); } finally { clearTimeout(timer); }
   }
-  return {scan:envelope=>request(envelope,'ScanCommand','ScanResult'),reply:envelope=>request(envelope,'GroupReplyCommand','GroupReplyResult'),reconcile:envelope=>request(envelope,'ReconcileCommand','ReconcileResult')};
+  return {scan:envelope=>request(envelope,'ScanCommand','ScanResult'),reply:envelope=>request(envelope,'GroupReplyCommand','GroupReplyResult'),edit:envelope=>request(envelope,'GroupEditCommand','GroupEditResult'),reconcile:envelope=>request(envelope,'ReconcileCommand','ReconcileResult')};
 }
