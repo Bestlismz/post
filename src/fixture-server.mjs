@@ -183,7 +183,8 @@ if (mode === "fixture") {
   app.post("/api/sources/groups", asyncRoute(async (request, response) => {
     requireFixtureRole(request, "admin");
     requireFixtureCsrf(request);
-    response.status(201).json(sourcesAutomationWorkspace.addGroup(request.body, fixtureIdempotencyKey(request)));
+    const result = sourcesAutomationWorkspace.addGroup(request.body, fixtureIdempotencyKey(request));
+    response.status(result.created ? 201 : 200).json(result);
   }));
   app.patch("/api/sources/groups/:id", asyncRoute(async (request, response) => {
     requireFixtureRole(request, "admin");

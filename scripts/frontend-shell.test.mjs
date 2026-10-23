@@ -198,3 +198,17 @@ test("API client distinguishes a retryable network failure", async () => {
       !error.message.includes("internal-db"),
   );
 });
+
+test("API client preserves only allow-listed operational reason codes", async () => {
+  const { createApiClient } = await import("../app/lib/api-client.mjs");
+  const api = createApiClient(async () => new Response(
+    JSON.stringify({ error: "internal detail", reasonCode: "SELECTOR_CIRCUIT_OPEN" }),
+    { status: 409, headers: { "content-type": "application/json" } },
+  ));
+
+  await assert.rejects(api.request("/api/sources"), (error) =>
+    error.status === 409 &&
+    error.reasonCode === "SELECTOR_CIRCUIT_OPEN" &&
+    !error.message.includes("internal detail"),
+  );
+});

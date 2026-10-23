@@ -95,7 +95,7 @@ export default function SourcesPage() {
     event.preventDefault(); const value = groupUrl.trim();
     if (!exactGroupUrl.test(value)) { setFormError("ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น"); return; }
     setBusy("add"); setFormError("");
-    try { const created = await mutate("/api/sources/groups", { body: { url: value } }); setData((current) => ({ ...current, groups: [...current.groups.filter((entry) => entry.id !== created.id), created] })); setAddOpen(false); setGroupUrl(""); setNotice("เพิ่มกลุ่มและบันทึกลิงก์ถาวรแล้ว"); }
+    try { const result = await mutate("/api/sources/groups", { body: { url: value } }); const { created: wasCreated, ...source } = result; setData((current) => ({ ...current, groups: [...current.groups.filter((entry) => entry.id !== source.id), source] })); setAddOpen(false); setGroupUrl(""); setExpanded(source.id); setNotice(wasCreated ? "เพิ่มกลุ่มและบันทึกลิงก์ถาวรแล้ว" : "กลุ่มนี้ถูกเพิ่มไว้แล้ว แสดงรายการเดิมให้แล้ว"); requestAnimationFrame(() => document.querySelector(`[data-testid="source-${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })); }
     catch (error) { setFormError(error.status === 422 ? "ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น" : error.message); }
     finally { setBusy(""); }
   }
@@ -105,10 +105,10 @@ export default function SourcesPage() {
     catch (error) { setNotice(error.status === 409 ? "ยังเปิด Automatic ไม่ได้ กรุณาแก้สถานะสุขภาพและกติกาก่อน" : error.message); }
     finally { setBusy(""); }
   }
-  async function scan(source) {
+  async function scan(source, { recovery = false } = {}) {
     setBusy(`${source.id}:scan`);
-    try { await mutate(`/api/sources/groups/${source.id}/scans`, { revision: source.revision }); setNotice("รับคำขอสแกนแล้ว กำลังรอผลจาก browser worker"); await load(); }
-    catch (error) { setNotice(error.message); }
+    try { await mutate(`/api/sources/groups/${source.id}/scans`, { revision: source.revision, body: recovery ? { recovery: true } : {} }); setNotice(recovery ? "รับคำขอสแกนกู้คืนแล้ว กำลังตรวจ Facebook session และ selector ใหม่" : "รับคำขอสแกนแล้ว กำลังรอผลจาก browser worker"); await load(); }
+    catch (error) { setNotice(error.reasonCode === "SELECTOR_CIRCUIT_OPEN" || error.reasonCode === "SESSION_CIRCUIT_OPEN" ? "แหล่งนี้ต้องสแกนกู้คืนก่อน จึงจะกลับมารับโพสต์ได้" : error.message); }
     finally { setBusy(""); }
   }
   async function inspect(source) {

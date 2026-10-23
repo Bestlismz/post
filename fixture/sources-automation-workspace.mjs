@@ -245,7 +245,7 @@ export function createSourcesAutomationWorkspaceFixture({
       return once("sources.add", key, input, () => {
         const identity = canonicalGroupUrl(input?.url);
         const existing = groups.find((entry) => entry.groupId === identity.groupId);
-        if (existing) return publicSource(existing);
+        if (existing) return { ...publicSource(existing), created: false };
         const entry = {
           id: randomUUID(),
           ...identity,
@@ -266,7 +266,7 @@ export function createSourcesAutomationWorkspaceFixture({
         };
         groups.push(entry);
         persistGroups();
-        return publicSource(entry);
+        return { ...publicSource(entry), created: true };
       });
     },
     updateGroup(id, patch, revision, key) {

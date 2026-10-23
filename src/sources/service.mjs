@@ -28,10 +28,11 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
       if(!membership || !(action==='requestGroupScan'?['admin','operator']:['admin']).includes(membership.role)) fail(403,'Role does not permit this source action');
       await tx.query('SELECT id FROM organizations WHERE id=$1 FOR UPDATE',[organizationId]);
       return runIdempotent(tx,{organizationId,actorId,route:`sources.${action}`,key:idempotencyKey,body:{input,expectedRevision:expectedRevision??null}},async()=>{
-        let source;
+        let source,created;
         if(action==='addGroupSource') {
           const inserted=await insertGroupSource(tx,{id:randomUUID(),organizationId,...canonicalizeGroupUrl(input.url)});
           source=inserted.source;
+          created=inserted.created;
           if(inserted.created) await appendAudit(tx,{organizationId,actorId,action:'group.source_added',entityType:'group_source',entityId:source.id,details:{revision:source.revision}});
         } else {
           source=await getGroupSource(tx,organizationId,input.id);
@@ -58,7 +59,7 @@ export function createSourceService(pool,{signingKey,keyId,clock=()=>new Date(),
             return {status:202,body:{operationId:signed.operationId,command:signed}};
           }
         }
-        return {status:action==='addGroupSource'?201:200,body:source};
+        return {status:action==='addGroupSource'&&created?201:200,body:action==='addGroupSource'?{...source,created}:source};
       });
     });
     return response.body;

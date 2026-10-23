@@ -18,6 +18,6 @@ test("fixture Sources restores added groups after workspace restart", () => {
   const restarted = createSourcesAutomationWorkspaceFixture({ initialGroups: persistedGroups });
   assert.deepEqual(
     restarted.listSources().groups.find((group) => group.id === created.id),
-    created,
+    Object.fromEntries(Object.entries(created).filter(([key]) => key !== "created")),
   );
 });

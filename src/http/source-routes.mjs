@@ -147,7 +147,7 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
       let entity;
       try {entity=await sourceService.addGroupSource({organizationId:request.actor.organizationId,actorId:request.actor.id,idempotencyKey:request.get('Idempotency-Key'),input:{url}});}
       catch(error){if(/group URL/i.test(error.message))throw httpError(422,'Invalid group URL');throw error;}
-      response.status(201).json(publicSource(entity));
+      response.status(entity.created ? 201 : 200).json({...publicSource(entity),created:entity.created});
     } catch(error){next(error);}
   });
   router.patch('/api/sources/groups/:id',...write,async(request,response,next)=>{

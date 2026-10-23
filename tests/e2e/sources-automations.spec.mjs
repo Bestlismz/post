@@ -102,6 +102,34 @@ test("Sources adds only canonical Groups, changes mode, and makes scan/recovery 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });
 
+test("circuit-open source sends an explicit recovery scan", async ({ page }) => {
+  const scanRequests = [];
+  await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
+  await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "Admin", role: "admin" } } }));
+  await page.route("**/api/auth/csrf", (route) => route.fulfill({ json: { csrfToken: "test-csrf" } }));
+  await page.route("**/api/sources", (route) => route.fulfill({ json: {
+    actorRole: "admin",
+    pages: [],
+    groups: [{
+      ...group,
+      id: "group-source-recovery",
+      displayName: "test autopost",
+      canonicalUrl: "https://www.facebook.com/groups/2625323481252008",
+      mode: "approval",
+      health: { session: "healthy", selector: "failed", sessionCircuit: false, selectorCircuit: true },
+    }],
+  } }));
+  await page.route("**/api/sources/groups/group-source-recovery/scans", async (route) => {
+    scanRequests.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { operationId: "recovery-operation", state: "queued" } });
+  });
+
+  await page.goto("/sources");
+  const source = page.getByTestId("source-group-source-recovery");
+  await source.getByRole("button", { name: "สแกนกู้คืน" }).click();
+  await expect.poll(() => scanRequests).toEqual([{ recovery: true }]);
+});
+
 test("retry-required scan state stays scoped to its group through unrelated loads and recovery", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "fake-clock lifecycle runs once in desktop Chromium");
   await page.clock.install({ time: new Date("2026-10-22T09:00:00.000Z") });

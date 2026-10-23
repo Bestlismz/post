@@ -74,6 +74,7 @@ test("fixture mutations preserve canonical URLs, revisions, idempotency, scan re
   const created = await add.json();
   expect(created).toEqual(expect.objectContaining({
     canonicalUrl: "https://www.facebook.com/groups/999000111",
+    created: true,
     mode: "observe",
     revision: 1,
   }));
@@ -82,6 +83,12 @@ test("fixture mutations preserve canonical URLs, revisions, idempotency, scan re
     headers: headers("add-999"),
   });
   expect(await replay.json()).toEqual(created);
+  const duplicate = await request.post("/api/sources/groups", {
+    data: { url: "https://www.facebook.com/groups/999000111" },
+    headers: headers("add-999-duplicate"),
+  });
+  expect(duplicate.status()).toBe(200);
+  expect(await duplicate.json()).toEqual(expect.objectContaining({ id: created.id, created: false }));
   const reusedKey = await request.post("/api/sources/groups", {
     data: { url: "https://www.facebook.com/groups/999000222" },
     headers: headers("add-999"),

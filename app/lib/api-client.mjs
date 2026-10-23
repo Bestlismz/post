@@ -9,23 +9,31 @@ const safeErrors = new Map([
   [429, ["rate_limited", "มีคำขอมากเกินไป กรุณารอสักครู่"]],
 ]);
 
+const safeReasonCodes = new Set([
+  "GLOBAL_PAUSED",
+  "SOURCE_PAUSED",
+  "SESSION_CIRCUIT_OPEN",
+  "SELECTOR_CIRCUIT_OPEN",
+]);
+
 export class ApiError extends Error {
-  constructor({ status = 0, code = "network_error", message, retryable = false } = {}) {
+  constructor({ status = 0, code = "network_error", message, retryable = false, reasonCode = null } = {}) {
     super(message ?? "เชื่อมต่อระบบไม่ได้ กรุณาลองอีกครั้ง");
     this.name = "ApiError";
     this.status = status;
     this.code = code;
     this.retryable = retryable;
+    this.reasonCode = safeReasonCodes.has(reasonCode) ? reasonCode : null;
   }
 
   toJSON() {
-    return { name: this.name, status: this.status, code: this.code, message: this.message, retryable: this.retryable };
+    return { name: this.name, status: this.status, code: this.code, message: this.message, retryable: this.retryable, reasonCode: this.reasonCode };
   }
 }
 
-function mappedError(status) {
+function mappedError(status, payload) {
   const [code, message] = safeErrors.get(status) ?? ["server_error", "ระบบขัดข้องชั่วคราว กรุณาลองอีกครั้ง"];
-  return new ApiError({ status, code, message, retryable: status === 0 || status === 429 || status >= 500 });
+  return new ApiError({ status, code, message, retryable: status === 0 || status === 429 || status >= 500, reasonCode: payload?.reasonCode });
 }
 
 async function decode(response) {
@@ -54,7 +62,11 @@ export function createApiClient(fetcher = globalThis.fetch) {
       } catch {
         throw mappedError(0);
       }
-      if (!response.ok) throw mappedError(response.status);
+      if (!response.ok) {
+        let payload = null;
+        try { payload = await decode(response); } catch { /* use the safe status mapping */ }
+        throw mappedError(response.status, payload);
+      }
       return decode(response);
     },
   };
