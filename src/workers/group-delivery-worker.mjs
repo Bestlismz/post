@@ -112,7 +112,7 @@ export function createGroupDeliveryWorker({pool,client,keys,signingKey,keyId,clo
           if(decision.action!=='authorize')reject('FINAL_POLICY_GATE');
           const {rows:[target]}=await tx.query(`SELECT o.target_id,o.id FROM messages m
             JOIN group_observations o ON o.organization_id=m.organization_id AND o.id=m.raw_evidence->>'observationId'
-            JOIN group_targets t ON t.organization_id=o.organization_id AND t.source_id=o.source_id AND t.target_id=o.target_id AND t.observation_id=o.id
+            JOIN group_targets t ON t.organization_id=o.organization_id AND t.source_id=o.source_id AND t.target_id=o.target_id
             WHERE m.organization_id=$1 AND m.id=(SELECT message_id FROM work_items WHERE organization_id=$1 AND id=$2) AND o.source_id=$3`,[intent.organization_id,reply.work_item_id,source.id]);
           if(!target)reject('TARGET_CHANGED');
           const textHash=digest(intent.content.text);

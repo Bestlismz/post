@@ -180,6 +180,18 @@ test('recorded Facebook DOM driver locates an exact target sends once and reconc
   assert.equal(evidence.length,1);assert.equal(evidence[0].text,'Exact reply');assert.equal(evidence[0].senderId,sender);assert.equal(evidence[0].remoteId,'902');
 });
 
+test('post delivery locates the unique composer in Facebook current permalink dialog without role article or permalink anchors',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<div role="dialog"><div aria-label="Actions for this post by Best"></div><form role="presentation"><div contenteditable="true" role="textbox" aria-label="Answer as Best"></div></form></div>`);
+  await page.context().addCookies([{name:'c_user',value:'42',domain:'www.facebook.com',path:'/'}]);
+  await page.goto('https://www.facebook.com/groups/100/posts/900/');
+  const driver=createFacebookGroupDriver(page),target=await driver.locateExactTarget({...command(),targetId:'post:900'});
+  assert.equal(target.scopeKind,'dialog');assert.equal(target.targetId,'post:900');
+  await target.scope.locator('[contenteditable="true"][role="textbox"]').fill('unsent draft');
+  const locatedAgain=await driver.locateExactTarget({...command(),targetId:'post:900'});
+  assert.equal(await locatedAgain.scope.locator('[contenteditable="true"][role="textbox"]').textContent(),'unsent draft');
+});
+
 test('comment reply fails closed for missing or ambiguous owned Reply controls and cancellation/deadline',async t=>{
   const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
   const html=buttons=>`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header><div role="article"><a href="/groups/100/posts/900/"></a><div role="article"><a href="/groups/100/posts/900/?comment_id=901"></a><div data-ad-preview="message">Interested</div>${buttons}</div></div>`;
@@ -263,6 +275,14 @@ test('sender identity comes only from an unambiguous session-owned account surfa
   await assert.rejects(createFacebookGroupDriver(ambiguous).identifySender(),/sender unavailable/);
   const authorOnly=await fixturePage(t,'<div role="article"><a aria-label="profile" href="/profile.php?id=777">Author</a></div>');
   await assert.rejects(createFacebookGroupDriver(authorOnly).identifySender(),/sender unavailable/);
+});
+
+test('sender identity falls back to the authenticated Facebook session cookie when the current header hides the profile link',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,'<header role="banner"><a aria-label="Facebook" href="/">Facebook</a></header>');
+  await page.context().addCookies([{name:'c_user',value:'61595775053726',domain:'www.facebook.com',path:'/'}]);
+  const sender=await createFacebookGroupDriver(page).identifySender();
+  assert.equal(sender,`facebook-actor:${createHash('sha256').update('https://www.facebook.com/profile.php?id=61595775053726').digest('hex')}`);
 });
 
 test('card identity ignores hostile body permalinks and nested shared-post headers',async t=>{

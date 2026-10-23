@@ -184,6 +184,23 @@ dbtest('group worker commits attempting before private dispatch and accepts only
   assert.equal((await worker.deliverGroupIntent(intent.id)).state,'sent');assert.equal(calls,1);
 });
 
+dbtest('a newer observation of the same stable target does not invalidate an approved reply',async({pool,actor,workItemId})=>{
+  const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
+  const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);
+  const latestObservationId=randomUUID();
+  const nextScan=signCommand({version:1,kind:'ScanCommand',operationId:'scan-op-2',sourceId:'group-source',groupId:'123',canonicalTarget:'https://www.facebook.com/groups/123',issuedAt:instant.toISOString(),expiresAt:'2026-10-22T12:05:00.000Z',keyId},{key,keyId,now:instant});
+  await pool.query("INSERT INTO group_operations(id,organization_id,source_id,kind,command) VALUES('scan-op-2','org_default','group-source','ScanCommand',$1)",[nextScan]);
+  await pool.query("INSERT INTO group_scan_receipts(operation_id,organization_id,source_id,digest,selector_version,coverage,health,response) VALUES('scan-op-2','org_default','group-source',$1,'facebook-dom-v2','complete','healthy','{}')",['f'.repeat(64)]);
+  await pool.query(`INSERT INTO group_observations(id,organization_id,source_id,operation_id,target_id,post_id,comment_id,kind,text,author_label,observed_at,evidence_hash,content_hash,selector_version)
+    SELECT $1,organization_id,source_id,'scan-op-2',target_id,post_id,comment_id,kind,text,author_label,observed_at + interval '1 minute','d'||substr(evidence_hash,2),content_hash,selector_version
+    FROM group_observations WHERE organization_id='org_default' AND source_id='group-source' LIMIT 1`,[latestObservationId]);
+  await pool.query("UPDATE group_targets SET observation_id=$1,operation_order=2 WHERE organization_id='org_default' AND source_id='group-source' AND target_id='comment:456:789'",[latestObservationId]);
+  let calls=0;
+  const worker=createGroupDeliveryWorker({pool,client:{reply:async command=>{calls++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'e'.repeat(64),remoteId:'remote-refreshed-target'},{key,keyId,now:instant});}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
+  const result=await worker.deliverGroupIntent(intent.id);
+  assert.equal(result.state,'sent');assert.equal(calls,1);
+});
+
 dbtest('possible group send is terminal unknown, not_found stays unknown, and reconciliation rejects mismatched evidence',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool});const reply=await service.prepareReply(workItemId,1,actor);const intent=await service.approveAndQueue(reply.id,1,actor);

@@ -16,32 +16,49 @@ function normalizeActorHref(raw) {
 }
 
 export async function resolveFacebookSessionIdentity(page) {
-  return page.locator('[data-session-owned-identity="true"][href], [role="banner"] a[href][aria-label], [role="menu"][aria-label*="account" i] a[href], [role="menu"][aria-label*="บัญชี"] a[href], form a[href][aria-label]').evaluateAll(links=>links.flatMap(link=>{
+  const links=await page.locator('[data-session-owned-identity="true"][href], [role="banner"] a[href][aria-label], [role="menu"][aria-label*="account" i] a[href], [role="menu"][aria-label*="บัญชี"] a[href], form a[href][aria-label]').evaluateAll(links=>links.flatMap(link=>{
     const label=link.getAttribute('aria-label')??'';
     const explicit=link.getAttribute('data-session-owned-identity')==='true'||/profile|account|โปรไฟล์|บัญชี/i.test(label);
     return explicit?[link.href]:[];
   }));
+  if(links.length)return links;
+  const cookies=await page.context().cookies('https://www.facebook.com');
+  const userIds=[...new Set(cookies.filter(cookie=>cookie.name==='c_user'&&/^\d{1,100}$/.test(cookie.value)).map(cookie=>cookie.value))];
+  return userIds.map(id=>`https://www.facebook.com/profile.php?id=${id}`);
 }
 
 export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSessionIdentity=resolveFacebookSessionIdentity,readEditorText=editor=>editor.textContent()}={}) {
   let senderId=null;
   async function locateExactTarget(command) {
     const identity=targetIdentity(command.targetId);
+    const isExactPage=()=>{try{const current=new URL(page.url());return current.origin==='https://www.facebook.com'&&current.pathname===`/groups/${command.groupId}/posts/${identity.postId}/`&&(current.searchParams.get('comment_id')??null)===identity.commentId;}catch{return false;}};
     const locate=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId,commentId})=>articles.flatMap((article,index)=>{
       const owned=Array.from(article.querySelectorAll('a[href]')).filter(link=>link.closest('[role="article"]')===article);
       const matches=owned.filter(link=>{try{const url=new URL(link.href),path=url.pathname.match(/^\/groups\/(\d+)\/posts\/(\d+)\/?$/);return url.origin==='https://www.facebook.com'&&path?.[1]===groupId&&path[2]===postId&&(url.searchParams.get('comment_id')??null)===commentId;}catch{return false;}});
       return matches.length===1?[index]:[];
     }),{groupId:command.groupId,postId:identity.postId,commentId:identity.commentId});
     let indexes=await locate();
-    if(indexes.length===0&&typeof page.goto==='function') {
+    if(indexes.length===0&&typeof page.goto==='function'&&!isExactPage()) {
       const target=new URL(`/groups/${command.groupId}/posts/${identity.postId}/`,'https://www.facebook.com');
       if(identity.commentId)target.searchParams.set('comment_id',identity.commentId);
       await page.goto(target.href,{waitUntil:'domcontentloaded'});
       await page.waitForTimeout?.(500);
       indexes=await locate();
     }
-    if(indexes.length!==1)throw Error('Exact Facebook target unavailable');
-    return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,groupId:command.groupId,scope:page.locator('[role="article"]').nth(indexes[0]),identity};
+    if(indexes.length===1)return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,groupId:command.groupId,scope:page.locator('[role="article"]').nth(indexes[0]),scopeKind:'article',identity};
+    if(indexes.length>1||identity.kind!=='post')throw Error('Exact Facebook target unavailable');
+    if(!isExactPage())throw Error('Exact Facebook target unavailable');
+    const editors=page.locator('[contenteditable="true"][role="textbox"]');
+    const candidates=await editors.evaluateAll(nodes=>nodes.flatMap((node,index)=>{
+      const style=getComputedStyle(node),label=[node.getAttribute('aria-label'),node.getAttribute('aria-placeholder'),node.getAttribute('data-placeholder')].filter(Boolean).join(' ');
+      return !node.hidden&&node.getAttribute('aria-hidden')!=='true'&&style.display!=='none'&&style.visibility!=='hidden'&&/(answer as|write a comment|comment as|ตอบในชื่อ|เขียนความคิดเห็น|แสดงความคิดเห็น)/i.test(label)?[index]:[];
+    }));
+    if(candidates.length!==1)throw Error('Exact Facebook target unavailable');
+    const scope=editors.nth(candidates[0]).locator('xpath=ancestor::*[@role="dialog"][1]');
+    if(await scope.count()!==1)throw Error('Exact Facebook target unavailable');
+    const actions=await scope.locator('[aria-label^="Actions for this post"], [aria-label^="การดำเนินการสำหรับโพสต์นี้"]').evaluateAll(nodes=>nodes.filter(node=>node.closest('[role="dialog"]')===nodes[0]?.closest('[role="dialog"]')).length);
+    if(actions!==1)throw Error('Exact Facebook target unavailable');
+    return {canonicalTarget:command.canonicalTarget,targetId:command.targetId,groupId:command.groupId,scope,scopeKind:'dialog',identity};
   }
   async function identifySender() {
     const hrefs=await resolveSessionIdentity(page);
@@ -70,10 +87,11 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
   }
   async function directOwned(target,selector,kind) {
     const locator=target.scope.locator(selector),indexes=await target.scope.evaluate((article,{selector,kind})=>Array.from(article.querySelectorAll(selector)).flatMap((node,index)=>{
-      if(node.closest('[role="article"]')!==article)return [];
+      const owner=kind==='dialog-editor'?'[role="dialog"]':'[role="article"]';
+      if(node.closest(owner)!==article)return [];
       if(kind==='reply')return /^(reply(?:\s+to\b.*)?|ตอบกลับ(?:\s+.*)?|ตอบ(?:\s+.*)?)$/i.test((node.getAttribute('aria-label')||node.textContent||'').trim())?[index]:[];
       const style=getComputedStyle(node);return !node.hidden&&node.getAttribute('aria-hidden')!=='true'&&style.display!=='none'&&style.visibility!=='hidden'?[index]:[];
-    }),{selector,kind});
+    }),{selector,kind:target.scopeKind==='dialog'&&kind==='editor'?'dialog-editor':kind});
     return indexes.map(index=>locator.nth(index));
   }
   async function ownedReplyControls(target) {
