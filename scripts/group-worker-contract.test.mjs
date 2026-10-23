@@ -142,6 +142,21 @@ test('recorded Facebook DOM extracts posts and comments without claiming complet
   assert.equal(result.observations[1].authorLabel,'Ann');
 });
 
+test('observer resolves current role-less Facebook post cards through their opaque timestamp trigger',async t=>{
+  const {observeGroupPage}=await load('group-worker/observer');
+  const page=await fixturePage(t,`<main><h1>test autopost</h1><div role="feed"><section>
+    <h2>B'Best Warut</h2><div>Admin</div><div>n&#847;</div><div>r&#847;</div><div>t&#847;</div><div>Looking for a room near Rama 9</div>
+    <a href="/groups/100?__cft__[0]=opaque#?trigger" onclick="event.preventDefault();location.href='/groups/100/posts/900/'">2h</a>
+    <button aria-label="Actions for this post"></button><div>Like</div><div>Comment</div><div>Answer as Best</div>
+  </section></div></main>`);
+  const result=await observeGroupPage(page,command());
+  assert.equal(result.health,'healthy');
+  assert.deepEqual(result.observations.map(item=>item.targetId),['post:900']);
+  assert.equal(result.observations[0].authorLabel,"B'Best Warut");
+  assert.equal(result.observations[0].text,'Looking for a room near Rama 9');
+  assert.equal(page.url(),'https://www.facebook.com/groups/100');
+});
+
 test('observer discovers the group name and whether the connected account has admin tools',async t=>{
   const {observeGroupPage}=await load('group-worker/observer');
   const page=await fixturePage(t,'<main><h1>autopost</h1><a href="/groups/100/admin_assistant/">Admin Assist</a><div role="feed"><div role="article"><h2>Best</h2><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div></div></div></main>');

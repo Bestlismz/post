@@ -171,6 +171,14 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       await incoming;
       assert.equal((await pool.query("SELECT processing_revision FROM conversations WHERE id=$1", [conversation.id])).rows[0].processing_revision, 4);
     });
+    await t.test("default Inbox hides superseded revisions while the explicit history filter retains them", async () => {
+      const current = await inbox.listInbox({}, actor);
+      assert.ok(current.items.length > 0);
+      assert.ok(current.items.every((item) => item.status !== "superseded"));
+      const history = await inbox.listInbox({ status: "superseded" }, actor);
+      assert.ok(history.items.length > 0);
+      assert.ok(history.items.every((item) => item.status === "superseded"));
+    });
   } finally {
     await pool?.end();
     await admin.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

@@ -8,7 +8,7 @@ function boundedInteger(value,fallback,min,max) {
 }
 
 export function applicationRuntimeConfig(env=process.env) {
-  const supportedSelectorVersions=(env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean);
+  const supportedSelectorVersions=(env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v3').split(',').map(value=>value.trim()).filter(Boolean);
   if(!supportedSelectorVersions.length||supportedSelectorVersions.length>50||supportedSelectorVersions.some(value=>value.length>200))throw Error('Invalid application runtime configuration');
   return {
     workerPollMs:boundedInteger(env.WORKER_POLL_MS,1000,1,60000),

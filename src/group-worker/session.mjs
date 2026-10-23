@@ -118,7 +118,7 @@ export function createGroupSession({profilePath,launchContext,commandTimeoutMs=3
       await lease.assertOwned();
       const page=await selectGroupPage(context,command.canonicalTarget,{signal});
       const health=await abortable(()=>inspectSession(page),signal);
-      if(health.state!=='healthy') return {selectorVersion:'facebook-dom-v2',coverage:'none',health:health.state,reason:'session_unavailable',cursor:null,observations:[]};
+      if(health.state!=='healthy') return {selectorVersion:'facebook-dom-v3',coverage:'none',health:health.state,reason:'session_unavailable',cursor:null,observations:[]};
       const result=await abortable(()=>run(page,command,{signal}),signal); await lease.assertOwned(); return result;
     } finally {
       clearTimeout(timer);parentSignal?.removeEventListener('abort',cancel);

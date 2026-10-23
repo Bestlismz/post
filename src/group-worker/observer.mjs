@@ -3,8 +3,20 @@ import { assertGroupTarget, inspectSession } from './session.mjs';
 import { MAX_GROUP_ID_LENGTH } from '../channels/groups/target.mjs';
 import { abortable } from './cancellation.mjs';
 
-export const SELECTOR_VERSION='facebook-dom-v2';
+export const SELECTOR_VERSION='facebook-dom-v3';
 const clean=(value,max)=>String(value??'').normalize('NFC').replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u034f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/g,'').trim().slice(0,max);
+const digest=value=>createHash('sha256').update(value).digest('hex');
+function normalizeRolelessCard(scopes) {
+  const metadata=/^(?:Facebook|\u00b7|Author|Admin|Like|Comment|Reply|Share|Send|Follow|Shared post|Actions for this post|(?:Answer|Comment) as .+|\d+|\d+[smhdw]|\d+\s+(?:comments?|replies?|shares?)|\d+\s*(?:min|mins|minute|minutes|hour|hours|day|days)(?:\s+ago)?|(?:a|an)\s+(?:minute|hour|day|week)\s+ago|(?:today|yesterday)(?:\s+at\s+\d{1,2}:\d{2})?)$/i;
+  for(const raw of scopes) {
+    const lines=String(raw??'').split('\n').map(line=>({text:line.replace(/[\u034f\u200b-\u200f\u2060\ufeff]/g,'').trim(),obfuscated:/[\u034f\u200b-\u200f\u2060\ufeff]/.test(line)}))
+      .filter(line=>line.text&&!(line.obfuscated&&line.text.length===1)&&!metadata.test(line.text)).map(line=>line.text);
+    if(lines.length<2)continue;
+    const authorLabel=lines[0],text=lines.slice(1).join('\n').trim();
+    if(authorLabel&&text)return {authorLabel,text};
+  }
+  return null;
+}
 function identity(href,groupId) {
   const url=new URL(href); const match=url.pathname.match(new RegExp(`^/groups/([0-9]{1,${MAX_GROUP_ID_LENGTH}})/posts/([0-9]{1,${MAX_GROUP_ID_LENGTH}})/?$`));
   if(url.origin!=='https://www.facebook.com'||!match||match[1]!==groupId) throw new Error('Invalid observation page');
@@ -53,6 +65,44 @@ async function readPage(page,groupId) {
     return {groupName,accessLevel,selectorValid:!!feed&&cards.length>0&&items.length===cards.length,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});
 }
+async function readRolelessPosts(page,groupId,canonicalTarget,{maxItems=100}={}) {
+  const rawCards=await page.locator('[aria-label^="Actions for this post"]').evaluateAll((buttons,expectedGroupId)=>buttons.map(button=>{
+    const scopes=[],timestampHrefs=[];let node=button;
+    for(let depth=0;depth<18&&node;depth++,node=node.parentElement) {
+      scopes.push((node.innerText??'').trim());
+      for(const link of node.querySelectorAll('a[href]')) {
+        const url=new URL(link.href),label=(link.innerText||link.getAttribute('aria-label')||'').replace(/[\u034f\u200b-\u200f\u2060\ufeff]/g,'').trim();
+        const opaque=url.pathname.replace(/\/$/,'')===`/groups/${expectedGroupId}`&&url.searchParams.has('__cft__[0]')&&url.hash.startsWith('#?');
+        if(opaque||/^\d+[smhdw]$/i.test(label)||/^\d+\s+(?:minutes?|hours?|days?)\s+ago$/i.test(label)) {
+          const href=link.getAttribute('href');if(href&&!timestampHrefs.includes(href))timestampHrefs.push(href);
+        }
+      }
+    }
+    return {scopes,timestampHrefs};
+  }),groupId);
+  const cards=[];
+  for(const raw of rawCards) {
+    const content=normalizeRolelessCard(raw.scopes);
+    if(!content||raw.timestampHrefs.length!==1)continue;
+    const card={...content,timestampHref:raw.timestampHrefs[0],fingerprint:digest(`${content.authorLabel}\n${content.text}`)};
+    if(!cards.some(item=>item.timestampHref===card.timestampHref&&item.fingerprint===card.fingerprint))cards.push(card);
+  }
+  const items=[];let reason=rawCards.length?'identity_missing':'selector_changed';
+  for(const card of cards.slice(0,Math.min(maxItems,100))) {
+    const candidates=page.locator(`a[href=${JSON.stringify(card.timestampHref)}]`).filter({visible:true});
+    if(await candidates.count()!==1) {reason='identity_ambiguous';continue;}
+    const isExpected=url=>{try{return identity(url.href,groupId).kind==='post';}catch{return false;}};
+    const navigation=page.waitForURL(isExpected,{timeout:8000}).catch(()=>null);
+    try {await candidates.click({timeout:5000});} catch {continue;}
+    const opened=await navigation||isExpected(new URL(page.url()));
+    if(!opened) {await page.goto(canonicalTarget,{waitUntil:'domcontentloaded',timeout:30000}).catch(()=>{});continue;}
+    const href=page.url();
+    items.push({href,authorLabel:card.authorLabel,text:card.text,providerTimestamp:null});
+    reason=null;
+    await page.goto(canonicalTarget,{waitUntil:'domcontentloaded',timeout:30000});
+  }
+  return {selectorValid:rawCards.length>0&&cards.length>0&&items.length===cards.length,reason,items,hasMore:false,complete:false};
+}
 export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,signal}={}) {
   assertGroupTarget(command.canonicalTarget);
   if(command.canonicalTarget!==`https://www.facebook.com/groups/${command.groupId}`||page.url()!==command.canonicalTarget) throw new Error('Invalid observation page');
@@ -80,6 +130,17 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
     }
     groupName=clean(snapshot.groupName,300)||groupName;
     accessLevel=['reader','admin'].includes(snapshot.accessLevel)?snapshot.accessLevel:accessLevel;
+    if(page.url()!==command.canonicalTarget||page.isClosed?.()) {const changed=await checkSession();if(changed)return changed;}
+    if(!snapshot.items.length) {
+      try {
+        const roleless=await abortable(()=>readRolelessPosts(page,command.groupId,command.canonicalTarget,{maxItems:Math.min(maxItems-observations.length,100)}),signal);
+        snapshot={...snapshot,...roleless};
+      } catch {
+        if(signal?.aborted)return batch(observations.length?'partial':'none','failed','scan_cancelled');
+        const health=await checkSession();if(health)return health.health==='expired'?{...health,reason:'session_lost'}:health;
+        return batch('partial','selector_failure','selector_changed');
+      }
+    }
     if(page.url()!==command.canonicalTarget||page.isClosed?.()) {const changed=await checkSession();if(changed)return changed;}
     for(const raw of snapshot.items.slice(0,100)) {
       let ids; try{ids=identity(raw.href,command.groupId);}catch{return batch('partial','failed','page_changed');}

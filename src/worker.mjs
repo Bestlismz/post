@@ -30,7 +30,7 @@ try {
   const delivery=createMetaDeliveryWorker({pool,credentials});
   const groupSigning=groupSchedulerConfig(process.env);if(!groupSigning)throw Error('Group signing configuration required');
   const groupClient=createGroupWorkerClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',...groupSigning});
-  const groupResults=createGroupResultService(pool,{keys:groupSigning.keys,signingKey:groupSigning.key,keyId:groupSigning.keyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean)});
+  const groupResults=createGroupResultService(pool,{keys:groupSigning.keys,signingKey:groupSigning.key,keyId:groupSigning.keyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v3').split(',').map(value=>value.trim()).filter(Boolean)});
   const groupScan=createGroupScanWorker({pool,client:groupClient,results:groupResults,keys:groupSigning.keys,keyId:groupSigning.keyId,signingKey:groupSigning.key,workerId:`group-scan-${process.pid}`});
   const stagingAllowedGroups=(process.env.STAGING_FACEBOOK_SOURCE_ALLOWLIST??'').split(',').map(value=>value.trim()).filter(Boolean);
   const groupDelivery=createGroupDeliveryWorker({pool,client:groupClient,keys:groupSigning.keys,signingKey:groupSigning.key,keyId:groupSigning.keyId,stagingSendEnabled:process.env.STAGING_FACEBOOK_SEND==='true',stagingAllowedGroups});

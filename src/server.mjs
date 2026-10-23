@@ -30,7 +30,7 @@ const shutdown=new AbortController();
 const metaConnection = createMetaConnection({ pool, config: metaConnectionConfig(), env: process.env });
 const groupSigning=groupCommandKeyConfig(process.env,{optional:true});
 const groupKeys=groupSigning?.keys??{},groupKeyId=groupSigning?.keyId??'',groupKey=groupSigning?.key;
-const sourceService=createSourceService(pool,{signingKey:groupKey,keyId:groupKeyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v2').split(',').map(value=>value.trim()).filter(Boolean)});
+const sourceService=createSourceService(pool,{signingKey:groupKey,keyId:groupKeyId,supportedSelectorVersions:(process.env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v3').split(',').map(value=>value.trim()).filter(Boolean)});
 const recoveryClient=groupKey?createGroupRecoveryClient({baseUrl:process.env.GROUP_WORKER_URL??'http://group-worker:3001',keys:groupKeys,keyId:groupKeyId,key:groupKey}):null;
 const recovery={
   start:input=>recoveryClient?recoveryClient.start(input):Promise.reject(httpError(503,'Group worker unavailable')),

@@ -110,7 +110,7 @@ export async function listInbox(pool, query = {}, actor) {
   const parsed = parseQuery(query, organizationId);
   const { rows } = await pool.query(`WITH filtered AS (SELECT ${columns} ${relations}
     WHERE w.organization_id=$1 AND ($2::text IS NULL OR c.channel=$2)
-      AND ($3::text IS NULL OR ($3='pending_or_updated' AND w.status IN ('pending','superseded')) OR w.status=$3)
+      AND (($3::text IS NULL AND w.status<>'superseded') OR ($3='pending_or_updated' AND w.status IN ('pending','superseded')) OR w.status=$3)
       AND ($4::text IS NULL OR coalesce(s.id,g.id)=$4)
       AND ($5::text='' OR strpos(lower(coalesce(${locationSql},'')),lower($5))>0)
       AND ($6::bigint IS NULL OR ${budgetSql}>=$6)
