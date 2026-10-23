@@ -35,9 +35,12 @@ const stateDir = process.env.STATE_DIR ?? path.join(root, "state");
 const store = createStore(stateDir);
 const inboxWorkspace = createInboxWorkspaceFixture();
 const inventoryWorkspace = createInventoryWorkspaceFixture();
+const fixtureSourcesFile = path.join(stateDir, "sources-workspace.json");
 const sourcesAutomationWorkspace = createSourcesAutomationWorkspaceFixture({
   operationalClock: fixtureOperationalClock(process.env),
   onObservation: (observation) => inboxWorkspace.ingestGroupObservation(observation),
+  initialGroups: readFixtureSourceGroups(fixtureSourcesFile),
+  onGroupsChange: (groups) => writeFixtureSourceGroups(fixtureSourcesFile, groups),
 });
 const settingsWorkspace = createSettingsWorkspaceFixture();
 const desktopSockets = new Set();
@@ -707,6 +710,25 @@ function fixtureOperationalClock(environment) {
   if (!Number.isFinite(start) || !Number.isSafeInteger(step) || step < 1) throw new Error("Invalid fixture operational clock configuration");
   let current = start - step;
   return () => new Date(current += step);
+}
+
+function readFixtureSourceGroups(file) {
+  if (!fs.existsSync(file)) return undefined;
+  const value = JSON.parse(fs.readFileSync(file, "utf8"));
+  if (value?.version !== 1 || !Array.isArray(value.groups)) throw new Error(`Fixture Sources state is unreadable: ${file}`);
+  return value.groups;
+}
+
+function writeFixtureSourceGroups(file, groups) {
+  const temporary = `${file}.tmp`;
+  const descriptor = fs.openSync(temporary, "w", 0o600);
+  try {
+    fs.writeFileSync(descriptor, JSON.stringify({ version: 1, groups }, null, 2));
+    fs.fsyncSync(descriptor);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  fs.renameSync(temporary, file);
 }
 
 function requireFixtureRole(request, ...roles) {

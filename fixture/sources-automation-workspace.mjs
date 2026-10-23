@@ -114,8 +114,10 @@ export function createSourcesAutomationWorkspaceFixture({
   operationalClock = () => new Date(),
   policyEvaluationClock = () => new Date("2026-10-22T03:00:00.000Z"),
   onObservation = () => undefined,
+  initialGroups,
+  onGroupsChange = () => undefined,
 } = {}) {
-  let groups = structuredClone(seededSources);
+  let groups = structuredClone(Array.isArray(initialGroups) ? initialGroups : seededSources);
   const pages = [{ id: "61595791349401", name: "BestRedar", health: "connected", expiresAt: "2026-12-01T00:00:00.000Z", updatedAt: seededAt }];
   let globalPaused = false;
   let automationPolicy = structuredClone(policy);
@@ -125,6 +127,7 @@ export function createSourcesAutomationWorkspaceFixture({
   const receipts = [];
   const idempotency = new Map();
   const recoveries = new Map();
+  const persistGroups = () => onGroupsChange(structuredClone(groups));
 
   let lastOperationalTime = Date.parse(seededAt);
   const operationalNow = () => {
@@ -262,6 +265,7 @@ export function createSourcesAutomationWorkspaceFixture({
           schedule: schedule(),
         };
         groups.push(entry);
+        persistGroups();
         return publicSource(entry);
       });
     },
@@ -291,6 +295,7 @@ export function createSourcesAutomationWorkspaceFixture({
         entry.paused = candidate.paused;
         entry.policy = structuredClone(candidate.policy);
         entry.revision += 1;
+        persistGroups();
         return publicSource(entry);
       });
     },
@@ -323,6 +328,7 @@ export function createSourcesAutomationWorkspaceFixture({
           entry.latestReceipt = receipt;
           entry.receiptHistory = [receipt, ...entry.receiptHistory].slice(0, 5);
           if (healthy) onObservation(fixtureObservation(entry, receipt.createdAt));
+          persistGroups();
         };
         const timer = setTimeout(finish, 75);
         timer.unref?.();
@@ -347,6 +353,7 @@ export function createSourcesAutomationWorkspaceFixture({
         const expiresAt = new Date(operationalNow().getTime() + ttlSeconds * 1000).toISOString();
         entry.paused = true;
         entry.revision += 1;
+        persistGroups();
         recoveries.set(`${id}:${sessionId}`, { sourceId: id, sessionId, expiresAt });
         return { sourceId: id, sessionId, expiresAt, tunnelUrl: `/api/sources/${encodeURIComponent(id)}/recovery/${sessionId}/novnc/vnc.html` };
       });
@@ -439,6 +446,7 @@ export function createSourcesAutomationWorkspaceFixture({
         entry.revision += 1;
         const receipt = { id: randomUUID(), scope: "source", sourceId: id, paused: entry.paused, reasonCode: entry.paused ? "SOURCE_PAUSED" : "SOURCE_RESUMED", createdAt: now() };
         receipts.unshift(receipt);
+        persistGroups();
         return { sourceId: id, paused: entry.paused, revision: entry.revision, updatedAt: now(), receiptId: receipt.id, reasonCode: receipt.reasonCode };
       });
     },
@@ -449,6 +457,7 @@ export function createSourcesAutomationWorkspaceFixture({
         const entry = find(id);
         if (entry.schedule.revision !== revision) failure(409, "Revision conflict");
         entry.schedule = { ...structuredClone(parsed), revision: revision + 1 };
+        persistGroups();
         return { sourceId: id, schedule: structuredClone(parsed), revision: entry.schedule.revision };
       });
     },
