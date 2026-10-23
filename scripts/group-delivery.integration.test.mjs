@@ -138,8 +138,10 @@ dbtest('group analysis uses DB-owned format and source policy, then authorizatio
 
 dbtest('an operator may create one audited retry only after an unresolved Group attempt is verified absent',async({pool,actor,workItemId})=>{
   const {createInboxService}=await import('../src/inbox/service.mjs');
+  const {createGroupDeliveryWorker}=await import('../src/workers/group-delivery-worker.mjs');
   const service=createInboxService({pool}),reply=await service.prepareReply(workItemId,1,actor),prior=await service.approveAndQueue(reply.id,1,actor);
   await pool.query("INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,outcome_code,finished_at) VALUES('unknown-attempt','org_default',$1,'unknown','POSSIBLE_SEND',now())",[prior.id]);
+  await pool.query("UPDATE group_sources SET revision=revision+2 WHERE id='group-source'");
   const options={idempotencyKey:'verified-absent-retry'};
   const retry=await service.retryUnknownDelivery(prior.id,1,actor,options),replayed=await service.retryUnknownDelivery(prior.id,1,actor,options);
   assert.equal(retry.retry_of_intent_id,prior.id);assert.equal(replayed.id,retry.id);
@@ -147,6 +149,9 @@ dbtest('an operator may create one audited retry only after an unresolved Group 
   assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='deliver_group_reply' AND payload->>'deliveryIntentId'=$1",[retry.id])).rows[0].n,1);
   const audit=(await pool.query("SELECT details FROM audit_entries WHERE action='delivery.retry_authorized' AND entity_id=$1",[retry.id])).rows[0];
   assert.equal(audit.details.priorIntentId,prior.id);assert.equal(audit.details.verification,'comment_not_present');
+  let calls=0;
+  const worker=createGroupDeliveryWorker({pool,client:{reply:async command=>{calls++;return signResult({...Object.fromEntries(Object.entries(command).filter(([name])=>!['signature','text'].includes(name))),kind:'GroupReplyResult',state:'sent',senderId:'sender-1',attemptStartedAt:instant.toISOString(),attemptFinishedAt:instant.toISOString(),evidenceHash:'9'.repeat(64),remoteId:'remote-retry'},{key,keyId,now:instant});}},keys:{[keyId]:key},signingKey:key,keyId,clock:()=>instant,policyClock:()=>instant});
+  assert.equal((await worker.deliverGroupIntent(retry.id)).state,'sent');assert.equal(calls,1);
 });
 
 dbtest('handoff atomically fences pending and running Messenger and Group work with a durable reason',async({pool,actor,workItemId,conversationId})=>{

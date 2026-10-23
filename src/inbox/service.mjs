@@ -84,6 +84,20 @@ export async function assertReplyFresh(tx,reply,context) {
   await checkInventory(tx,context.org.id,reply.context.snapshot.inventoryWatermark);
 }
 
+export async function assertVerifiedRetryFresh(tx,reply,context) {
+  const stored=reply.context.evidence,current=evidence(context);
+  const storedSource={...stored.source},currentSource={...current.source};
+  delete storedSource.revision;delete currentSource.revision;
+  for(const [code,label,keys] of [
+    ['POLICY_CHANGED','Policy',['policyRevision','policy']],
+    ['PROFILE_CHANGED','Profile',['profileRevision','profile']],
+    ['FORMAT_CHANGED','Reply format',['formatRevision','format']],
+    ['CONVERSATION_SUPERSEDED','Conversation',['conversationRevision']],
+  ]) if(keys.some(key=>!isDeepStrictEqual(stored[key],current[key])))fail(`${label} evidence stale`,code);
+  if(!isDeepStrictEqual(storedSource,currentSource))fail('Source evidence stale','SOURCE_CHANGED');
+  await checkInventory(tx,context.org.id,reply.context.snapshot.inventoryWatermark);
+}
+
 // Caller retains the transaction and attempt lease while reconciling its outcome.
 export async function findFreshPreparedReply(tx,{organizationId,workItemId,processingRevision}) {
   const context=await loadContext(tx,workItemId,processingRevision,organizationId);

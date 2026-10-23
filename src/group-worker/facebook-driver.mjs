@@ -11,6 +11,8 @@ function normalizeActorHref(raw) {
   const url=new URL(raw,'https://www.facebook.com');
   if(url.origin!=='https://www.facebook.com'||url.username||url.password)throw Error('Invalid sender identity');
   if(url.pathname==='/profile.php') {const id=url.searchParams.get('id');if(!/^\d{1,100}$/.test(id??''))throw Error('Invalid sender identity');return `${url.origin}/profile.php?id=${id}`;}
+  const scopedUser=url.pathname.match(/^\/groups\/\d+\/user\/(\d+)\/?$/);
+  if(scopedUser)return `${url.origin}/profile.php?id=${scopedUser[1]}`;
   if(!/^\/[A-Za-z0-9.]{1,100}\/?$/.test(url.pathname))throw Error('Invalid sender identity');
   return `${url.origin}${url.pathname.replace(/\/$/,'')}`;
 }
@@ -67,22 +69,35 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
     senderId=actor(normalized[0]);return senderId;
   }
   async function findReplyEvidence(command) {
-    const target=await locateExactTarget(command),rows=await target.scope.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>articles.flatMap(article=>{
+    const identity=targetIdentity(command.targetId);
+    let exactPage=false;
+    try {const current=new URL(page.url());exactPage=current.origin==='https://www.facebook.com'&&current.pathname===`/groups/${command.groupId}/posts/${identity.postId}/`;}catch{}
+    if(identity.kind==='post'&&!exactPage&&typeof page.goto==='function')await page.goto(`https://www.facebook.com/groups/${command.groupId}/posts/${identity.postId}/`,{waitUntil:'domcontentloaded'});
+    const target=await locateExactTarget(command);
+    const readRows=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>articles.flatMap(article=>{
       const owned=selector=>Array.from(article.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===article);
       const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
       if(!messages.length)messages.push(...owned('div[dir="auto"]').filter(node=>node.textContent?.trim()&&!node.closest('h1,h2,h3,button,[role="button"],[contenteditable="true"]')&&!Array.from(node.querySelectorAll('div[dir="auto"]')).some(child=>child.closest('[role="article"]')===article&&child.textContent?.trim())));
-      if(messages.length!==1)return [];
+      if(!messages.length)return [];
       const links=owned('a[href]'),permalinks=links.flatMap(link=>{try{const url=new URL(link.href),path=url.pathname.match(/^\/groups\/(\d+)\/posts\/(\d+)\/?$/),comment=url.searchParams.get('comment_id');return url.origin==='https://www.facebook.com'&&path?.[1]===groupId&&path[2]===postId&&/^\d+$/.test(comment??'')?[{link,comment}]:[];}catch{return [];}});
       if(permalinks.length!==1)return [];
-      const author=owned('h2 a[href], h3 a[href], strong a[href]')[0];const observedAt=permalinks[0].link.querySelector('time[datetime]')?.getAttribute('datetime')??null;
-      if(!author)return [];
-      return [{text:messages[0].textContent??'',authorHref:author.href,observedAt,remoteId:permalinks[0].comment}];
+      const observedAt=permalinks[0].link.querySelector('time[datetime]')?.getAttribute('datetime')??null;
+      const authorHrefs=links.filter(link=>link!==permalinks[0].link&&link.textContent?.trim()).map(link=>link.href);
+      return [{text:messages.map(node=>node.textContent?.trim()).filter(Boolean).join('\n'),authorHrefs,observedAt,remoteId:permalinks[0].comment}];
     }),{groupId:command.groupId,postId:target.identity.postId});
-    const expected=senderId??await identifySender(),evidence=[];
-    for(const row of rows) {let candidate;try{candidate=actor(normalizeActorHref(row.authorHref));}catch{continue;}if(candidate!==expected)continue;
-      const observedAt=row.observedAt&&Number.isFinite(Date.parse(row.observedAt))?new Date(row.observedAt).toISOString():clock().toISOString();
-      evidence.push({canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:candidate,text:row.text,observedAt,remoteId:row.remoteId});}
-    return evidence;
+    let rows=[];
+    for(let attempt=0;attempt<20&&!rows.length;attempt++) {
+      rows=await readRows();
+      if(!rows.length)await page.waitForTimeout(250);
+    }
+    const expected=senderId??await identifySender(),evidence=new Map();
+    for(const row of rows) {
+      const candidates=[];for(const href of row.authorHrefs){try{candidates.push(actor(normalizeActorHref(href)));}catch{}}
+      if(!candidates.includes(expected))continue;
+      const observedAt=row.observedAt&&Number.isFinite(Date.parse(row.observedAt))?new Date(row.observedAt).toISOString():command.attemptFinishedAt??clock().toISOString();
+      evidence.set(row.remoteId,{canonicalTarget:command.canonicalTarget,targetId:command.targetId,senderId:expected,text:row.text,observedAt,remoteId:row.remoteId});
+    }
+    return [...evidence.values()];
   }
   function assertActive({signal,deadline}) {
     if(signal?.aborted)throw Object.assign(new Error('Facebook reply cancelled'),{name:'AbortError'});

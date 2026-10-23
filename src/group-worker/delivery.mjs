@@ -74,7 +74,7 @@ export function createGroupDeliveryBoundary({ledgerPath,driver,clock=()=>new Dat
     const senderId=attempt?.senderId??command.senderId??await driver.identifySender?.(command);
     if(typeof senderId!=='string'||!senderId)throw new Error('Attempt sender unavailable');
     const attemptStartedAt=attempt?.attemptStartedAt??command.attemptStartedAt,attemptFinishedAt=attempt?.attemptFinishedAt??command.attemptFinishedAt;
-    const candidates=await driver.findReplyEvidence(command);
+    const candidates=await driver.findReplyEvidence({...command,senderId,attemptStartedAt,attemptFinishedAt});
     const start=Date.parse(attemptStartedAt),finish=Date.parse(attemptFinishedAt);
     const match=Array.isArray(candidates)&&candidates.find(item=>item?.canonicalTarget===command.canonicalTarget&&item?.targetId===command.targetId&&item?.senderId===senderId&&
       typeof item.text==='string'&&digest(item.text)===command.textHash&&Number.isFinite(Date.parse(item.observedAt))&&Date.parse(item.observedAt)>=start&&Date.parse(item.observedAt)<=finish);
