@@ -24,9 +24,9 @@ function identity(href,groupId) {
   if(commentId&&!new RegExp(`^[0-9]{1,${MAX_GROUP_ID_LENGTH}}$`).test(commentId)) throw new Error('Invalid observation identity');
   return {targetId:commentId?`comment:${match[2]}:${commentId}`:`post:${match[2]}`,kind:commentId?'comment':'post',postId:match[2],commentId};
 }
-async function expandVisibleComments(page,{maxClicks=24,signal}={}) {
+export async function expandVisibleComments(page,{maxClicks=24,signal}={}) {
   if(typeof page.locator!=='function')return 0;
-  const label=/^(?:View (?:all |more |previous )?(?:\d+ )?(?:comments?|replies?)|ดูความคิดเห็น(?:ทั้งหมด|เพิ่มเติม|ก่อนหน้า)?(?:อีก \d+ รายการ)?|ดูการตอบกลับ(?:ทั้งหมด|เพิ่มเติม)?(?:อีก \d+ รายการ)?)$/i;
+  const label=/^(?:View (?:all |more |previous )?(?:\d+ )?(?:comments?|replies?)|See more|ดูความคิดเห็น(?:ทั้งหมด|เพิ่มเติม|ก่อนหน้า)?(?:อีก \d+ รายการ)?|ดูการตอบกลับ(?:ทั้งหมด|เพิ่มเติม)?(?:อีก \d+ รายการ)?|ดู(?:ข้อความ)?เพิ่มเติม)$/i;
   let clicks=0;
   while(clicks<maxClicks&&!signal?.aborted) {
     const controls=page.locator('button, [role="button"]').filter({hasText:label});

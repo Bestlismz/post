@@ -198,6 +198,35 @@ test('recorded Facebook DOM driver locates an exact target sends once and reconc
   assert.equal(evidence.length,1);assert.equal(evidence[0].text,'Exact reply');assert.equal(evidence[0].senderId,sender);assert.equal(evidence[0].remoteId,'902');
 });
 
+test('reply evidence expands collapsed Facebook comments before reconciliation',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/profile.php?id=42">Me</a></header>
+    <div role="article" id="post"><h3>Poster</h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
+      <button id="view">View 1 comment</button>
+    </div>
+    <script>document.querySelector('#view').onclick=event=>{event.currentTarget.remove();const item=document.createElement('div');item.setAttribute('role','article');item.innerHTML='<h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message">Exact reply</div>';document.querySelector('#post').append(item);};</script>`);
+  const driver=createFacebookGroupDriver(page),replyCommand={...command(),targetId:'post:900',attemptFinishedAt:'2026-10-22T12:00:00.000Z'};
+  const sender=await driver.identifySender();
+  const evidence=await driver.findReplyEvidence(replyCommand);
+  assert.equal(evidence.length,1);
+  assert.equal(evidence[0].text,'Exact reply');
+  assert.equal(evidence[0].senderId,sender);
+  assert.equal(evidence[0].remoteId,'902');
+});
+
+test('reply evidence expands truncated Facebook comment text before hashing',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/profile.php?id=42">Me</a></header>
+    <div role="article"><h3>Poster</h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
+      <div role="article"><h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message" id="reply">Exact…</div><button id="more">See more</button></div>
+    </div><script>document.querySelector('#more').onclick=event=>{document.querySelector('#reply').textContent='Exact reply';event.currentTarget.remove();};</script>`);
+  const driver=createFacebookGroupDriver(page),replyCommand={...command(),targetId:'post:900',attemptFinishedAt:'2026-10-22T12:00:00.000Z'};
+  await driver.identifySender();
+  const evidence=await driver.findReplyEvidence(replyCommand);
+  assert.equal(evidence.length,1);
+  assert.equal(evidence[0].text,'Exact reply');
+});
+
 test('Facebook comment editing targets one owned comment and verifies the updated visible text',async t=>{
   const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
   const page=await fixturePage(t,`<header role="banner"><a aria-label="Your profile" href="/me">Me</a></header>

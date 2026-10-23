@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import {MAX_GROUP_ID_LENGTH} from '../channels/groups/target.mjs';
+import {expandVisibleComments} from './observer.mjs';
 
 const actor=value=>`facebook-actor:${createHash('sha256').update(value,'utf8').digest('hex')}`;
 function targetIdentity(value) {
@@ -74,6 +75,7 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
     try {const current=new URL(page.url());exactPage=current.origin==='https://www.facebook.com'&&current.pathname===`/groups/${command.groupId}/posts/${identity.postId}/`;}catch{}
     if(identity.kind==='post'&&!exactPage&&typeof page.goto==='function')await page.goto(`https://www.facebook.com/groups/${command.groupId}/posts/${identity.postId}/`,{waitUntil:'domcontentloaded'});
     const target=await locateExactTarget(command);
+    await expandVisibleComments(page,{maxClicks:24});
     const readRows=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>articles.flatMap(article=>{
       const owned=selector=>Array.from(article.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===article);
       const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
