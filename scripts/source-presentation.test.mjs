@@ -20,7 +20,7 @@ test("failed jobs and recovered sessions expose exactly one useful next action",
   assert.deepEqual(primarySourceAction(failed), { id: "scan", label: "ลองสแกนใหม่", disabled: false });
 
   const paused = { ...ready, paused: true };
-  assert.equal(primarySourceAction(paused).id, "paused");
+  assert.deepEqual(primarySourceAction(paused), { id: "resume", label: "เปิดใช้งานและสแกนทดสอบ", disabled: false });
   assert.deepEqual(primarySourceAction(paused, { recoveryReady: true }), { id: "resume", label: "ยืนยันและสแกนทดสอบ", disabled: false });
 });
 

@@ -55,6 +55,8 @@ export function primarySourceAction(source, { recoveryReady = false } = {}) {
   const scan = scanPresentation(source);
   if (recoveryReady && source.paused) return { id: "resume", label: "ยืนยันและสแกนทดสอบ", disabled: false };
   if (activeOperationStates.has(scan.state) || scan.state === "awaiting_result") return { id: "progress", label: scan.label, disabled: true };
+  const healthy = source.health.session === "healthy" && source.health.selector === "healthy" && !source.health.sessionCircuit && !source.health.selectorCircuit;
+  if (source.paused && healthy) return { id: "resume", label: "เปิดใช้งานและสแกนทดสอบ", disabled: false };
   if (readiness.state === "recovery" || readiness.state === "blocked") return { id: "recover", label: "กู้คืนการเชื่อมต่อ", disabled: false };
   if (source.paused) return { id: "paused", label: "แหล่งข้อมูลถูกพัก", disabled: true };
   if (scan.state === "failed" || scan.state === "stuck") return { id: "scan", label: "ลองสแกนใหม่", disabled: false };
