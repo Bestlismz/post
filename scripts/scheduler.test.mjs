@@ -45,6 +45,8 @@ test('schedule decisions use IANA local time across DST and reject maintenance w
   assert.deepEqual(evaluateSchedule({...schedule,maintenanceWindows:[{startsAt:'2026-03-08T06:00:00Z',endsAt:'2026-03-08T07:00:00Z'}]},new Date('2026-03-08T06:30:00Z'),{completedToday:0}).reasons,['MAINTENANCE_WINDOW']);
   assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:00Z'),{completedToday:8}).reasons,['DAILY_LIMIT_REACHED']);
   assert.equal(evaluateSchedule(schedule,new Date('2026-03-08T06:30:19Z'),{completedToday:0},{cadenceOverrideMs:10000}).slot,'2026-03-08T06:30:10.000Z');
+  assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:19Z'),{completedToday:96},{cadenceOverrideMs:10000}).reasons,[],'test cadence must not inherit the much smaller production daily allowance');
+  assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:19Z'),{completedToday:8640},{cadenceOverrideMs:10000}).reasons,['DAILY_LIMIT_REACHED']);
   assert.throws(()=>evaluateSchedule(schedule,new Date(),{},{cadenceOverrideMs:999}),/cadence override/i);
 });
 
@@ -57,6 +59,7 @@ integration('ten-second test cadence creates one job per slot without overlap',a
   assert.equal(a.scheduled+b.scheduled,1);
   const {rows:[receipt]}=await pool.query('SELECT schedule_slot,schedule_snapshot FROM group_schedule_receipts');
   assert.equal(receipt.schedule_snapshot.testCadenceMs,10000);
+  assert.equal(receipt.schedule_snapshot.testDailyLimit,8640);
   assert.equal(+new Date(receipt.schedule_slot)%10000,0);
 });
 

@@ -9,10 +9,15 @@ import { abortable, closeContext, settleWithin } from './cancellation.mjs';
 export function assertGroupTarget(target) {
   if(typeof target!=='string'||!new RegExp(`^https://www\\.facebook\\.com/groups/[0-9]{1,${MAX_GROUP_ID_LENGTH}}$`).test(target)) throw new Error('Invalid group target');
 }
-export async function selectGroupPage(context,target,{signal}={}) {
+export async function selectGroupPage(context,target,{signal,refresh=false}={}) {
   assertGroupTarget(target);
   const matches=context.pages().filter(page=>!page.isClosed?.()&&page.url()===target);
-  if(matches.length) { const [selected,...duplicates]=matches; await abortable(()=>Promise.all(duplicates.map(page=>page.close().catch(()=>{}))),signal); return selected; }
+  if(matches.length) {
+    const [selected,...duplicates]=matches;
+    await abortable(()=>Promise.all(duplicates.map(page=>page.close().catch(()=>{}))),signal);
+    if(refresh&&typeof selected.reload==='function')await abortable(()=>selected.reload({waitUntil:'domcontentloaded',timeout:30000}),signal);
+    return selected;
+  }
   const page=await abortable(()=>context.newPage(),signal,page=>page.close());
   await abortable(()=>page.goto(target,{waitUntil:'domcontentloaded',timeout:30000}),signal);
   return page;
@@ -117,7 +122,7 @@ export function createGroupSession({profilePath,launchContext,commandTimeoutMs=G
       launching=Promise.resolve().then(()=>launchContext(profilePath,{signal,timeout:Math.max(1,Math.min(commandTimeoutMs,Date.parse(command.expiresAt)-Date.now()))}));
       context=await abortable(()=>launching,signal);
       await lease.assertOwned();
-      const page=await selectGroupPage(context,command.canonicalTarget,{signal});
+      const page=await selectGroupPage(context,command.canonicalTarget,{signal,refresh:command.kind==='ScanCommand'});
       const health=await abortable(()=>inspectSession(page),signal);
       if(health.state!=='healthy') return {selectorVersion:'facebook-dom-v3',coverage:'none',health:health.state,reason:'session_unavailable',cursor:null,observations:[]};
       const result=await abortable(()=>run(page,command,{signal}),signal); await lease.assertOwned(); return result;

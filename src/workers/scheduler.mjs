@@ -47,7 +47,11 @@ export function evaluateSchedule(scheduleValue,instantValue,state={},options={})
     : (local.time>=schedule.start&&schedule.days.includes(local.day))||(local.time<schedule.end&&schedule.days.includes((local.day+6)%7));
   if(!within)reasons.push('OUTSIDE_SCHEDULE_WINDOW');
   if(schedule.maintenanceWindows.some(window=>+instant>=Date.parse(window.startsAt)&&+instant<Date.parse(window.endsAt)))reasons.push('MAINTENANCE_WINDOW');
-  if((state.completedToday??0)>=schedule.dailyLimit)reasons.push('DAILY_LIMIT_REACHED');
+  // The explicit short-cadence override is a bounded test mode. Its daily
+  // allowance must match that cadence or the persisted production allowance
+  // (for example 96 x 15-minute scans) would stop the test after a few minutes.
+  const effectiveDailyLimit=cadenceOverrideMs===null?schedule.dailyLimit:Math.ceil(86400000/cadenceOverrideMs);
+  if((state.completedToday??0)>=effectiveDailyLimit)reasons.push('DAILY_LIMIT_REACHED');
   const slotMs=cadenceOverrideMs??schedule.cadenceMinutes*60000,slot=new Date(Math.floor(+instant/slotMs)*slotMs).toISOString();
   return {eligible:reasons.length===0,reasons,localDay:local.date,slot};
 }
@@ -149,7 +153,7 @@ export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSiz
         if((await tx.query('SELECT 1 FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND schedule_slot=$3',[row.organization_id,row.source_id,preliminary.slot])).rowCount)return {deduplicated:true};
         const {rows:[count]}=await tx.query("SELECT count(*)::int n FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND local_day=$3 AND state='scheduled'",[row.organization_id,row.source_id,preliminary.localDay]);
         const decision=invalidSchedule?preliminary:evaluateSchedule(schedule,now,{...state,completedToday:count.n},{cadenceOverrideMs});
-        const receiptId=randomUUID(),snapshot={...schedule,selectorVersion:row.selector_version,...(cadenceOverrideMs===null?{}:{testCadenceMs:cadenceOverrideMs})};
+        const receiptId=randomUUID(),snapshot={...schedule,selectorVersion:row.selector_version,...(cadenceOverrideMs===null?{}:{testCadenceMs:cadenceOverrideMs,testDailyLimit:Math.ceil(86400000/cadenceOverrideMs)})};
         if(!decision.eligible) {
           await tx.query(`INSERT INTO group_schedule_receipts(id,organization_id,source_id,schedule_slot,local_day,state,reason_codes,schedule_snapshot)
             VALUES($1,$2,$3,$4,$5,'skipped',$6,$7)`,[receiptId,row.organization_id,row.source_id,decision.slot,decision.localDay,decision.reasons,JSON.stringify(snapshot)]);

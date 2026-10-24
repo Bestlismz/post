@@ -95,10 +95,13 @@ test('private server and client carry only signed exact group reply, edit, and r
 
 test('page selection ignores unrelated pages and closes duplicate exact pages',async()=>{
   const {selectGroupPage,inspectSession}=await load('group-worker/session');
-  const page=url=>({url:()=>url,close:async()=>{closed.push(url);},locator:()=>({count:async()=>0})});
+  const page=url=>({url:()=>url,close:async()=>{closed.push(url);},locator:()=>({count:async()=>0}),reload:async()=>{reloaded++;}});
+  let reloaded=0;
   const closed=[], unrelated=page('https://evil.test/groups/100'), exact=page('https://www.facebook.com/groups/100'), duplicate=page('https://www.facebook.com/groups/100');
   assert.equal(await selectGroupPage({pages:()=>[unrelated,exact,duplicate]},'https://www.facebook.com/groups/100'),exact);
   assert.equal(closed.length,1);
+  assert.equal(await selectGroupPage({pages:()=>[exact]},'https://www.facebook.com/groups/100',{refresh:true}),exact);
+  assert.equal(reloaded,1);
   await assert.rejects(selectGroupPage({},'https://evil.test/groups/100'),/target/);
   assert.equal((await inspectSession(page('https://www.facebook.com/checkpoint/'))).state,'checkpoint');
   assert.equal((await inspectSession(page('https://www.facebook.com/login/'))).state,'auth_required');
