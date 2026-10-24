@@ -86,13 +86,17 @@ test('Compose production worker uses its restricted URL and only environment sec
     assert.equal(config.services[name].init,true);
     assert.equal(config.services[name].stop_grace_period,'2m0s','Allow two 30s OpenAI calls plus database settlement');
   }
-  assert.deepEqual(worker.command,['node','src/worker.mjs'],'SIGTERM must reach the runner without an npm wrapper');assert.match(worker.environment.DATABASE_URL,/rental_radar_worker/);
+  assert.deepEqual(worker.command,['node','src/worker.mjs'],'SIGTERM must reach the runner without an npm wrapper');assert.equal(worker.environment.RENDAR_DATABASE_ROLE,'worker');
+  assert.deepEqual(worker.entrypoint,['/bin/sh','/app/scripts/compose-entrypoint.sh']);
+  assert.ok(worker.volumes.some(item=>item.source==='runtime-secrets'&&item.target==='/run/rendar'&&item.read_only===true));
   assert.equal(config.services.web.environment.OPENAI_PROVIDER_CONFIGURED,'true');
+  assert.deepEqual(config.services.web.command,['node','src/server.mjs']);
+  assert.deepEqual(config.services['group-worker'].command,['/usr/bin/supervisord','-c','/app/supervisord.conf']);
   assert.equal(config.services.web.environment.OPENAI_API_KEY,undefined,'The OpenAI secret belongs only in the worker');
   for(const name of ['MIGRATION_DATABASE_URL','POSTGRES_PASSWORD','SESSION_SECRET'])assert.equal(worker.environment[name],undefined);
-  assert.equal(worker.environment.OPENAI_API_KEY,'fake-no-live-calls');assert.equal(worker.environment.META_TOKEN_KEYS,'{}');
-  assert.equal(worker.environment.GROUP_COMMAND_KEY_ID,'group-current');assert.equal(worker.environment.GROUP_COMMAND_KEYS,'{"group-current":"encoded"}');
+  assert.equal(worker.environment.OPENAI_API_KEY,'fake-no-live-calls');assert.equal(worker.environment.META_TOKEN_KEYS,undefined);
+  assert.equal(worker.environment.GROUP_COMMAND_KEY_ID,undefined);assert.equal(worker.environment.GROUP_COMMAND_KEYS,undefined);
   assert.equal(worker.environment.GROUP_SCHEDULER_BATCH_SIZE,'50');assert.equal(worker.environment.GROUP_SCHEDULER_TICK_TIMEOUT_MS,'30000');
   assert.equal(worker.environment.GROUP_SCHEDULER_TEST_CADENCE_MS,'10000');
-  assert.equal(worker.ports,undefined);assert.equal(worker.volumes,undefined);
+  assert.equal(worker.ports,undefined);
 });

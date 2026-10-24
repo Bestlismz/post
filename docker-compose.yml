@@ -1,15 +1,41 @@
 name: rental-radar
 
 services:
-  postgres:
-    image: postgres:17-bookworm
-    restart: unless-stopped
+  secrets:
+    build: .
+    user: "0:0"
+    restart: "no"
+    entrypoint: ["node", "scripts/ensure-compose-secrets.mjs"]
     environment:
       POSTGRES_DB: rental_radar
       POSTGRES_USER: rental_radar
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-}
+      RUNTIME_DATABASE_PASSWORD: ${RUNTIME_DATABASE_PASSWORD:-}
+      RUNTIME_DATABASE_URL: ${RUNTIME_DATABASE_URL:-}
+      WORKER_DATABASE_PASSWORD: ${WORKER_DATABASE_PASSWORD:-}
+      WORKER_DATABASE_URL: ${WORKER_DATABASE_URL:-}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      META_TOKEN_KEY_VERSION: ${META_TOKEN_KEY_VERSION:-}
+      META_TOKEN_KEYS: '${META_TOKEN_KEYS:-{}}'
+      GROUP_COMMAND_KEY_ID: ${GROUP_COMMAND_KEY_ID:-}
+      GROUP_COMMAND_KEYS: '${GROUP_COMMAND_KEYS:-{}}'
+    volumes:
+      - database-secrets:/run/rendar-db
+      - runtime-secrets:/run/rendar
+
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: rental_radar
+      POSTGRES_USER: rental_radar
+      POSTGRES_PASSWORD_FILE: /run/rendar-db/postgres_password
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - database-secrets:/run/rendar-db:ro
     networks:
       - backend
     healthcheck:
@@ -19,26 +45,48 @@ services:
       retries: 10
       start_period: 10s
 
+  bootstrap:
+    build: .
+    init: true
+    restart: "no"
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "/app/scripts/compose-entrypoint.sh"]
+    command: ["node", "scripts/bootstrap-compose.mjs"]
+    environment:
+      RENDAR_DATABASE_ROLE: owner
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@rendar.local}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123456}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-Rendar Admin}
+      BOOTSTRAP_SAMPLE_DATA: ${BOOTSTRAP_SAMPLE_DATA:-true}
+    volumes:
+      - database-secrets:/run/rendar-db:ro
+      - runtime-secrets:/run/rendar:ro
+    networks:
+      - backend
+
   web:
     build: .
     init: true
     stop_grace_period: 120s
     restart: unless-stopped
+    command: ["node", "src/server.mjs"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/app/scripts/compose-entrypoint.sh"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: ${RUNTIME_DATABASE_URL:?Set RUNTIME_DATABASE_URL using rental_radar_web and host postgres}
+      RENDAR_DATABASE_ROLE: web
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
-      SESSION_SECRET: ${SESSION_SECRET:?Set SESSION_SECRET to at least 32 characters}
       OPENAI_PROVIDER_CONFIGURED: ${OPENAI_API_KEY:+true}
       META_APP_ID: ${META_APP_ID:-}
       META_APP_SECRET: ${META_APP_SECRET:-}
       META_VERIFY_TOKEN: ${META_VERIFY_TOKEN:-}
       META_REDIRECT_URI: ${META_REDIRECT_URI:-}
-      META_TOKEN_KEYS: '${META_TOKEN_KEYS:-{}}'
-      META_TOKEN_KEY_VERSION: ${META_TOKEN_KEY_VERSION:-}
       META_GRAPH_VERSION: ${META_GRAPH_VERSION:-v24.0}
       GROUP_SUPPORTED_SELECTOR_VERSIONS: ${GROUP_SUPPORTED_SELECTOR_VERSIONS:-facebook-dom-v3}
       GROUP_SCHEDULER_TEST_CADENCE_MS: ${GROUP_SCHEDULER_TEST_CADENCE_MS:-}
@@ -46,8 +94,8 @@ services:
       STAGING_FACEBOOK_SEND: ${STAGING_FACEBOOK_SEND:-false}
       STAGING_FACEBOOK_SOURCE_ALLOWLIST: ${STAGING_FACEBOOK_SOURCE_ALLOWLIST:-}
       GROUP_RECOVERY_PROXY_URL: http://group-worker:6081
-      GROUP_COMMAND_KEY_ID: ${GROUP_COMMAND_KEY_ID:-}
-      GROUP_COMMAND_KEYS: '${GROUP_COMMAND_KEYS:-{}}'
+    volumes:
+      - runtime-secrets:/run/rendar:ro
     ports:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     networks:
@@ -67,17 +115,14 @@ services:
     restart: unless-stopped
     command: ["node", "src/worker.mjs"]
     depends_on:
-      postgres:
-        condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/app/scripts/compose-entrypoint.sh"]
     environment:
       NODE_ENV: production
-      DATABASE_URL: ${WORKER_DATABASE_URL:?Set WORKER_DATABASE_URL using rental_radar_worker and host postgres}
+      RENDAR_DATABASE_ROLE: worker
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-5-mini}
-      META_TOKEN_KEYS: '${META_TOKEN_KEYS:-{}}'
-      META_TOKEN_KEY_VERSION: ${META_TOKEN_KEY_VERSION:-}
-      GROUP_COMMAND_KEY_ID: ${GROUP_COMMAND_KEY_ID:-}
-      GROUP_COMMAND_KEYS: '${GROUP_COMMAND_KEYS:-}'
       GROUP_SUPPORTED_SELECTOR_VERSIONS: ${GROUP_SUPPORTED_SELECTOR_VERSIONS:-facebook-dom-v3}
       GROUP_SCHEDULER_POLL_MS: ${GROUP_SCHEDULER_POLL_MS:-15000}
       GROUP_SCHEDULER_TEST_CADENCE_MS: ${GROUP_SCHEDULER_TEST_CADENCE_MS:-}
@@ -86,6 +131,8 @@ services:
       GROUP_WORKER_URL: http://group-worker:3001
       STAGING_FACEBOOK_SEND: ${STAGING_FACEBOOK_SEND:-false}
       STAGING_FACEBOOK_SOURCE_ALLOWLIST: ${STAGING_FACEBOOK_SOURCE_ALLOWLIST:-}
+    volumes:
+      - runtime-secrets:/run/rendar:ro
     networks:
       - backend
       - browser
@@ -97,20 +144,25 @@ services:
     init: true
     stop_grace_period: 30s
     restart: unless-stopped
+    command: ["/usr/bin/supervisord", "-c", "/app/supervisord.conf"]
+    depends_on:
+      secrets:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "/app/scripts/compose-entrypoint.sh"]
     environment:
       NODE_ENV: production
+      RENDAR_DATABASE_ROLE: none
       PORT: 3001
       DISPLAY: :99
       CHROME_CDP_URL: http://127.0.0.1:9222
       BROWSER_PROFILE_PATH: /data/chromium
       GROUP_OPERATION_LEDGER_PATH: /data/group-operations
-      GROUP_COMMAND_KEY_ID: ${GROUP_COMMAND_KEY_ID:-}
-      GROUP_COMMAND_KEYS: '${GROUP_COMMAND_KEYS:-{}}'
       GROUP_SOURCE_ALLOWLIST: ${GROUP_SOURCE_ALLOWLIST:-}
       GROUP_SUPPORTED_SELECTOR_VERSIONS: ${GROUP_SUPPORTED_SELECTOR_VERSIONS:-facebook-dom-v3}
       STAGING_FACEBOOK_SEND: ${STAGING_FACEBOOK_SEND:-false}
       STAGING_FACEBOOK_SOURCE_ALLOWLIST: ${STAGING_FACEBOOK_SOURCE_ALLOWLIST:-}
     volumes:
+      - runtime-secrets:/run/rendar:ro
       - browser-profile:/data/chromium
       - group-operations:/data/group-operations
     networks:
@@ -127,30 +179,37 @@ services:
     build: .
     init: true
     depends_on:
+      secrets:
+        condition: service_completed_successfully
       group-worker:
         condition: service_healthy
-    entrypoint: ["node", "scripts/staging-facebook-check.mjs"]
-    command: ["--no-send"]
+    entrypoint: ["/bin/sh", "/app/scripts/compose-entrypoint.sh"]
+    command: ["node", "scripts/staging-facebook-check.mjs", "--no-send"]
     environment:
+      RENDAR_DATABASE_ROLE: none
       GROUP_WORKER_URL: http://group-worker:3001
-      GROUP_COMMAND_KEY_ID: ${GROUP_COMMAND_KEY_ID:-}
-      GROUP_COMMAND_KEYS: '${GROUP_COMMAND_KEYS:-{}}'
       GROUP_SOURCE_ALLOWLIST: ${GROUP_SOURCE_ALLOWLIST:-}
       STAGING_FACEBOOK_SEND: ${STAGING_FACEBOOK_SEND:-false}
       STAGING_FACEBOOK_SOURCE_ALLOWLIST: ${STAGING_FACEBOOK_SOURCE_ALLOWLIST:-}
+    volumes:
+      - runtime-secrets:/run/rendar:ro
     networks:
       - browser
 
 volumes:
+  database-secrets:
+    name: ${DATABASE_SECRETS_VOLUME:-rental-radar-database-secrets}
+  runtime-secrets:
+    name: ${RUNTIME_SECRETS_VOLUME:-rental-radar-runtime-secrets}
   postgres-data:
-    name: rental-radar-postgres-data
+    name: ${POSTGRES_VOLUME:-rental-radar-postgres-data}
   browser-profile:
-    name: rental-radar-browser-profile
+    name: ${BROWSER_PROFILE_VOLUME:-rental-radar-browser-profile}
   group-operations:
-    name: rental-radar-group-operations
+    name: ${GROUP_OPERATIONS_VOLUME:-rental-radar-group-operations}
 
 networks:
   backend:
-    name: rental-radar-backend
+    name: ${BACKEND_NETWORK:-rental-radar-backend}
   browser:
-    name: rental-radar-browser
+    name: ${BROWSER_NETWORK:-rental-radar-browser}

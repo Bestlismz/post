@@ -164,7 +164,7 @@ test('compose keeps the browser worker private and credential-minimal',()=>{
   assert.ok(service.volumes.some(item=>item.source==='group-operations'&&item.target==='/data/group-operations'));assert.equal(config.volumes['group-operations'].name,'rental-radar-group-operations');
   for(const name of ['DATABASE_URL','OPENAI_API_KEY','META_APP_ID','META_APP_SECRET','META_PAGE_ACCESS_TOKEN','META_TOKEN_KEYS','POSTGRES_PASSWORD'])assert.equal(Object.hasOwn(service.environment,name),false,name);
   assert.ok(service.healthcheck);assert.ok(Object.hasOwn(config.services.web.networks,'browser'));assert.ok(Object.hasOwn(config.services.worker.networks,'browser'));
-  const staging=config.services['staging-check'];assert.deepEqual(staging.profiles,['tools']);assert.deepEqual(Object.keys(staging.networks),['browser']);assert.deepEqual(staging.entrypoint,['node','scripts/staging-facebook-check.mjs']);assert.equal(staging.ports,undefined);
+  const staging=config.services['staging-check'];assert.deepEqual(staging.profiles,['tools']);assert.deepEqual(Object.keys(staging.networks),['browser']);assert.deepEqual(staging.entrypoint,['/bin/sh','/app/scripts/compose-entrypoint.sh']);assert.deepEqual(staging.command,['node','scripts/staging-facebook-check.mjs','--no-send']);assert.equal(staging.ports,undefined);
   for(const name of ['DATABASE_URL','OPENAI_API_KEY','META_APP_SECRET','META_TOKEN_KEYS','POSTGRES_PASSWORD'])assert.equal(Object.hasOwn(staging.environment,name),false,name);
 });
 

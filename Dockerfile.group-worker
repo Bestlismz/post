@@ -10,8 +10,9 @@ RUN npm ci --omit=dev
 COPY src/channels/groups ./src/channels/groups
 COPY src/group-worker ./src/group-worker
 COPY scripts/start-chromium.sh ./scripts/start-chromium.sh
+COPY scripts/compose-entrypoint.sh ./scripts/compose-entrypoint.sh
 COPY supervisord.conf ./supervisord.conf
-RUN chmod 0755 ./scripts/start-chromium.sh \
+RUN chmod 0755 ./scripts/start-chromium.sh ./scripts/compose-entrypoint.sh \
   && mkdir -p /data/chromium /data/group-operations \
   && chown -R node:node /app /data/chromium /data/group-operations
 

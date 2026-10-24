@@ -15,6 +15,8 @@ test("Compose separates web, Messenger worker, and isolated Group browser storag
   await assert.rejects(access(new URL("../compose.yaml", import.meta.url)), { code: "ENOENT" });
   const compose = await readFile(new URL("../docker-compose.yml", import.meta.url), "utf8");
   assert.match(compose, /\n  postgres:/);
+  assert.match(compose, /\n  secrets:/);
+  assert.match(compose, /\n  bootstrap:/);
   assert.match(compose, /\n  web:/);
   const services = compose.slice(compose.indexOf("services:"), compose.indexOf("\nvolumes:"));
   assert.match(services, /\n  worker:/);
@@ -22,10 +24,12 @@ test("Compose separates web, Messenger worker, and isolated Group browser storag
   assert.equal((compose.match(/healthcheck:/g) ?? []).length, 3);
   assert.match(compose, /condition: service_healthy/);
   const web = services.slice(services.indexOf("\n  web:"));
-  assert.match(web, /DATABASE_URL: \$\{RUNTIME_DATABASE_URL:/);
+  assert.match(web, /RENDAR_DATABASE_ROLE: web/);
   assert.doesNotMatch(web, /COMPOSE_DATABASE_URL|MIGRATION_DATABASE_URL|POSTGRES_PASSWORD|npm run migrate/);
-  assert.match(compose, /name: rental-radar-postgres-data/);
-  assert.match(compose, /name: rental-radar-browser-profile/);
+  assert.match(compose, /name: \$\{POSTGRES_VOLUME:-rental-radar-postgres-data\}/);
+  assert.match(compose, /name: \$\{BROWSER_PROFILE_VOLUME:-rental-radar-browser-profile\}/);
+  assert.match(compose, /condition: service_completed_successfully/);
+  assert.match(compose, /ADMIN_EMAIL: \$\{ADMIN_EMAIL:-admin@rendar\.local\}/);
   const webService=services.slice(services.indexOf("\n  web:"),services.indexOf("\n  worker:"));
   assert.doesNotMatch(webService,/browser-profile:/);
 });
