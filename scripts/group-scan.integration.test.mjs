@@ -102,6 +102,31 @@ integration('an unresolved exact outbound comment cannot re-enter Inbox before F
   assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[work.id])).rows[0].status,'completed');
 });
 
+integration('corrected Facebook emoji evidence heals a previously self-ingested reply',async({pool,source,scan,result,accept,observation})=>{
+  await accept(result(await scan(),{observations:[observation('456','Looking for a rental')]}));
+  const {rows:[original]}=await pool.query('SELECT id,conversation_id,processing_revision FROM work_items LIMIT 1');
+  await pool.query("UPDATE work_items SET status='ready' WHERE id=$1",[original.id]);
+  await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+    VALUES('reply-emoji','org_default',$1,$2,$3,1,'{"text":"สวัสดี 🙂 ห้องว่างค่ะ"}','{}')`,[original.id,original.conversation_id,original.processing_revision]);
+  await pool.query(`INSERT INTO reply_authorizations(id,organization_id,work_item_id,reply_version_id,actor_kind,evidence)
+    VALUES('auth-emoji','org_default',$1,'reply-emoji','policy','{}')`,[original.id]);
+  await pool.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content)
+    VALUES('intent-emoji','org_default','auth-emoji','reply-emoji',$1,NULL,$2,'{"text":"สวัสดี 🙂 ห้องว่างค่ะ"}')`,[original.conversation_id,source.id]);
+  await accept(result(await scan(),{observations:[observation('456','สวัสดี  ห้องว่างค่ะ','902')]}));
+  assert.deepEqual((await pool.query('SELECT status,processing_revision FROM work_items ORDER BY processing_revision')).rows,
+    [{status:'superseded',processing_revision:1},{status:'pending',processing_revision:2}]);
+
+  await accept(result(await scan(),{observations:[observation('456','สวัสดี 🙂 ห้องว่างค่ะ','902')]}));
+  await pool.query(`INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at,finished_at,outcome_code)
+    VALUES('attempt-emoji','org_default','intent-emoji','unknown',$1,$1,'POSSIBLE_SEND')`,[instant]);
+  await accept(result(await scan(),{observations:[observation('456','สวัสดี 🙂 ห้องว่างค่ะ','902')]}));
+  assert.deepEqual((await pool.query('SELECT status,processing_revision FROM work_items ORDER BY processing_revision')).rows,
+    [{status:'completed',processing_revision:1},{status:'superseded',processing_revision:2},{status:'superseded',processing_revision:3}]);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,3,'the repeated evidence must not create another Inbox message');
+  assert.deepEqual((await pool.query("SELECT state,outcome_code,provider_message_id FROM delivery_attempts WHERE id='attempt-emoji'")).rows[0],
+    {state:'sent',outcome_code:'SCAN_EVIDENCE_RECONCILED',provider_message_id:'902'});
+});
+
 integration('newest authentic scan persists a safe Facebook group name and access level',async({pool,scan,result,accept})=>{
   await accept(result(await scan(),{groupName:'<b>autopost</b>\u0000',accessLevel:'admin'}));
   assert.deepEqual((await pool.query('SELECT display_name,access_level FROM group_sources')).rows[0],{display_name:'autopost',access_level:'admin'});

@@ -59,6 +59,21 @@ async function readPage(page,groupId) {
       !card.parentElement?.closest('[role="article"]') || commentArticleLabel.test(card.getAttribute('aria-label')??''));
     const items=[];
     let reason=null;
+    const visibleText=root=>{
+      let value='';
+      const visit=node=>{
+        if(node.nodeType===Node.TEXT_NODE){value+=node.nodeValue??'';return;}
+        if(node.nodeType!==Node.ELEMENT_NODE)return;
+        const tag=node.tagName;
+        if(tag==='IMG'){value+=node.getAttribute('alt')??'';return;}
+        if(tag==='BR'){value+='\n';return;}
+        const block=node!==root&&/^(?:DIV|P|LI)$/.test(tag),start=value.length;
+        for(const child of node.childNodes)visit(child);
+        if(block&&value.length>start&&!value.endsWith('\n'))value+='\n';
+      };
+      visit(root);
+      return value.replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+    };
     const identityPath=new RegExp(`^/groups/([0-9]{1,${maxIdLength}})/posts/([0-9]{1,${maxIdLength}})/?$`);
     for(const card of cards.slice(0,100)) {
       const owned=selector=>Array.from(card.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===card);
@@ -102,7 +117,7 @@ async function readPage(page,groupId) {
       const labels=owned('[aria-label], button, [role="button"]').map(node=>`${node.getAttribute('aria-label')??''} ${node.textContent??''}`.trim());
       const reactionLabel=labels.find(value=>/reaction|ถูกใจ|การตอบสนอง/i.test(value));
       const commentCountLabel=labels.find(value=>/comments?|ความคิดเห็น/i.test(value));
-      items.push({href:link.href.slice(0,2000),authorLabel:authorLabel.slice(0,300),text:(text.innerText??text.textContent).slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null,reactionCount:countFrom(reactionLabel),commentCount:countFrom(commentCountLabel)});
+      items.push({href:link.href.slice(0,2000),authorLabel:authorLabel.slice(0,300),text:visibleText(text).slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null,reactionCount:countFrom(reactionLabel),commentCount:countFrom(commentCountLabel)});
     }
     return {groupName,accessLevel,selectorValid:!!feed&&items.length>0&&!reason,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});

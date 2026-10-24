@@ -76,7 +76,23 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
     if(identity.kind==='post'&&!exactPage&&typeof page.goto==='function')await page.goto(`https://www.facebook.com/groups/${command.groupId}/posts/${identity.postId}/`,{waitUntil:'domcontentloaded'});
     const target=await locateExactTarget(command);
     await expandVisibleComments(page,{maxClicks:24});
-    const readRows=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>articles.flatMap(article=>{
+    const readRows=()=>page.locator('[role="article"]').evaluateAll((articles,{groupId,postId})=>{
+      const visibleText=root=>{
+        let value='';
+        const visit=node=>{
+          if(node.nodeType===Node.TEXT_NODE){value+=node.nodeValue??'';return;}
+          if(node.nodeType!==Node.ELEMENT_NODE)return;
+          const tag=node.tagName;
+          if(tag==='IMG'){value+=node.getAttribute('alt')??'';return;}
+          if(tag==='BR'){value+='\n';return;}
+          const block=node!==root&&/^(?:DIV|P|LI)$/.test(tag),start=value.length;
+          for(const child of node.childNodes)visit(child);
+          if(block&&value.length>start&&!value.endsWith('\n'))value+='\n';
+        };
+        visit(root);
+        return value.replace(/[ \t]+\n/g,'\n').replace(/\n[ \t]+/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+      };
+      return articles.flatMap(article=>{
       const owned=selector=>Array.from(article.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===article);
       const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
       if(!messages.length)messages.push(...owned('div[dir="auto"]').filter(node=>node.textContent?.trim()&&!node.closest('h1,h2,h3,button,[role="button"],[contenteditable="true"]')&&!Array.from(node.querySelectorAll('div[dir="auto"]')).some(child=>child.closest('[role="article"]')===article&&child.textContent?.trim())));
@@ -85,8 +101,9 @@ export function createFacebookGroupDriver(page,{clock=()=>new Date(),resolveSess
       if(permalinks.length!==1)return [];
       const observedAt=permalinks[0].link.querySelector('time[datetime]')?.getAttribute('datetime')??null;
       const authorHrefs=links.filter(link=>link!==permalinks[0].link&&link.textContent?.trim()).map(link=>link.href);
-      return [{text:messages.map(node=>node.textContent?.trim()).filter(Boolean).join('\n'),authorHrefs,observedAt,remoteId:permalinks[0].comment}];
-    }),{groupId:command.groupId,postId:target.identity.postId});
+      return [{text:messages.map(visibleText).filter(Boolean).join('\n'),authorHrefs,observedAt,remoteId:permalinks[0].comment}];
+      });
+    },{groupId:command.groupId,postId:target.identity.postId});
     let rows=[];
     for(let attempt=0;attempt<20&&!rows.length;attempt++) {
       rows=await readRows();

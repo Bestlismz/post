@@ -63,6 +63,18 @@ integration('ten-second test cadence creates one job per slot without overlap',a
   assert.equal(+new Date(receipt.schedule_slot)%10000,0);
 });
 
+integration('a later schedule slot does not queue behind an unfinished scan',async({pool})=>{
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',1440)`);
+  await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe)
+    VALUES('existing-scan','org_default','group.scan','{"sourceId":"source-1"}',true)`);
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  const summary=await createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],cadenceOverrideMs:10000}).tick();
+  assert.deepEqual(summary,{considered:1,scheduled:0,skipped:1});
+  assert.equal((await pool.query("SELECT count(*)::int n FROM jobs WHERE kind='group.scan'")).rows[0].n,1);
+  assert.deepEqual((await pool.query('SELECT state,reason_codes FROM group_schedule_receipts')).rows[0],{state:'skipped',reason_codes:['SCAN_ALREADY_QUEUED']});
+});
+
 test('scheduler deadline releases a database client acquired after the tick already timed out',async()=>{
   const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');let released=0;
   const pool={connect:()=>new Promise(resolve=>setTimeout(()=>resolve({release(){released++;}}),30))};

@@ -152,7 +152,11 @@ export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSiz
         }
         if((await tx.query('SELECT 1 FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND schedule_slot=$3',[row.organization_id,row.source_id,preliminary.slot])).rowCount)return {deduplicated:true};
         const {rows:[count]}=await tx.query("SELECT count(*)::int n FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND local_day=$3 AND state='scheduled'",[row.organization_id,row.source_id,preliminary.localDay]);
-        const decision=invalidSchedule?preliminary:evaluateSchedule(schedule,now,{...state,completedToday:count.n},{cadenceOverrideMs});
+        let decision=invalidSchedule?preliminary:evaluateSchedule(schedule,now,{...state,completedToday:count.n},{cadenceOverrideMs});
+        if(decision.eligible&&(await tx.query(`SELECT 1 FROM jobs WHERE organization_id=$1 AND kind='group.scan'
+          AND payload->>'sourceId'=$2 AND status IN ('pending','running') LIMIT 1`,[row.organization_id,row.source_id])).rowCount) {
+          decision={...decision,eligible:false,reasons:['SCAN_ALREADY_QUEUED']};
+        }
         const receiptId=randomUUID(),snapshot={...schedule,selectorVersion:row.selector_version,...(cadenceOverrideMs===null?{}:{testCadenceMs:cadenceOverrideMs,testDailyLimit:Math.ceil(86400000/cadenceOverrideMs)})};
         if(!decision.eligible) {
           await tx.query(`INSERT INTO group_schedule_receipts(id,organization_id,source_id,schedule_slot,local_day,state,reason_codes,schedule_snapshot)

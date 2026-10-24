@@ -93,7 +93,7 @@ async function persistObservation(tx,operation,source,result,item) {
     ON CONFLICT(organization_id,source_id,target_id) DO UPDATE SET observation_id=EXCLUDED.observation_id,operation_order=EXCLUDED.operation_order
     WHERE group_targets.operation_order<EXCLUDED.operation_order RETURNING target_id`,[organizationId,source.id,item.targetId,observationId,operation.operation_order]);
   // Late evidence stays immutable history. Only a current material change creates new Inbox work.
-  if(!projected.rowCount||previous?.content_hash===item.contentHash) return;
+  if(!projected.rowCount) return;
   if(item.kind==='comment') {
     const {rows:[owned]}=await tx.query(`SELECT a.id AS attempt_id,a.state,i.id AS intent_id,i.authorization_id,w.id AS work_item_id FROM delivery_attempts a
       JOIN delivery_intents i ON i.organization_id=a.organization_id AND i.id=a.delivery_intent_id
@@ -115,13 +115,24 @@ async function persistObservation(tx,operation,source,result,item) {
           finished_at=coalesce(finished_at,$3::timestamptz) WHERE organization_id=$1 AND id=$4`,[organizationId,item.commentId,item.observedAt,owned.attempt_id]);
         await tx.query(`UPDATE jobs SET status='completed',last_error='SCAN_EVIDENCE_RECONCILED',lease_owner=NULL,lease_expires_at=NULL,updated_at=now()
           WHERE organization_id=$1 AND kind IN ('deliver_group_reply','reconcile_group_reply') AND payload->>'deliveryIntentId'=$2 AND status IN ('pending','running')`,[organizationId,owned.intent_id]);
-        await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=$2 AND status='ready'",[organizationId,owned.work_item_id]);
         await appendAudit(tx,{organizationId,action:'delivery.reconciled',entityType:'delivery_intent',entityId:owned.intent_id,
           details:{attemptId:owned.attempt_id,providerMessageId:item.commentId,channel:'facebook_group',evidence:'group_scan'}});
       }
+      const restored=await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=$2 AND status IN ('ready','superseded') RETURNING id",[organizationId,owned.work_item_id]);
+      if(restored.rowCount)await operationReceipt(tx,{organizationId,resourceId:owned.work_item_id,resourceType:'work_item',state:'completed'});
+      const repaired=await tx.query(`UPDATE work_items w SET status='superseded',updated_at=now()
+        FROM messages m JOIN group_observations observed
+          ON observed.organization_id=m.organization_id AND observed.id=m.raw_evidence->>'observationId'
+        WHERE w.organization_id=$1 AND w.message_id=m.id AND observed.source_id=$2 AND observed.target_id=$3
+          AND w.id<>$4 AND w.status IN ('pending','preparing','needs_review','ready','failed') RETURNING w.id`,
+      [organizationId,source.id,item.targetId,owned.work_item_id]);
+      for(const row of repaired.rows)await operationReceipt(tx,{organizationId,resourceId:row.id,resourceType:'work_item',state:'superseded'});
+      if(repaired.rowCount)await appendAudit(tx,{organizationId,action:'group.self_ingest_repaired',entityType:'group_observation',entityId:observationId,
+        details:{providerMessageId:item.commentId,repairedWorkItemIds:repaired.rows.map(row=>row.id)}});
       return;
     }
   }
+  if(previous?.content_hash===item.contentHash) return;
   const pageId=`facebook_group:${source.group_id}`,rootTarget=`facebook_group_target:${item.postId}`;
   await tx.query(`INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES($1,$2,'facebook_group',$3,$4)
     ON CONFLICT(organization_id,page_id,psid) DO NOTHING`,[randomUUID(),organizationId,pageId,rootTarget]);

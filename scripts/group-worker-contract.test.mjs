@@ -167,6 +167,17 @@ test('observer extracts comments from the Thai Facebook article labels used by t
   assert.equal(result.observations[1].text,'สนใจห้องนี้ค่ะ\nขอรายละเอียดเพิ่ม');
 });
 
+test('observer preserves emoji rendered by Facebook as image alt text',async t=>{
+  const {observeGroupPage}=await load('group-worker/observer');
+  const page=await fixturePage(t,`<meta charset="utf-8"><main><h1>autopost</h1><div role="feed">
+    <div role="article"><h2>Beam</h2><a href="/groups/100/posts/900/"><time datetime="2026-10-24T12:00:00.000Z">1h</time></a><div data-ad-preview="message">หาห้องพระราม 9</div>
+      <div role="article" aria-label="ความคิดเห็นจาก Rendar เมื่อ 5 นาทีที่แล้ว"><a href="/groups/100/user/42/"><span dir="auto">Rendar</span></a><a href="/groups/100/posts/900/?comment_id=901"><time datetime="2026-10-24T12:55:00.000Z">5m</time></a><div data-ad-preview="message">สวัสดี <img alt="🙂" src="emoji.png"> ห้องว่างค่ะ</div></div>
+    </div>
+  </div></main>`);
+  const result=await observeGroupPage(page,command());
+  assert.equal(result.observations[1].text,'สวัสดี 🙂 ห้องว่างค่ะ');
+});
+
 test('observer extracts the current Thai Facebook group card without legacy message markers',async t=>{
   const {observeGroupPage}=await load('group-worker/observer');
   const page=await fixturePage(t,`<main><h1>test autopost</h1><a href="/groups/100/admin_assistant/">&#3605;&#3633;&#3623;&#3594;&#3656;&#3623;&#3618;&#3612;&#3641;&#3657;&#3604;&#3641;&#3649;&#3621;</a><div role="feed">
@@ -234,6 +245,19 @@ test('reply evidence expands collapsed Facebook comments before reconciliation',
   assert.equal(evidence[0].text,'Exact reply');
   assert.equal(evidence[0].senderId,sender);
   assert.equal(evidence[0].remoteId,'902');
+});
+
+test('reply evidence preserves emoji rendered by Facebook as image alt text',async t=>{
+  const {createFacebookGroupDriver}=await import('../src/group-worker/facebook-driver.mjs');
+  const page=await fixturePage(t,`<meta charset="utf-8"><header role="banner"><a aria-label="Your profile" href="/profile.php?id=42">Me</a></header>
+    <div role="article"><h3>Poster</h3><a href="/groups/100/posts/900/"><time datetime="2026-10-22T11:58:00.000Z">2m</time></a><div data-ad-preview="message">Room</div>
+      <div role="article"><h3><a href="/profile.php?id=42">Me</a></h3><a href="/groups/100/posts/900/?comment_id=902"><time datetime="2026-10-22T12:00:00.000Z">now</time></a><div data-ad-preview="message">สวัสดี <img alt="🙂" src="emoji.png"> ห้องว่างค่ะ</div></div>
+    </div>`);
+  const driver=createFacebookGroupDriver(page),replyCommand={...command(),targetId:'post:900',attemptFinishedAt:'2026-10-22T12:00:00.000Z'};
+  await driver.identifySender();
+  const evidence=await driver.findReplyEvidence(replyCommand);
+  assert.equal(evidence.length,1);
+  assert.equal(evidence[0].text,'สวัสดี 🙂 ห้องว่างค่ะ');
 });
 
 test('reply evidence expands truncated Facebook comment text before hashing',async t=>{
