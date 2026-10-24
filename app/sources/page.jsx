@@ -6,6 +6,7 @@ import { api } from "../lib/api-client.mjs";
 import { BrowserRecovery } from "./browser-recovery";
 import { createOperationPoller } from "./operation-poller.mjs";
 import { operationStatusReducer } from "./operation-status.mjs";
+import { applySavedSchedule } from "./schedule-state.mjs";
 import { SourceRow } from "./source-row";
 import "../sources-automations.css";
 
@@ -120,7 +121,7 @@ export default function SourcesPage() {
     setBusy(`${source.id}:schedule`);
     try {
       const saved = await mutate(`/api/automation/sources/${source.id}/schedule`, { method: "PUT", revision: current.revision, body: schedule });
-      setData((value) => ({ ...value, groups: value.groups.map((entry) => entry.id === source.id ? { ...entry, schedule: { ...saved.schedule, revision: saved.revision } } : entry) }));
+      setData((value) => ({ ...value, groups: applySavedSchedule(value.groups, source.id, saved) }));
       setNotice(`ตั้งให้สแกนอัตโนมัติทุก ${cadenceMinutes} นาทีแล้ว`);
     } catch (error) { setNotice(error.status === 409 ? "ตารางสแกนถูกแก้จากอีกหน้าหนึ่ง กรุณาโหลดใหม่แล้วลองอีกครั้ง" : error.message); }
     finally { setBusy(""); }
