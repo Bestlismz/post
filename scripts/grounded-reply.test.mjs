@@ -50,6 +50,19 @@ test("deterministic selection only exposes matched snapshot facts after all qual
   assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), selections);
 });
 
+test("a budget-only lead receives the matching available units instead of being asked for the budget again", () => {
+  const text = "หาห้องงบไม่เกิน 15000 บาทดูเรื่อยๆ";
+  const extraction = extractDeterministicRequirements({ conversation: { id: "budget-only", revision: 1, messages: [{ id: "budget-only-message", revision: 1, text }] } });
+  const affordable = { ...fact, unitId: "affordable", unitCode: "RR-1105", projectName: "Rhythm Ratchada", district: "พระราม 9", monthlyRentThb: 14500, bedrooms: 0 };
+  const matched = { id: "budget-only-snapshot", factSnapshot: [affordable] };
+  const selected = composeDeterministicSelections({ snapshot: matched, extraction });
+  assert.equal(selected.templateId, "options");
+  assert.deepEqual(selected.units.map(unit => unit.unitId), ["affordable"]);
+  const reply = renderReply(selected, matched, defaultReplyFormat("th"));
+  assert.match(reply.text, /Rhythm Ratchada|14,500/);
+  assert.doesNotMatch(reply.text, /รบกวนแจ้งทำเล งบประมาณ/);
+});
+
 test("structured extraction maps exact immutable evidence and missing values into matcher requirements", async () => {
   const result = await extractRequirements({ conversation, client: fake(extraction(), request => { assert.equal(request.text.format.strict, true); assert.equal(request.text.format.schema.additionalProperties, false); }) });
   assert.deepEqual(result.requirements, { budgetMax: 18000, bedrooms: 1, moveInDate: "2026-11-01", geography: { districts: ["Asoke"] }, roomType: "1_bedroom" });

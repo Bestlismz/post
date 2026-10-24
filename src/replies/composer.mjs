@@ -3,10 +3,10 @@ import { readSnapshot, readFormat, readSelections, selectionSchema, structuredRe
 export function composeDeterministicSelections({ snapshot, extraction }) {
   const facts = readSnapshot(snapshot);
   const known = key => extraction?.fields?.[key]?.status === "known";
-  // A location plus an explicit budget is enough to offer safe candidates.
-  // Room size remains a hard filter when the customer supplied it, but it is
-  // not required before showing genuinely matching inventory.
-  const qualified = known("district") && (known("budgetMin") || known("budgetMax"));
+  // Every fact in this snapshot has already passed the PostgreSQL matcher.
+  // One explicit hard constraint is enough to show those grounded candidates;
+  // missing preferences can narrow the list later without asking for known data again.
+  const qualified = ["district", "budgetMin", "budgetMax", "bedrooms", "roomType", "moveInDate", "requiredPetPolicy"].some(known);
   if (!qualified || !facts.factSnapshot.length) return readSelections({ units: [], templateId: "clarify" }, facts);
   const units = facts.factSnapshot.slice(0, 3).map(fact => ({
     unitId: fact.unitId,
