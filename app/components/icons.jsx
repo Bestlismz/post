@@ -1,7 +1,6 @@
-import { Bot, Building2, ChevronDown, Inbox, Search, Settings, SlidersHorizontal, UsersRound, Wifi, WifiOff, Zap } from "lucide-react";
+import { Bot, Building2, ChevronDown, Inbox, Search, Settings, SlidersHorizontal, UsersRound, Wifi, WifiOff } from "lucide-react";
 
 const icons = {
-  automations: Zap,
   bot: Bot,
   chevronDown: ChevronDown,
   inbox: Inbox,

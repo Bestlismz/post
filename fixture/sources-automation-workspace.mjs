@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { automationPauseInput, automationPolicy as automationPolicySchema, automationSchedule, policyPreviewInput, publicSourceUpdatePatch } from "../src/automation/contracts.mjs";
 import { evaluatePolicy } from "../src/policy/evaluator.mjs";
 import { evaluateSourceDecision } from "../src/policy/source-decision.mjs";
-import { readFormat } from "../src/replies/contracts.mjs";
+import { defaultAgentInstructions, readFormat } from "../src/replies/contracts.mjs";
 import { evaluateSchedule } from "../src/workers/scheduler.mjs";
 
 const policy = {
@@ -24,6 +24,7 @@ const replyFormat = {
   dateFormat: "dmy",
   requiredDisclosureId: "snapshot",
   forbiddenPhrases: [],
+  agentInstructions: defaultAgentInstructions,
 };
 
 const defaultSourcePolicy = () => ({

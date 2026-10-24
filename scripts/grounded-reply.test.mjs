@@ -77,7 +77,7 @@ test("a qualified lead with no matching inventory gets an honest no-match follow
   const selected = composeDeterministicSelections({ snapshot: emptySnapshot, extraction });
   assert.deepEqual(selected, { units: [], templateId: "no_match" });
   const reply = renderReply(selected, emptySnapshot, defaultReplyFormat("th"));
-  assert.match(reply.text, /ยังไม่พบห้องที่ตรงกับเงื่อนไข/u);
+  assert.match(reply.text, /ยังไม่พบห้องที่ตรงทุกเงื่อนไข/u);
   assert.match(reply.text, /ประเภทห้อง|พื้นที่ใกล้เคียง/u);
   assert.doesNotMatch(reply.text, /รบกวนแจ้งทำเล งบประมาณ/u);
 });
@@ -112,7 +112,10 @@ test("untrusted customer instructions are serialized as data and cannot author r
 });
 
 test("composer chooses only typed facts and allowlisted templates from this snapshot", async () => {
-  assert.deepEqual(await composeSelections({ snapshot, format, client: fake(selections) }), selections);
+  assert.deepEqual(await composeSelections({ snapshot, format: { ...format, agentInstructions: "เน้นห้องที่เดินทางสะดวกและไม่ถามข้อมูลเดิมซ้ำอีกครั้ง" }, client: fake(selections, request => {
+    assert.match(request.instructions, /เน้นห้องที่เดินทางสะดวก/u);
+    assert.match(request.instructions, /Hard rules/u);
+  }) }), selections);
   for (const value of [{ ...selections, units: [{ unitId: "evil", factIds: ["price"] }] }, { ...selections, units: [{ unitId: "u1", factIds: ["contact"] }] }, { ...selections, templateId: "booking_confirmed" }, { ...selections, units: [{ unitId: "u1", factIds: ["price"], price: 1 }] }]) await assert.rejects(composeSelections({ snapshot, format, client: fake(value) }));
 });
 
@@ -240,7 +243,7 @@ test("bare budget amounts remain ambiguous and cannot be promoted to either boun
 test("human free edits retain mandatory format constraints", () => {
   const reply = renderReply(selections, snapshot, format);
   const edit = text => ({ ...reply, text, grounded: false, editKind: "human_free_edit", automaticEligible: false });
-  for (const text of [reply.text + "\nforbidden", reply.text + "🙂", reply.text.replace("Details reflect the inventory snapshot; please confirm current availability with our team.", ""), reply.text + "\u202e", reply.text + "\t", reply.text + "x".repeat(2001), reply.text + "\ud800"]) {
+  for (const text of [reply.text + "\nforbidden", reply.text + "🙂", reply.text.replace("These details come from our current room list; our team will reconfirm availability before you decide.", ""), reply.text + "\u202e", reply.text + "\t", reply.text + "x".repeat(2001), reply.text + "\ud800"]) {
     assert.throws(() => validateReply(edit(text), { ...context, format: { ...format, forbiddenPhrases: ["forbidden"] } }));
   }
   assert.equal(validateReply(edit(reply.text.replace("18,000", "16,000")), context).automaticEligible, false);

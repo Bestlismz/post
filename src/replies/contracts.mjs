@@ -38,16 +38,20 @@ export function validDate(value) {
   return Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
+export const defaultAgentInstructions = "ตอบเหมือนนายหน้าอสังหาริมทรัพย์ที่เข้าใจความต้องการลูกค้า เลือกห้องที่ตรงเงื่อนไขที่สุดไม่เกิน 3 ห้อง ไม่ถามข้อมูลที่ลูกค้าแจ้งมาแล้ว และใช้ภาษากระชับ เป็นธรรมชาติ ไม่กดดันลูกค้า";
+
 export const formatSchema = z.strictObject({
   locale: z.enum(["th", "en"]), tone: z.enum(["neutral", "friendly", "formal"]),
   greetingId: z.enum(["hello", "none"]), closingId: z.enum(["thanks", "none"]), ctaId: z.enum(["requirements", "follow_up", "none"]),
   emojiPolicy: z.enum(["none", "friendly"]), maxLength: z.number().int().min(80).max(2000),
   numberFormat: z.enum(["grouped", "plain"]), dateFormat: z.enum(["iso", "dmy"]),
   requiredDisclosureId: z.enum(["snapshot", "confirm"]), forbiddenPhrases: z.array(z.string().min(1)).max(20),
+  agentInstructions: z.string().trim().min(20).max(4000).default(defaultAgentInstructions),
 });
 export function readFormat(format) {
   const value = formatSchema.parse(format);
   value.forbiddenPhrases.forEach(safeText);
+  safeText(value.agentInstructions);
   if (value.tone === "formal" && value.emojiPolicy !== "none") throw new Error("Formal tone is incompatible with emoji");
   return immutable(value);
 }

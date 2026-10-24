@@ -205,6 +205,7 @@ dbtest("Automations API persists exact format and policy revisions and exposes i
   assert.equal(initial.status, 200);
   assert.ok(initial.body.policy.revision >= 1);
   assert.equal(initial.body.replyFormat.value.locale, "th");
+  assert.match(initial.body.replyFormat.value.agentInstructions, /นายหน้า/u);
   assert.deepEqual(initial.body.sources[0].previewContexts.map(({ id }) => id), ["conversation-1"]);
 
   const policy = { mode: "automatic", minimumConfidence: 0.82, rateLimits: { organization: 100, source: 20, conversation: 2 }, businessHours: { timeZone: "Asia/Bangkok", days: [0, 1, 2, 3, 4, 5, 6], start: "00:00", end: "24:00" } };
@@ -213,7 +214,7 @@ dbtest("Automations API persists exact format and policy revisions and exposes i
   assert.deepEqual(savedPolicy.body.value, policy);
   assert.equal(savedPolicy.body.revision, initial.body.policy.revision + 1);
 
-  const format = { locale: "th", tone: "formal", greetingId: "hello", closingId: "thanks", ctaId: "follow_up", emojiPolicy: "none", maxLength: 700, numberFormat: "grouped", dateFormat: "dmy", requiredDisclosureId: "confirm", forbiddenPhrases: ["รับประกันห้องว่าง"] };
+  const format = { locale: "th", tone: "formal", greetingId: "hello", closingId: "thanks", ctaId: "follow_up", emojiPolicy: "none", maxLength: 700, numberFormat: "grouped", dateFormat: "dmy", requiredDisclosureId: "confirm", forbiddenPhrases: ["รับประกันห้องว่าง"], agentInstructions: "เลือกห้องที่ตรงงบและทำเลที่สุดก่อน และตอบอย่างสุภาพกระชับ" };
   const savedFormat = await request("/api/automation/reply-format", { method: "PUT", revision: 1, body: format });
   assert.equal(savedFormat.status, 200);
   assert.deepEqual(savedFormat.body.value, format);

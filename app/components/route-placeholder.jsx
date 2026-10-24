@@ -17,11 +17,6 @@ const copy = {
     title: "Sources",
     body: "ติดตามสถานะ Facebook Page และกลุ่มที่ได้รับอนุญาต รวมถึงงานสแกนและการกู้คืนเซสชัน",
   },
-  automations: {
-    eyebrow: "Policy control",
-    title: "Automations",
-    body: "กำหนดโหมดการทำงาน เกณฑ์อนุมัติ รูปแบบข้อความ และขีดจำกัดการตอบกลับอย่างปลอดภัย",
-  },
   settings: {
     eyebrow: "Administration",
     title: "Settings",

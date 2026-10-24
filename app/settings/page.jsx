@@ -8,6 +8,7 @@ import { BusinessProfile } from "./business-profile";
 import { Readiness } from "./readiness";
 import { UsersPanel } from "./users-panel";
 import { BrowserRecovery } from "../sources/browser-recovery";
+import { AgentReplyPanel } from "./agent-reply-panel";
 import "./settings.css";
 
 const key = () => globalThis.crypto?.randomUUID?.() ?? `settings-${Date.now()}-${Math.random()}`;
@@ -67,7 +68,7 @@ function OpenAIProviderPanel({ value, busy, onSave }) {
 
 export default function SettingsPage() {
   const [actor, setActor] = useState(null);
-  const [data, setData] = useState({ users: [], profile: null, retention: null, readiness: null, sources: null, sessionSummary: null, openAIProvider: null });
+  const [data, setData] = useState({ users: [], profile: null, retention: null, readiness: null, sources: null, sessionSummary: null, openAIProvider: null, replyFormat: null });
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [busy, setBusy] = useState("");
@@ -82,11 +83,11 @@ export default function SettingsPage() {
       const user = identity.user;
       setActor(user);
       if (user?.role !== "admin") return;
-      const [users, profile, retention, readiness, sources, sessionSummary, openAIProvider] = await Promise.all([
+      const [users, profile, retention, readiness, sources, sessionSummary, openAIProvider, automation] = await Promise.all([
         api.request("/api/settings/users"), api.request("/api/settings/business-profile"),
-        api.request("/api/settings/retention"), api.request("/api/settings/readiness"), api.request("/api/sources"), api.request("/api/facebook/session-summary"), api.request("/api/settings/providers/openai"),
+        api.request("/api/settings/retention"), api.request("/api/settings/readiness"), api.request("/api/sources"), api.request("/api/facebook/session-summary"), api.request("/api/settings/providers/openai"), api.request("/api/automation"),
       ]);
-      setData({ users: users.users ?? [], profile, retention, readiness, sources, sessionSummary, openAIProvider });
+      setData({ users: users.users ?? [], profile, retention, readiness, sources, sessionSummary, openAIProvider, replyFormat: automation.replyFormat });
     } catch (error) { setLoadError(error.message); }
     finally { setLoading(false); }
   }, []);
@@ -131,6 +132,14 @@ export default function SettingsPage() {
     if (saved) setData((current) => ({ ...current, openAIProvider: saved, readiness: { ...current.readiness, openaiConfigured: true, openaiProvider: saved, integrations: current.readiness.integrations.map((item) => item.id === "openai" ? { id: "openai", label: "OpenAI", status: "configured" } : item) } }));
     return saved;
   }
+  async function saveReplyFormat(value) {
+    const saved = await run("reply-format", async () => {
+      const token = await csrf();
+      return api.request("/api/automation/reply-format", { method: "PUT", headers: { "X-CSRF-Token": token, "Idempotency-Key": key(), "If-Match": `"${data.replyFormat.revision}"` }, body: JSON.stringify(value) });
+    }, "บันทึกแนวทางการตอบของ Agent แล้ว");
+    if (saved) setData((current) => ({ ...current, replyFormat: saved }));
+    return saved;
+  }
   async function openFacebookSession(source){
     setBusy("facebook-session");setNotice("");
     try{const token=await csrf();const result=await api.request(`/api/sources/${encodeURIComponent(source.id)}/recovery`,{method:"POST",headers:{"X-CSRF-Token":token},body:JSON.stringify({ttlSeconds:300})});setRecovery(result);}
@@ -150,6 +159,7 @@ export default function SettingsPage() {
     <header className="settings-heading"><div><p>Administration</p><h1>การตั้งค่าระบบ</h1><span>ดูแลทีม ข้อมูลธุรกิจ ความปลอดภัย และหลักฐานจากที่เดียว</span></div><div className="settings-heading__role"><ShieldCheck size={17}/><span>Admin workspace</span></div></header>
     {notice ? <div className="settings-notice" role="status"><ShieldCheck size={16}/><span>{notice}</span></div> : null}
     <div className="settings-grid">
+      {data.replyFormat ? <AgentReplyPanel value={data.replyFormat.value} busy={busy === "reply-format"} onSave={saveReplyFormat}/> : null}
       <BusinessProfile value={data.profile} busy={busy === "profile"} onSave={saveProfile}/>
       <FacebookSessionPanel sources={data.sources} summary={data.sessionSummary} busy={busy === "facebook-session"} onOpen={openFacebookSession} recovery={recovery} onClose={closeFacebookSession}/>
       <OpenAIProviderPanel value={data.openAIProvider} busy={busy === "openai"} onSave={saveOpenAIProvider}/>

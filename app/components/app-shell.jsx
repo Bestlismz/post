@@ -42,7 +42,7 @@ export function AppShell({ children }) {
   useEffect(() => {
     if (publicRoute) return undefined;
     const signedOut = () => {
-      const next = ["/inbox", "/properties", "/sources", "/automations", "/settings"].includes(pathname) ? pathname : "/inbox";
+      const next = ["/inbox", "/properties", "/sources", "/settings"].includes(pathname) ? pathname : "/inbox";
       setSession((value) => ({ ...value, state: "signed_out", user: null }));
       router.replace(`/login?next=${encodeURIComponent(next)}`);
     };
@@ -56,7 +56,7 @@ export function AppShell({ children }) {
     Promise.allSettled([api.request("/api/me"), api.request("/api/facebook/session-summary")]).then(([identity, facebook]) => {
       if (cancelled) return;
       if (identity.status === "rejected" && identity.reason?.status === 401) {
-        const next = ["/inbox", "/properties", "/sources", "/automations", "/settings"].includes(pathname) ? pathname : "/inbox";
+        const next = ["/inbox", "/properties", "/sources", "/settings"].includes(pathname) ? pathname : "/inbox";
         router.replace(`/login?next=${encodeURIComponent(next)}`);
         setSession((value) => ({ ...value, state: "signed_out", user: null }));
         return;

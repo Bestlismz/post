@@ -13,16 +13,16 @@ test("production shell removes the legacy top-level navigation", async () => {
   );
 });
 
-test("shell exposes one five-destination route manifest", async () => {
+test("shell exposes the four primary product destinations without a duplicate automation page", async () => {
   const { routes } = await import("../app/lib/routes.mjs");
 
   assert.deepEqual(
     routes.map((route) => route.id),
-    ["inbox", "properties", "sources", "automations", "settings"],
+    ["inbox", "properties", "sources", "settings"],
   );
   assert.deepEqual(
     routes.map((route) => route.mobileLabel),
-    ["Inbox", "Properties", "Sources", "Automations", "Settings"],
+    ["Inbox", "Properties", "Sources", "Settings"],
   );
   assert.equal(
     routes.some((route) => /Overview|Messenger|Browser|Activity/.test(route.label)),
@@ -106,7 +106,6 @@ test("every navigation destination is backed by a real App Router page", async (
     }
     else if (route.id === "properties") assert.match(page, /UnitTable/);
     else if (route.id === "sources") assert.match(page, /SourceRow/);
-    else if (route.id === "automations") assert.match(page, /PolicyEditor/);
     else if (route.id === "settings") assert.match(page, /AuditView/);
     else assert.match(page, /RoutePlaceholder/);
   }
@@ -134,18 +133,18 @@ test("standalone navigate mutates history without registering a popstate listene
   };
 
   const state = navigate(
-    { route: "automations", query: { source: "group-12" } },
+    { route: "settings", query: { section: "agent" } },
     { browser },
   );
 
   assert.equal(listenersAdded, 0);
   assert.equal(
     browser.location.href,
-    "https://radar.test/automations?source=group-12",
+    "https://radar.test/settings?section=agent",
   );
   assert.deepEqual(state, {
-    route: "automations",
-    query: { source: "group-12" },
+    route: "settings",
+    query: { section: "agent" },
   });
 });
 

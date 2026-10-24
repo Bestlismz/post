@@ -15,7 +15,7 @@ const group = {
 };
 
 const policy = { mode: "automatic", minimumConfidence: 0.82, rateLimits: { organization: 100, source: 20, conversation: 2 }, businessHours: { timeZone: "Asia/Bangkok", days: [1, 2, 3, 4, 5], start: "08:00", end: "19:00" } };
-const replyFormat = { locale: "th", tone: "friendly", greetingId: "hello", closingId: "thanks", ctaId: "requirements", emojiPolicy: "none", maxLength: 900, numberFormat: "grouped", dateFormat: "dmy", requiredDisclosureId: "snapshot", forbiddenPhrases: [] };
+const replyFormat = { locale: "th", tone: "friendly", greetingId: "hello", closingId: "thanks", ctaId: "requirements", emojiPolicy: "none", maxLength: 900, numberFormat: "grouped", dateFormat: "dmy", requiredDisclosureId: "snapshot", forbiddenPhrases: [], agentInstructions: "ตอบเหมือนนายหน้าอสังหาริมทรัพย์ที่เข้าใจความต้องการลูกค้า และไม่ถามข้อมูลที่แจ้งมาแล้ว" };
 
 async function mockOperations(page, { role = "admin", conflictPolicyOnce = false } = {}) {
   let groups = [{ ...group }], paused = false, policyRevision = 1, formatRevision = 1, pendingReads = 0;
@@ -209,52 +209,18 @@ test("retry-required scan state stays scoped to its group through unrelated load
   await expect(sourceB.getByText("ตรวจสถานะล่าสุดไม่ได้")).toHaveCount(0);
 });
 
-test("Automations previews the production decision and persists pause/format receipts", async ({ page }) => {
-  const state = await mockOperations(page);
-  await page.goto("/automations");
-  await expect(page.getByRole("heading", { name: "กติกาอัตโนมัติ" })).toBeVisible();
-  await page.getByLabel("แหล่งข้อมูลสำหรับทดสอบ").selectOption("group-source-1");
-  await expect(page.getByLabel("บทสนทนาสำหรับตรวจ rate limit")).toHaveValue("conversation-group-source-1");
-  await page.getByLabel("ความมั่นใจของตัวอย่าง").fill("70");
-  await page.getByRole("button", { name: "ทดสอบกติกา" }).click();
-  await expect(page.getByText("ส่งให้คนตรวจ")).toBeVisible();
-  await expect(page.getByText("ความมั่นใจต่ำกว่าเกณฑ์ 82%")).toBeVisible();
-
-  await page.getByLabel("รูปแบบคำทักทาย").selectOption("none");
-  await page.getByRole("button", { name: "บันทึกรูปแบบคำตอบ" }).click();
-  await expect(page.getByText("บันทึกรูปแบบคำตอบ revision 2 แล้ว")).toBeVisible();
-  await page.getByRole("button", { name: "หยุดการส่งอัตโนมัติทั้งหมด" }).click();
-  await expect(page.getByText("หยุดการส่งใหม่ทั่วทั้งระบบแล้ว")).toBeVisible();
-  await expect(page.getByText("GLOBAL_PAUSED")).toBeVisible();
-  expect(state.paused).toBeTruthy();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
-});
-
-test("source pause adopts the new revision before a policy save", async ({ page }) => {
+test("legacy Automations URL redirects to Settings", async ({ page }) => {
   await mockOperations(page);
   await page.goto("/automations");
-  const row = page.locator(".automation-source-row").first();
-  await row.getByRole("button", { name: "พักแหล่งนี้" }).click();
-  await row.getByRole("button", { name: "บันทึก policy" }).click();
-  await expect(page.getByText("บันทึก policy รายแหล่งแล้ว")).toBeVisible();
+  await expect(page).toHaveURL(/\/settings$/);
 });
 
-test("source policy conflict refreshes the authoritative revision before retry", async ({ page }) => {
-  await mockOperations(page, { conflictPolicyOnce: true });
-  await page.goto("/automations");
-  const row = page.locator(".automation-source-row").first();
-  await row.getByRole("button", { name: "บันทึก policy" }).click();
-  await expect(page.getByText("ข้อมูลแหล่งเปลี่ยนระหว่างแก้ไข โหลด revision ล่าสุดแล้ว กรุณาตรวจสอบและบันทึกอีกครั้ง")).toBeVisible();
-  await row.getByRole("button", { name: "บันทึก policy" }).click();
-  await expect(page.getByText("บันทึก policy รายแหล่งแล้ว")).toBeVisible();
-});
-
-test("all Sources and Automations controls meet 44px across supported viewports", async ({ page }, testInfo) => {
+test("all Sources controls meet 44px across supported viewports", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "one Chromium project checks all viewport classes");
   await mockOperations(page);
   for (const viewport of [{ width: 1440, height: 1024 }, { width: 1024, height: 900 }, { width: 412, height: 915 }]) {
     await page.setViewportSize(viewport);
-    for (const path of ["/sources", "/automations"]) {
+    for (const path of ["/sources"]) {
       await page.goto(path);
       const undersized = await page.locator(".ops-page button:not([disabled]),.ops-page a[href],.ops-page input,.ops-page select").evaluateAll((nodes) => nodes.map((node) => node instanceof HTMLInputElement && node.type === "checkbox" ? node.closest("label") : node).filter(Boolean).filter((node) => { const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.height > 0 && (rect.width < 44 || rect.height < 44); }).map((node) => ({ tag: node.tagName, text: node.textContent?.trim(), aria: node.getAttribute("aria-label"), box: node.getBoundingClientRect().toJSON() })));
       expect(undersized, `${path} at ${viewport.width}px`).toEqual([]);
@@ -272,11 +238,11 @@ test("browser recovery is visible but unavailable to non-admin users", async ({ 
   await expect(source.getByRole("button", { name: "เปิดหน้ากู้คืนเซสชัน" })).toHaveCount(0);
 });
 
-test("tablet keeps Sources and Automations inside the viewport", async ({ page }, testInfo) => {
+test("tablet keeps Sources inside the viewport", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "tablet viewport runs once from desktop Chromium");
   await page.setViewportSize({ width: 1024, height: 900 });
   await mockOperations(page);
-  for (const path of ["/sources", "/automations"]) {
+  for (const path of ["/sources"]) {
     await page.goto(path);
     expect(await page.evaluate(() => ({ document: document.documentElement.scrollWidth, viewport: document.documentElement.clientWidth }))).toEqual({ document: 1024, viewport: 1024 });
   }

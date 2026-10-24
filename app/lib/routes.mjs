@@ -2,7 +2,6 @@ const manifest = [
   { id: "inbox", label: "Inbox", mobileLabel: "Inbox", path: "/inbox", icon: "inbox" },
   { id: "properties", label: "Properties", mobileLabel: "Properties", path: "/properties", icon: "properties" },
   { id: "sources", label: "Sources", mobileLabel: "Sources", path: "/sources", icon: "sources" },
-  { id: "automations", label: "Automations", mobileLabel: "Automations", path: "/automations", icon: "automations" },
   { id: "settings", label: "Settings", mobileLabel: "Settings", path: "/settings", icon: "settings" },
 ];
 

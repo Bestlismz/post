@@ -160,6 +160,8 @@ if (mode === "fixture") {
   app.get("/api/settings/business-profile", (request, response) => { requireFixtureRole(request, "admin"); sendFixtureEntity(response, settingsWorkspace.profile()); });
   app.get("/api/settings/retention", (request, response) => { requireFixtureRole(request, "admin"); sendFixtureEntity(response, settingsWorkspace.retention()); });
   app.get("/api/settings/readiness", (request, response) => { requireFixtureRole(request, "admin"); response.json(settingsWorkspace.readiness()); });
+  app.get("/api/settings/providers/openai", (request, response) => { requireFixtureRole(request, "admin"); response.json({ configured: true, source: "environment", secretReadback: false }); });
+  app.put("/api/settings/providers/openai", (request, response) => { requireFixtureRole(request, "admin"); requireFixtureCsrf(request); fixtureIdempotencyKey(request); response.json({ configured: true, source: "secure_store", secretReadback: false }); });
   app.get("/api/settings/audit", (request, response) => { requireFixtureRole(request, "admin"); response.json(settingsWorkspace.audit(request.query)); });
   app.patch("/api/settings/users/:id", asyncRoute(async (request, response) => {
     requireFixtureRole(request, "admin"); requireFixtureCsrf(request);

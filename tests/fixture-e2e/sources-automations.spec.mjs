@@ -3,7 +3,7 @@ import { evaluateSourceDecision } from "../../src/policy/source-decision.mjs";
 
 const evaluationTime = new Date("2026-10-22T03:00:00.000Z");
 
-test("fixture server exposes seeded Sources and Automations without intercepted APIs", async ({ page, request }) => {
+test("fixture server exposes seeded Sources and Agent settings without a duplicate automation page", async ({ page, request }) => {
   const sourcesResponse = await request.get("/api/sources");
   expect(sourcesResponse.status()).toBe(200);
   const sources = await sourcesResponse.json();
@@ -37,18 +37,21 @@ test("fixture server exposes seeded Sources and Automations without intercepted 
   await expect(page.getByRole("heading", { name: "แหล่งข้อมูล Facebook" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Facebook Page" }).getByText("BestRedar")).toBeVisible();
   await expect(page.locator(".source-row")).toHaveCount(2);
-  await expect(page.getByText("สแกนครบแล้ว")).toBeVisible();
-  await expect(page.getByText("สแกนไม่สำเร็จ")).toBeVisible();
+  await expect(page.getByText("สแกนล่าสุดเสร็จแล้ว")).toBeVisible();
+  await expect(page.getByText("สแกนล่าสุดต้องตรวจสอบ")).toBeVisible();
   await expect(page.getByText("autopost", { exact: true })).toBeVisible();
   await expect(page.getByText("test autopost", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "ตรวจใหม่" }).click();
   await expect(page.getByRole("status")).toContainText("อัปเดตสถานะ Facebook Page แล้ว");
 
   await page.goto("/automations");
-  await expect(page.getByRole("heading", { name: "กติกาอัตโนมัติ" })).toBeVisible();
-  await expect(page.locator(".automation-source-row")).toHaveCount(2);
-  await expect(page.getByRole("heading", { name: "Policy preview" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "ทดสอบกติกา" })).toBeEnabled();
+  await expect(page).toHaveURL(/\/settings$/);
+  await expect(page.getByRole("heading", { name: "แนวทางการตอบของ Agent" })).toBeVisible();
+  await expect(page.getByLabel("คำสั่งสำหรับ Agent")).toHaveValue(/นายหน้า/u);
+  await page.getByLabel("คำสั่งสำหรับ Agent").fill("เลือกไม่เกินสองห้องที่ตรงงบและทำเลที่สุด ตอบแบบเป็นธรรมชาติ และไม่ถามข้อมูลเดิมซ้ำ");
+  await page.getByRole("button", { name: "บันทึกแนวทางการตอบ" }).click();
+  await expect(page.getByRole("status")).toContainText("บันทึกแนวทางการตอบของ Agent แล้ว");
+  expect((await (await request.get("/api/automation")).json()).replyFormat.value.agentInstructions).toContain("ไม่เกินสองห้อง");
 });
 
 test("fixture mutations preserve canonical URLs, revisions, idempotency, scan receipts, and automation controls", async ({ request }) => {

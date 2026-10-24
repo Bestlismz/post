@@ -8,7 +8,7 @@ import { BrandMark } from "../components/brand";
 import "./login.css";
 import "./brand.css";
 
-const destinations = new Set(["/inbox", "/properties", "/sources", "/automations", "/settings"]);
+const destinations = new Set(["/inbox", "/properties", "/sources", "/settings"]);
 function safeDestination(value) { return destinations.has(value) ? value : "/inbox"; }
 
 export default function LoginPage() {
