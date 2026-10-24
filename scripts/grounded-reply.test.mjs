@@ -35,6 +35,13 @@ test("deterministic Thai extraction safely selects PostgreSQL matches from locat
   assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), selections);
 });
 
+test("deterministic Thai extraction preserves combining marks in ห้วยขวาง", () => {
+  const text = "หาห้องแถวห้วยขวางราคาไม่เกิน 20000";
+  const result = extractDeterministicRequirements({ conversation: { id: "huai-khwang", revision: 1, messages: [{ id: "huai-khwang-message", revision: 1, text }] } });
+  assert.deepEqual(result.requirements, { budgetMax: 20000, geography: { districts: ["ห้วยขวาง"] } });
+  assert.equal(result.fields.district.evidence[0].quote, "ห้วยขวาง");
+});
+
 test("deterministic Thai extraction preserves both ends of a compact budget range", () => {
   const source = { id: "thai-range", revision: 1, messages: [{ id: "thai-range-message", revision: 1, text: "หาห้องแถวพระราม 9 งบ 9000-15000" }] };
   const result = extractDeterministicRequirements({ conversation: source });
@@ -61,6 +68,18 @@ test("a budget-only lead receives the matching available units instead of being 
   const reply = renderReply(selected, matched, defaultReplyFormat("th"));
   assert.match(reply.text, /Rhythm Ratchada|14,500/);
   assert.doesNotMatch(reply.text, /รบกวนแจ้งทำเล งบประมาณ/);
+});
+
+test("a qualified lead with no matching inventory gets an honest no-match follow-up without repeating known fields", () => {
+  const text = "หาห้องแถวห้วยขวางราคาไม่เกิน 20000";
+  const extraction = extractDeterministicRequirements({ conversation: { id: "no-match", revision: 1, messages: [{ id: "no-match-message", revision: 1, text }] } });
+  const emptySnapshot = { id: "no-match-snapshot", factSnapshot: [] };
+  const selected = composeDeterministicSelections({ snapshot: emptySnapshot, extraction });
+  assert.deepEqual(selected, { units: [], templateId: "no_match" });
+  const reply = renderReply(selected, emptySnapshot, defaultReplyFormat("th"));
+  assert.match(reply.text, /ยังไม่พบห้องที่ตรงกับเงื่อนไข/u);
+  assert.match(reply.text, /ประเภทห้อง|พื้นที่ใกล้เคียง/u);
+  assert.doesNotMatch(reply.text, /รบกวนแจ้งทำเล งบประมาณ/u);
 });
 
 test("structured extraction maps exact immutable evidence and missing values into matcher requirements", async () => {

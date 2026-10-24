@@ -5,8 +5,8 @@ export function defaultReplyFormat(locale = "th") {
 }
 
 const words = {
-  en: { hello: { friendly: "Hello!", formal: "Hello.", neutral: "Hello." }, thanks: "Thank you.", requirements: "Please share your preferred area, budget, and move-in date.", follow_up: "Would you like our team to follow up?", snapshot: "Details reflect the inventory snapshot; please confirm current availability with our team.", confirm: "Our team must reconfirm these details before any booking.", options: "Options from our inventory:", clarify: "We need more details to check suitable options.", handoff: "Our team will review your request.", pets: { allowed: "Pets allowed", case_by_case: "Pets considered case by case", not_allowed: "Pets not allowed", unknown: "Pet policy unknown" } },
-  th: { hello: { friendly: "สวัสดีค่ะ", formal: "เรียนคุณลูกค้า", neutral: "สวัสดี" }, thanks: "ขอบคุณค่ะ", requirements: "รบกวนแจ้งทำเล งบประมาณ และวันที่ต้องการย้ายเข้า", follow_up: "ต้องการให้ทีมงานติดต่อกลับในแชตนี้ไหมคะ", snapshot: "ข้อมูลอ้างอิงจากรายการห้อง ณ เวลาที่ตรวจสอบ กรุณายืนยันห้องว่างปัจจุบันกับทีมงานอีกครั้ง", confirm: "ทีมงานต้องยืนยันข้อมูลเหล่านี้อีกครั้งก่อนการจอง", options: "ตัวเลือกจากรายการห้องของเรา:", clarify: "รบกวนแจ้งข้อมูลเพิ่มเติมเพื่อช่วยตรวจสอบตัวเลือกที่เหมาะสม", handoff: "ทีมงานจะช่วยตรวจสอบคำขอของคุณ", pets: { allowed: "เลี้ยงสัตว์ได้", case_by_case: "พิจารณาสัตว์เลี้ยงเป็นรายกรณี", not_allowed: "ห้ามเลี้ยงสัตว์", unknown: "ยังไม่ทราบนโยบายสัตว์เลี้ยง" } },
+  en: { hello: { friendly: "Hello!", formal: "Hello.", neutral: "Hello." }, thanks: "Thank you.", requirements: "Please share your preferred area, budget, and move-in date.", no_match_requirements: "If nearby areas, another room type, or a different move-in date could work, please let us know and we will check again.", follow_up: "Would you like our team to follow up?", snapshot: "Details reflect the inventory snapshot; please confirm current availability with our team.", confirm: "Our team must reconfirm these details before any booking.", options: "Options from our inventory:", no_match: "We do not currently have a room matching all of those requirements.", clarify: "We need more details to check suitable options.", handoff: "Our team will review your request.", pets: { allowed: "Pets allowed", case_by_case: "Pets considered case by case", not_allowed: "Pets not allowed", unknown: "Pet policy unknown" } },
+  th: { hello: { friendly: "สวัสดีค่ะ", formal: "เรียนคุณลูกค้า", neutral: "สวัสดี" }, thanks: "ขอบคุณค่ะ", requirements: "รบกวนแจ้งทำเล งบประมาณ และวันที่ต้องการย้ายเข้า", no_match_requirements: "หากสะดวกพิจารณาพื้นที่ใกล้เคียง ประเภทห้องอื่น หรือวันย้ายเข้าอื่น แจ้งเพิ่มเติมได้เลยนะคะ", follow_up: "ต้องการให้ทีมงานติดต่อกลับในแชตนี้ไหมคะ", snapshot: "ข้อมูลอ้างอิงจากรายการห้อง ณ เวลาที่ตรวจสอบ กรุณายืนยันห้องว่างปัจจุบันกับทีมงานอีกครั้ง", confirm: "ทีมงานต้องยืนยันข้อมูลเหล่านี้อีกครั้งก่อนการจอง", options: "ตัวเลือกจากรายการห้องของเรา:", no_match: "ยังไม่พบห้องที่ตรงกับเงื่อนไขจากรายการปัจจุบัน", clarify: "รบกวนแจ้งข้อมูลเพิ่มเติมเพื่อช่วยตรวจสอบตัวเลือกที่เหมาะสม", handoff: "ทีมงานจะช่วยตรวจสอบคำขอของคุณ", pets: { allowed: "เลี้ยงสัตว์ได้", case_by_case: "พิจารณาสัตว์เลี้ยงเป็นรายกรณี", not_allowed: "ห้ามเลี้ยงสัตว์", unknown: "ยังไม่ทราบนโยบายสัตว์เลี้ยง" } },
 };
 
 export function validateFormatText(text, inputFormat) {
@@ -55,9 +55,11 @@ export function renderReply(input, snapshot, inputFormat) {
     appendSegments(segments);
   }
   append(w[format.requiredDisclosureId]);
-  if (format.ctaId !== "none") append(selections.templateId === "options" && format.ctaId === "requirements"
+  if (format.ctaId !== "none") append(format.ctaId === "requirements" && selections.templateId === "options"
     ? (en ? "Tell us your preferred room size and move-in date, and we can narrow these down." : "หากมีจำนวนห้องนอนและวันที่ต้องการย้ายเข้า แจ้งเพิ่มเติมได้เลยนะคะ ทีมงานจะช่วยคัดให้แคบลง")
-    : w[format.ctaId]);
+    : format.ctaId === "requirements" && selections.templateId === "no_match"
+      ? w.no_match_requirements
+      : w[format.ctaId]);
   if (format.closingId !== "none") append(w.thanks);
   const text = lines.join("\n");
   validateFormatText(text, format);

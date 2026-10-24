@@ -54,7 +54,7 @@ export function readFormat(format) {
 
 export const selectionSchema = z.strictObject({
   units: z.array(z.strictObject({ unitId: z.string().min(1), factIds: z.array(z.enum(["identity", "price", "availableFrom", "bedrooms", "petPolicy", "transit"])).min(1).max(6) })).max(10),
-  templateId: z.enum(["options", "clarify", "handoff"]),
+  templateId: z.enum(["options", "no_match", "clarify", "handoff"]),
 });
 
 export function readSelections(input, snapshot) {

@@ -72,7 +72,7 @@ export function extractDeterministicRequirements({ conversation }) {
         set("roomType", "studio", message, studio.index, studio.index + studio[0].length);
       }
     }
-    const district = /(?:แถว|ย่าน|ทำเล(?:ใกล้)?|ใกล้)\s*([\p{L}]+(?:\s+[0-9๐-๙]+)?)/iu.exec(message.text);
+    const district = /(?:แถว|ย่าน|ทำเล(?:ใกล้)?|ใกล้)\s*((?:(?!(?:ราคา|งบ|ไม่เกิน|สูงสุด|ขั้นต่ำ|อย่างน้อย))[\p{L}\p{M}])+(?:\s+[0-9๐-๙]+)?)/iu.exec(message.text);
     if (district) {
       const start = district.index + district[0].indexOf(district[1]);
       set("district", district[1].trim(), message, start, start + district[1].length);
