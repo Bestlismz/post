@@ -227,6 +227,24 @@ export async function getInboxItem(pool, id, actor) {
       ORDER BY event_position DESC LIMIT 100) e) AS events
     ${relations} WHERE w.organization_id=$1 AND w.id=$2`, [organizationId, id]);
   if (!row) return null;
+  const targetMessage=row.timeline.find(message=>message.isTarget);
+  let facebookThread=[];
+  if(row.channel==='facebook_group'&&targetMessage?.postId) {
+    const {rows}=await pool.query(`SELECT o.id,o.kind,o.text,o.author_label,o.post_id,o.comment_id,o.reaction_count,o.comment_count,
+        to_char(o.observed_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS observed_at,
+        to_char(coalesce(o.provider_timestamp,o.observed_at) AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS created_at
+      FROM group_targets t
+      JOIN group_observations o ON o.organization_id=t.organization_id AND o.id=t.observation_id
+      WHERE t.organization_id=$1 AND t.source_id=$2 AND o.post_id=$3
+      ORDER BY CASE o.kind WHEN 'post' THEN 0 ELSE 1 END,coalesce(o.provider_timestamp,o.observed_at),o.id
+      LIMIT 101`,[organizationId,row.source_id,targetMessage.postId]);
+    facebookThread=rows.map(observation=>({
+      id:observation.id,uiId:`facebook-observation:${observation.id}`,text:observation.text,direction:'inbound',author:observation.author_label,
+      kind:observation.kind,isTarget:observation.kind===targetMessage.kind&&observation.post_id===targetMessage.postId&&observation.comment_id===targetMessage.commentId,
+      processingRevision:null,createdAt:observation.created_at,postId:observation.post_id,commentId:observation.comment_id,
+      reactionCount:observation.reaction_count,commentCount:observation.comment_count,observedAt:observation.observed_at,
+    }));
+  }
   const context=row.latest_reply_context ?? {};
   const fields=context.extraction?.fields ?? {};
   const rawRequirements=context.snapshot?.requirements ?? context.extraction?.requirements ?? {};
@@ -240,9 +258,9 @@ export async function getInboxItem(pool, id, actor) {
   const requirementFields=["district","budgetMax","bedrooms","roomType","requiredPetPolicy","moveInDate"];
   const candidates=new Map((context.snapshot?.candidates ?? []).map(candidate=>[candidate.unitId,candidate]));
   const matches=(context.snapshot?.factSnapshot ?? []).map(fact=>({...fact,score:candidates.get(fact.unitId)?.score ?? null}));
-  const latestObservedAt=row.timeline.reduce((latest,message)=>(message.observedAt&&(!latest||message.observedAt>latest))?message.observedAt:latest,null);
+  const latestObservedAt=[...row.timeline,...facebookThread].reduce((latest,message)=>(message.observedAt&&(!latest||message.observedAt>latest))?message.observedAt:latest,null);
   const projected=itemDto(row);
-  return { ...projected, target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, facebook:row.channel==='facebook_group'?{groupId:row.group_id,permalink:row.timeline.find(message=>message.isTarget)?.postId?`https://www.facebook.com/groups/${row.group_id}/posts/${row.timeline.find(message=>message.isTarget).postId}/`:null,observedAt:latestObservedAt,autoReply:row.source_mode==='automatic'}:null, stale:['superseded','draft_stale'].includes(projected.workflow.phase),
+  return { ...projected, target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, facebook:row.channel==='facebook_group'?{groupId:row.group_id,permalink:targetMessage?.postId?`https://www.facebook.com/groups/${row.group_id}/posts/${targetMessage.postId}/`:null,observedAt:latestObservedAt,autoReply:row.source_mode==='automatic',thread:facebookThread}:null, stale:['superseded','draft_stale'].includes(projected.workflow.phase),
     staleReason:projected.workflow.reason,
     requirements,missingRequirements:requirementFields.filter(name=>fields[name]?.status !== 'known'),matches,
     timeline: row.timeline.map((message) => ({

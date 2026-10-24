@@ -54,22 +54,34 @@ async function readPage(page,groupId) {
     const groupName=(document.querySelector('main h1, [role="main"] h1, h1')?.textContent??'').slice(0,300);
     const accessLevel=document.querySelector('a[href*="/admin_assistant/"], a[href*="/member-requests/"], a[href*="/admin_activities/"], a[href*="/edit/"]')?'admin':'reader';
     const feed=document.querySelector('[role="feed"]');
+    const commentArticleLabel=/^(?:Comment by |Reply by |ความคิดเห็นจาก |ข้อความตอบกลับจาก )/i;
     const cards=Array.from(feed?.querySelectorAll('[role="article"]')??[]).filter(card=>
-      !card.parentElement?.closest('[role="article"]') || card.getAttribute('aria-label')?.startsWith('Comment by '));
+      !card.parentElement?.closest('[role="article"]') || commentArticleLabel.test(card.getAttribute('aria-label')??''));
     const items=[];
     let reason=null;
     const identityPath=new RegExp(`^/groups/([0-9]{1,${maxIdLength}})/posts/([0-9]{1,${maxIdLength}})/?$`);
     for(const card of cards.slice(0,100)) {
       const owned=selector=>Array.from(card.querySelectorAll(selector)).filter(node=>node.closest('[role="article"]')===card);
       const messages=owned('[data-ad-preview="message"], [data-ad-comet-preview="message"]');
-      if(!messages.length) messages.push(...owned('div[dir="auto"]').filter(node=>{
-        if(!node.textContent?.trim()||node.closest('h1,h2,h3,button,[role="button"],[contenteditable="true"]'))return false;
-        return !Array.from(node.querySelectorAll('div[dir="auto"]')).some(child=>child.closest('[role="article"]')===card&&child.textContent?.trim());
-      }));
+      if(!messages.length) {
+        const candidates=owned('div[dir="auto"], span[dir="auto"]').filter(node=>
+          node.textContent?.trim()&&!node.closest('a,h1,h2,h3,button,[role="button"],[role="link"],[contenteditable="true"]'));
+        const byText=new Map();
+        for(const node of candidates) {
+          const value=node.textContent.trim();
+          if(!byText.has(value))byText.set(value,node);
+        }
+        const longest=[...byText.entries()].sort((a,b)=>b[0].length-a[0].length)[0]?.[1];
+        if(longest)messages.push(longest);
+      }
       const headings=owned('h2, h3').filter(node=>!messages.some(message=>message.contains(node)));
+      const isComment=commentArticleLabel.test(card.getAttribute('aria-label')??'');
+      const authorLabels=[...new Set((headings.length?headings: isComment?owned('a[href]').filter(link=>{
+        try {const url=new URL(link.href);return url.origin==='https://www.facebook.com'&&(/\/groups\/\d+\/user\/\d+\/?$/.test(url.pathname)||url.pathname==='/profile.php');} catch{return false;}
+      }):[]).map(node=>(node.textContent??'').trim()).filter(Boolean))];
       if(!messages.length)continue;
-      if(messages.length!==1||headings.length!==1) { reason='identity_ambiguous';continue; }
-      const [text]=messages,[heading]=headings;
+      if(messages.length!==1||authorLabels.length!==1) { reason='identity_ambiguous';continue; }
+      const [text]=messages,[authorLabel]=authorLabels;
       const timestampLinks=owned('a[href]').filter(link=>{
         if(text.contains(link))return false;
         try { return identityPath.test(new URL(link.href).pathname); } catch { return false; }
@@ -89,8 +101,8 @@ async function readPage(page,groupId) {
       const [link]=targets.values();
       const labels=owned('[aria-label], button, [role="button"]').map(node=>`${node.getAttribute('aria-label')??''} ${node.textContent??''}`.trim());
       const reactionLabel=labels.find(value=>/reaction|ถูกใจ|การตอบสนอง/i.test(value));
-      const commentLabel=labels.find(value=>/comments?|ความคิดเห็น/i.test(value));
-      items.push({href:link.href.slice(0,2000),authorLabel:(heading.textContent??'').slice(0,300),text:text.textContent.slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null,reactionCount:countFrom(reactionLabel),commentCount:countFrom(commentLabel)});
+      const commentCountLabel=labels.find(value=>/comments?|ความคิดเห็น/i.test(value));
+      items.push({href:link.href.slice(0,2000),authorLabel:authorLabel.slice(0,300),text:(text.innerText??text.textContent).slice(0,20000),providerTimestamp:link.querySelector('time[datetime]')?.getAttribute('datetime')??null,reactionCount:countFrom(reactionLabel),commentCount:countFrom(commentCountLabel)});
     }
     return {groupName,accessLevel,selectorValid:!!feed&&items.length>0&&!reason,reason,items,hasMore:false,complete:false};
   },{groupId,maxIdLength:MAX_GROUP_ID_LENGTH});
@@ -151,6 +163,9 @@ export async function observeGroupPage(page,command,{maxItems=100,maxPasses=10,s
   }
   for(let pass=0;pass<Math.min(maxPasses,10);pass++) {
     const before=await checkSession();if(before)return before;
+    // Facebook hydrates feed cards after DOMContentLoaded. Reading immediately can see only the first post
+    // and falsely report a healthy partial scan before its visible comments are attached.
+    if(pass===0&&typeof page.waitForTimeout==='function')await abortable(()=>page.waitForTimeout(1000),signal);
     try {await abortable(()=>expandVisibleComments(page,{signal}),signal);} catch {if(signal?.aborted)return batch(observations.length?'partial':'none','failed','scan_cancelled');}
     let snapshot;
     try { snapshot=await abortable(()=>readPage(page,command.groupId),signal); }

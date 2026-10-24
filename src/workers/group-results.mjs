@@ -94,6 +94,14 @@ async function persistObservation(tx,operation,source,result,item) {
     WHERE group_targets.operation_order<EXCLUDED.operation_order RETURNING target_id`,[organizationId,source.id,item.targetId,observationId,operation.operation_order]);
   // Late evidence stays immutable history. Only a current material change creates new Inbox work.
   if(!projected.rowCount||previous?.content_hash===item.contentHash) return;
+  if(item.kind==='comment') {
+    const {rows:[owned]}=await tx.query(`SELECT 1 FROM delivery_attempts a
+      JOIN delivery_intents i ON i.organization_id=a.organization_id AND i.id=a.delivery_intent_id
+      WHERE a.organization_id=$1 AND i.group_source_id=$2 AND a.state='sent' AND a.provider_message_id=$3 LIMIT 1`,
+    [organizationId,source.id,item.commentId]);
+    // Keep the observation for the Facebook-like thread, but never create a lead or auto-reply to our own comment.
+    if(owned)return;
+  }
   const pageId=`facebook_group:${source.group_id}`,rootTarget=`facebook_group_target:${item.postId}`;
   await tx.query(`INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES($1,$2,'facebook_group',$3,$4)
     ON CONFLICT(organization_id,page_id,psid) DO NOTHING`,[randomUUID(),organizationId,pageId,rootTarget]);

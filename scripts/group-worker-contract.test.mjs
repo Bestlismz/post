@@ -151,6 +151,19 @@ test('recorded Facebook DOM extracts posts and comments without claiming complet
   assert.equal(result.observations[1].authorLabel,'Ann');
 });
 
+test('observer extracts comments from the Thai Facebook article labels used by the live site',async t=>{
+  const {observeGroupPage}=await load('group-worker/observer');
+  const page=await fixturePage(t,`<meta charset="utf-8"><main><h1>autopost</h1><div role="feed">
+    <div role="article"><h2>Beam</h2><a href="/groups/100/posts/900/"><time datetime="2026-10-24T12:00:00.000Z">1h</time></a><div data-ad-preview="message">หาห้องใกล้รถไฟฟ้า</div>
+      <div role="article" aria-label="ความคิดเห็นจาก Nok เมื่อ 5 นาทีที่แล้ว"><a href="/groups/100/user/42/"><span dir="auto">Nok</span></a><a href="/groups/100/posts/900/?comment_id=901"><span dir="auto"><time datetime="2026-10-24T12:55:00.000Z">5m</time></span></a><span dir="auto"><span><div dir="auto">สนใจห้องนี้ค่ะ</div><div dir="auto">ขอรายละเอียดเพิ่ม</div></span></span></div>
+    </div>
+  </div></main>`);
+  const result=await observeGroupPage(page,command());
+  assert.deepEqual(result.observations.map(item=>item.targetId),['post:900','comment:900:901']);
+  assert.equal(result.observations[1].authorLabel,'Nok');
+  assert.equal(result.observations[1].text,'สนใจห้องนี้ค่ะ\nขอรายละเอียดเพิ่ม');
+});
+
 test('observer extracts the current Thai Facebook group card without legacy message markers',async t=>{
   const {observeGroupPage}=await load('group-worker/observer');
   const page=await fixturePage(t,`<main><h1>test autopost</h1><a href="/groups/100/admin_assistant/">&#3605;&#3633;&#3623;&#3594;&#3656;&#3623;&#3618;&#3612;&#3641;&#3657;&#3604;&#3641;&#3649;&#3621;</a><div role="feed">
