@@ -7,10 +7,16 @@ import {createHash} from 'node:crypto';
 import { once } from 'node:events';
 import { chromium } from 'playwright-core';
 import { signCommand, signResult, verifyResult } from '../src/channels/groups/contracts.mjs';
+import { GROUP_BROWSER_OPERATION_TIMEOUT_MS, GROUP_CLIENT_TIMEOUT_MS } from '../src/channels/groups/timeouts.mjs';
 
 const key = Buffer.alloc(32,97), keys = { current: key };
 const command = () => signCommand({ version: 1, kind: 'ScanCommand', operationId: 'op-1', sourceId: 'source-1', groupId: '100', canonicalTarget: 'https://www.facebook.com/groups/100', keyId: 'current', issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now()+60000).toISOString() }, { key, keyId: 'current' });
 const load = (path) => import(`../src/${path}.mjs`);
+
+test('the private client outlives the bounded Facebook browser operation', () => {
+  assert.equal(GROUP_BROWSER_OPERATION_TIMEOUT_MS, 60_000);
+  assert.ok(GROUP_CLIENT_TIMEOUT_MS > GROUP_BROWSER_OPERATION_TIMEOUT_MS);
+});
 async function fixturePage(t,html) {
   const candidates=[process.env.CHROMIUM_EXECUTABLE_PATH,'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/usr/bin/chromium','/usr/bin/chromium-browser',chromium.executablePath()].filter(Boolean);
   let executablePath;

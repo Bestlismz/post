@@ -3,8 +3,9 @@ import { verifyCommand, signResult } from '../channels/groups/contracts.mjs';
 import { readBounded, verifyTransport } from '../channels/groups/transport.mjs';
 import { abortable, settleWithin } from './cancellation.mjs';
 import { SELECTOR_VERSION } from './observer.mjs';
+import { GROUP_BROWSER_OPERATION_TIMEOUT_MS } from '../channels/groups/timeouts.mjs';
 
-export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply,edit,reconcile,recoveryGate=null,sessionHealth=null,stagingSendEnabled=false,stagingAllowedGroups=[],commandTimeoutMs=30000,cleanupTimeoutMs=600}) {
+export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply,edit,reconcile,recoveryGate=null,sessionHealth=null,stagingSendEnabled=false,stagingAllowedGroups=[],commandTimeoutMs=GROUP_BROWSER_OPERATION_TIMEOUT_MS,cleanupTimeoutMs=600}) {
   const allowed=new Set(allowedGroups),sendAllowed=new Set(stagingAllowedGroups);
   const server=createServer(async(req,res)=>{
     const controller=new AbortController();let timer;

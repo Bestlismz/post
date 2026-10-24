@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "../lib/api-client.mjs";
+import { api, authExpiredEvent } from "../lib/api-client.mjs";
 import { routeHref, routes } from "../lib/routes.mjs";
 import { AppIcon } from "./icons";
 import { BrandMark, BrandName } from "./brand";
@@ -39,6 +39,16 @@ export function AppShell({ children }) {
   const accountButton = useRef(null);
 
   const publicRoute = pathname === "/login" || pathname === "/settings/meta/callback";
+  useEffect(() => {
+    if (publicRoute) return undefined;
+    const signedOut = () => {
+      const next = ["/inbox", "/properties", "/sources", "/automations", "/settings"].includes(pathname) ? pathname : "/inbox";
+      setSession((value) => ({ ...value, state: "signed_out", user: null }));
+      router.replace(`/login?next=${encodeURIComponent(next)}`);
+    };
+    window.addEventListener(authExpiredEvent, signedOut);
+    return () => window.removeEventListener(authExpiredEvent, signedOut);
+  }, [pathname, publicRoute, router]);
   useEffect(() => {
     if (publicRoute) { setSession((value) => ({ ...value, state: "public" })); return undefined; }
     let cancelled = false;

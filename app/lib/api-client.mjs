@@ -54,7 +54,9 @@ async function decode(response) {
   }
 }
 
-export function createApiClient(fetcher = globalThis.fetch) {
+export const authExpiredEvent = "rendar:auth-expired";
+
+export function createApiClient(fetcher = globalThis.fetch, { onUnauthorized = () => {} } = {}) {
   if (typeof fetcher !== "function") throw new TypeError("fetch is unavailable");
   return {
     async request(resource, options = {}) {
@@ -71,6 +73,9 @@ export function createApiClient(fetcher = globalThis.fetch) {
         throw mappedError(0);
       }
       if (!response.ok) {
+        if (response.status === 401 && resource !== "/api/auth/login") {
+          try { onUnauthorized(); } catch { /* preserve the safe API error */ }
+        }
         let payload = null;
         try { payload = await decode(response); } catch { /* use the safe status mapping */ }
         throw mappedError(response.status, payload);
@@ -80,4 +85,4 @@ export function createApiClient(fetcher = globalThis.fetch) {
   };
 }
 
-export const api = createApiClient();
+export const api = createApiClient(globalThis.fetch, { onUnauthorized: () => globalThis.window?.dispatchEvent(new globalThis.Event(authExpiredEvent)) });

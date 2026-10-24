@@ -93,6 +93,36 @@ test("Inbox projections and conversation revision boundary", { skip: !databaseUr
       assert.equal((await inbox.listInbox({ budgetMin: 20001 }, actor)).resultCount, 0);
       assert.equal((await inbox.listInbox({ budgetMax: 19999, location: "อโศก" }, actor)).resultCount, 0);
     });
+    await t.test("a reply created under an older policy is projected as stale before approval", async () => {
+      const { rows: [target] } = await pool.query(`SELECT w.id,w.conversation_id,w.processing_revision,
+          o.automation_policy_revision,o.profile_revision,o.reply_format_revision
+        FROM work_items w
+        JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id
+        JOIN organizations o ON o.id=w.organization_id
+        WHERE w.organization_id='org_default' AND m.mid='third'`);
+      const evidence = {
+        policyRevision: target.automation_policy_revision,
+        profileRevision: target.profile_revision,
+        formatRevision: target.reply_format_revision,
+        conversationRevision: target.processing_revision,
+      };
+      await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+        VALUES('stale-policy-reply','org_default',$1,$2,$3,1,'{"text":"safe"}'::jsonb,$4::jsonb)`,
+      [target.id, target.conversation_id, target.processing_revision, JSON.stringify({ evidence })]);
+      await pool.query(`UPDATE jobs SET status='completed',updated_at=now()
+        WHERE organization_id='org_default' AND payload->>'workItemId'=$1`, [target.id]);
+      await pool.query("UPDATE organizations SET automation_policy_revision=automation_policy_revision+1 WHERE id='org_default'");
+
+      const listed = (await inbox.listInbox({ search: "third" }, actor)).items[0];
+      const detail = await inbox.getInboxItem(target.id, actor);
+      for (const projected of [listed, detail]) {
+        assert.equal(projected.workflow.phase, "draft_stale");
+        assert.equal(projected.workflow.reason, "POLICY_CHANGED");
+        assert.deepEqual(projected.workflow.actions, ["prepare", "handoff"]);
+      }
+      assert.equal(detail.stale, true);
+      assert.equal(detail.staleReason, "POLICY_CHANGED");
+    });
     await t.test("invalid cursors and actor scopes fail closed at query boundary", async () => {
       for (const cursor of ["!", "e30", first.nextCursor + "=", Buffer.from(JSON.stringify({ v: 1, at: "invalid", id: "x" })).toString("base64url")]) await assert.rejects(inbox.listInbox({ cursor }, actor), { status: 400 });
       const position = JSON.parse(Buffer.from(first.nextCursor, "base64url"));

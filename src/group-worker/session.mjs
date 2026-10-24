@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MAX_GROUP_ID_LENGTH } from '../channels/groups/target.mjs';
+import { GROUP_BROWSER_OPERATION_TIMEOUT_MS } from '../channels/groups/timeouts.mjs';
 import { abortable, closeContext, settleWithin } from './cancellation.mjs';
 
 export function assertGroupTarget(target) {
@@ -95,7 +96,7 @@ export async function acquireProfileLease(profilePath,{python='python3'}={}) {
   }};
 }
 
-export function createGroupSession({profilePath,launchContext,commandTimeoutMs=30000,cleanupTimeoutMs=200}) {
+export function createGroupSession({profilePath,launchContext,commandTimeoutMs=GROUP_BROWSER_OPERATION_TIMEOUT_MS,cleanupTimeoutMs=200}) {
   let state='healthy';
   return {getHealth(){return {state};},async withGroup(command,run,{signal:parentSignal}={}) {
     assertGroupTarget(command.canonicalTarget);

@@ -1,7 +1,8 @@
 import { assertResultBoundToCommand, verifyCommand, verifyResult } from './contracts.mjs';
 import { readBounded, transportHeaders } from './transport.mjs';
+import { GROUP_CLIENT_TIMEOUT_MS } from './timeouts.mjs';
 
-export function createGroupWorkerClient({baseUrl,keys,keyId,key,fetchImpl=fetch,timeoutMs=30000}) {
+export function createGroupWorkerClient({baseUrl,keys,keyId,key,fetchImpl=fetch,timeoutMs=GROUP_CLIENT_TIMEOUT_MS}) {
   const url=new URL(baseUrl);
   if(url.protocol!=='http:'||url.username||url.password||url.pathname!=='/'||url.search||url.hash||!['group-worker','localhost','127.0.0.1','[::1]'].includes(url.hostname)) throw new Error('Worker requires a configured internal URL');
   const endpoint=new URL('/commands',url).href;

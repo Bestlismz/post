@@ -192,6 +192,20 @@ test("API client maps untrusted failures to safe typed errors", async () => {
   );
 });
 
+test("API client reports an expired protected session but leaves login failures inline", async () => {
+  const { createApiClient } = await import("../app/lib/api-client.mjs");
+  let expired = 0;
+  const api = createApiClient(
+    async () => new Response(null, { status: 401 }),
+    { onUnauthorized: () => { expired += 1; } },
+  );
+
+  await assert.rejects(api.request("/api/inbox"), { status: 401, code: "unauthorized" });
+  assert.equal(expired, 1);
+  await assert.rejects(api.request("/api/auth/login"), { status: 401, code: "unauthorized" });
+  assert.equal(expired, 1);
+});
+
 test("API client distinguishes a retryable network failure", async () => {
   const { createApiClient } = await import("../app/lib/api-client.mjs");
   const api = createApiClient(async () => {

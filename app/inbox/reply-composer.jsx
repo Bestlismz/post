@@ -57,11 +57,18 @@ export function ReplyComposer({ detail, runCommand, commandsReady }) {
     finally { setBusy(null); }
   }
 
-  const statusIsBlocking = ["superseded", "handed_off", "reconciling", "send_failed", "analyzing", "queued", "sending"].includes(workflow.phase);
+  const statusIsBlocking = ["superseded", "draft_stale", "handed_off", "reconciling", "send_failed", "analyzing", "queued", "sending"].includes(workflow.phase);
+  const blockingDetail = workflow.phase === "superseded" ? "โพสต์หรือความคิดเห็นนี้มีฉบับใหม่กว่า"
+    : workflow.phase === "draft_stale" ? errorMessage({ code: workflow.reason }, "ข้อมูลที่ใช้สร้างคำตอบเปลี่ยนแล้ว กรุณาเตรียมคำตอบใหม่")
+    : workflow.phase === "handed_off" ? "ระบบอัตโนมัติหยุดรายการนี้จนกว่าจะนำกลับ"
+    : workflow.phase === "reconciling" ? "ยังส่งซ้ำไม่ได้จนกว่าจะตรวจว่าไม่มีคอมเมนต์บน Facebook"
+    : workflow.reason === "DELIVERY_CANCELLED" ? "รายการส่งถูกยกเลิกก่อนเริ่มส่ง สามารถนำกลับเข้าคิวได้"
+    : workflow.phase === "send_failed" ? "การส่งครั้งล่าสุดล้มเหลว สามารถลองส่งใหม่ได้อย่างปลอดภัย"
+    : "สถานะจะอัปเดตอัตโนมัติเมื่อขั้นตอนนี้เสร็จ";
   return <section className="reply-composer" aria-label="เขียนคำตอบ">
     <header><strong>{label}</strong><span className={`workflow-pill workflow-pill--${workflow.tone ?? "neutral"}`}>{workflow.label}</span></header>
     {simulated ? <div className="composer-simulation" role="note"><AlertTriangle size={17} /><div><strong>โหมดสาธิต</strong><span>การอนุมัติจะบันทึกในระบบนี้เท่านั้น และจะไม่ส่งไป Facebook</span></div></div> : null}
-    {statusIsBlocking ? <div className={workflow.tone === "danger" ? "composer-stale" : "composer-workflow"} role="status"><AlertTriangle size={17} /><div><strong>{workflow.label}</strong><span>{workflow.phase === "superseded" ? "โพสต์หรือความคิดเห็นนี้มีฉบับใหม่กว่า" : workflow.phase === "handed_off" ? "ระบบอัตโนมัติหยุดรายการนี้จนกว่าจะนำกลับ" : workflow.phase === "reconciling" ? "ยังส่งซ้ำไม่ได้จนกว่าจะตรวจว่าไม่มีคอมเมนต์บน Facebook" : workflow.reason === "DELIVERY_CANCELLED" ? "รายการส่งถูกยกเลิกก่อนเริ่มส่ง สามารถนำกลับเข้าคิวได้" : workflow.phase === "send_failed" ? "การส่งครั้งล่าสุดล้มเหลว สามารถลองส่งใหม่ได้อย่างปลอดภัย" : "สถานะจะอัปเดตอัตโนมัติเมื่อขั้นตอนนี้เสร็จ"}</span></div></div> : null}
+    {statusIsBlocking ? <div className={workflow.tone === "danger" || workflow.phase === "draft_stale" ? "composer-stale" : "composer-workflow"} role="status"><AlertTriangle size={17} /><div><strong>{workflow.label}</strong><span>{blockingDetail}</span></div></div> : null}
     {latest ? <div className="composer-input"><textarea aria-label="ข้อความตอบกลับ" value={text} onChange={(event) => setText(event.target.value)} disabled={Boolean(busy) || !hasAction("approve")} maxLength={4000} /><span>{count.toLocaleString("th-TH")} / 4,000</span></div> : null}
     <footer>
       <div>{hasAction("handoff") ? <button className="composer-handoff" type="button" onClick={() => act("handoff", "handoff", "ส่งต่อให้ทีมแล้ว ระบบอัตโนมัติจะหยุดรายการนี้", "ส่งต่อให้ทีมไม่ได้ กรุณาลองอีกครั้ง", { reason: "ผู้ดูแลรับช่วงจาก Inbox Workspace" })} disabled={!commandsReady || Boolean(busy)}><UserRoundPlus size={17} />ส่งให้ทีมดูแล</button> : null}</div>

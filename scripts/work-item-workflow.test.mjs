@@ -76,6 +76,17 @@ test("observe mode and Messenger uncertainty never expose commands their APIs re
   assert.deepEqual(messenger.actions, []);
 });
 
+test("a stale draft can only be regenerated or handed off", () => {
+  const workflow = projectWorkItemWorkflow(facts({
+    status: "needs_review",
+    latestReply: { id: "r1" },
+    replyStaleReason: "POLICY_CHANGED",
+  }));
+  assert.equal(workflow.phase, "draft_stale");
+  assert.equal(workflow.reason, "POLICY_CHANGED");
+  assert.deepEqual(workflow.actions, ["prepare", "handoff"]);
+});
+
 test("a fresh active analysis wins over historical failed analysis", () => {
   const workflow = projectWorkItemWorkflow(facts({ status: "preparing", activeAnalysis: true, failedAnalysis: true }));
   assert.equal(workflow.phase, "analyzing");

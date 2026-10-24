@@ -14,7 +14,9 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   CASE WHEN c.channel='facebook_group' THEN g.session_health ELSE s.health END AS source_health,
   CASE WHEN c.channel='facebook_group' THEN g.mode END AS source_mode,
   CASE WHEN c.channel='facebook_group' THEN g.group_id END AS group_id,
-  c.human_takeover,
+  c.human_takeover,c.processing_revision AS current_conversation_revision,
+  org.automation_policy_revision,org.profile_revision,org.reply_format_revision,
+  CASE WHEN c.channel='facebook_group' THEN g.revision END AS source_revision,
   latest_reply.id AS latest_reply_id,latest_reply.context AS latest_reply_context,
   successor.id AS successor_id,
   latest_delivery.id AS latest_delivery_id,latest_delivery.state AS latest_delivery_state,
@@ -22,6 +24,7 @@ const columns = `w.id,w.conversation_id,w.processing_revision,w.status,
   analysis.active_analysis,analysis.failed_analysis,
   latest_authorization.actor_kind AS authorization_actor_kind`;
 const relations = `FROM work_items w
+  JOIN organizations org ON org.id=w.organization_id
   JOIN conversations c ON c.organization_id=w.organization_id AND c.id=w.conversation_id
   JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id AND m.conversation_id=c.id
   LEFT JOIN meta_page_sources s ON c.channel='messenger' AND s.organization_id=c.organization_id AND s.page_id=c.page_id
@@ -74,7 +77,20 @@ function safeSummaryBudget(context) {
   return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000_000 ? value : null;
 }
 
+function replyStaleReason(row) {
+  if (!row.latest_reply_id) return null;
+  const stored = row.latest_reply_context?.evidence;
+  if (!stored || typeof stored !== "object") return null;
+  if (stored.policyRevision !== row.automation_policy_revision) return "POLICY_CHANGED";
+  if (stored.profileRevision !== row.profile_revision) return "PROFILE_CHANGED";
+  if (stored.formatRevision !== row.reply_format_revision) return "FORMAT_CHANGED";
+  if (stored.conversationRevision !== row.current_conversation_revision) return "CONVERSATION_SUPERSEDED";
+  if (row.channel === "facebook_group" && stored.source?.revision !== row.source_revision) return "SOURCE_CHANGED";
+  return null;
+}
+
 function itemDto(row) {
+  const staleReason = replyStaleReason(row);
   const workflow = projectWorkItemWorkflow({
     channel: row.channel,
     status: row.status,
@@ -82,6 +98,7 @@ function itemDto(row) {
     successorId: row.successor_id,
     sourceMode: row.source_mode,
     latestReply: row.latest_reply_id ? { id: row.latest_reply_id } : null,
+    replyStaleReason: staleReason,
     latestDelivery: row.latest_delivery_id ? { id: row.latest_delivery_id, state: row.latest_delivery_state, outcomeCode: row.latest_delivery_outcome_code, editState: row.latest_delivery_edit_state } : null,
     activeAnalysis: row.active_analysis === true,
     failedAnalysis: row.failed_analysis === true,
@@ -224,8 +241,9 @@ export async function getInboxItem(pool, id, actor) {
   const candidates=new Map((context.snapshot?.candidates ?? []).map(candidate=>[candidate.unitId,candidate]));
   const matches=(context.snapshot?.factSnapshot ?? []).map(fact=>({...fact,score:candidates.get(fact.unitId)?.score ?? null}));
   const latestObservedAt=row.timeline.reduce((latest,message)=>(message.observedAt&&(!latest||message.observedAt>latest))?message.observedAt:latest,null);
-  return { ...itemDto(row), target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, facebook:row.channel==='facebook_group'?{groupId:row.group_id,permalink:row.timeline.find(message=>message.isTarget)?.postId?`https://www.facebook.com/groups/${row.group_id}/posts/${row.timeline.find(message=>message.isTarget).postId}/`:null,observedAt:latestObservedAt,autoReply:row.source_mode==='automatic'}:null, stale:row.status==='superseded',
-    staleReason:row.status==='superseded'?'มีข้อความหรือข้อมูลห้องที่ใหม่กว่า กรุณาโหลดข้อมูลล่าสุด':null,
+  const projected=itemDto(row);
+  return { ...projected, target:row.channel==='facebook_group'?{kind:row.target_kind,uiId:row.message_id}:null, facebook:row.channel==='facebook_group'?{groupId:row.group_id,permalink:row.timeline.find(message=>message.isTarget)?.postId?`https://www.facebook.com/groups/${row.group_id}/posts/${row.timeline.find(message=>message.isTarget).postId}/`:null,observedAt:latestObservedAt,autoReply:row.source_mode==='automatic'}:null, stale:['superseded','draft_stale'].includes(projected.workflow.phase),
+    staleReason:projected.workflow.reason,
     requirements,missingRequirements:requirementFields.filter(name=>fields[name]?.status !== 'known'),matches,
     timeline: row.timeline.map((message) => ({
     id: message.id, uiId:message.uiId, text: message.text, direction: message.direction, author: message.author, kind:message.kind, isTarget:message.isTarget,

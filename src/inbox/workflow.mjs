@@ -1,6 +1,7 @@
 const presentation = {
   observed: ["neutral", "รอเตรียมคำตอบ"],
   observing: ["neutral", "ติดตามเท่านั้น"],
+  draft_stale: ["warning", "ต้องเตรียมคำตอบใหม่"],
   analyzing: ["info", "กำลังวิเคราะห์"],
   review_required: ["warning", "รอตรวจคำตอบ"],
   queued: ["info", "เข้าคิวส่งแล้ว"],
@@ -43,6 +44,10 @@ export function projectWorkItemWorkflow(facts) {
   } else if (facts.activeAnalysis || facts.status === "preparing") {
     phase = "analyzing";
     actions = ["handoff"];
+  } else if (facts.latestReply && facts.replyStaleReason) {
+    phase = "draft_stale";
+    reason = facts.replyStaleReason;
+    actions = ["prepare", "handoff"];
   } else if (["failed", "cancelled"].includes(delivery?.state) || facts.failedAnalysis || facts.status === "failed") {
     phase = "send_failed";
     reason = delivery?.outcomeCode || (delivery?.state === "cancelled" ? "DELIVERY_CANCELLED" : delivery?.state === "failed" ? "DELIVERY_FAILED" : "PREPARATION_FAILED");
