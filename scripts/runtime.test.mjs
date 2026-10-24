@@ -29,3 +29,10 @@ test("Compose separates web, Messenger worker, and isolated Group browser storag
   const webService=services.slice(services.indexOf("\n  web:"),services.indexOf("\n  worker:"));
   assert.doesNotMatch(webService,/browser-profile:/);
 });
+
+test("Group browser image can render Thai Facebook content", async () => {
+  const dockerfile = await readFile(new URL("../Dockerfile.group-worker", import.meta.url), "utf8");
+  assert.match(dockerfile, /fonts-noto-core/);
+  assert.match(dockerfile, /LANG=C\.UTF-8/);
+  assert.match(dockerfile, /LC_ALL=C\.UTF-8/);
+});
