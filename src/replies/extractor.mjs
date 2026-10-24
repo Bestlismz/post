@@ -27,6 +27,66 @@ export function requirementConfidence(fields = {}) {
   return signals.filter(Boolean).length / signals.length;
 }
 
+const emptyFields = () => Object.fromEntries(["budgetMin", "budgetMax", "bedrooms", "moveInDate", "requiredPetPolicy", "district", "roomType"]
+  .map(field => [field, { status: "missing", value: null, evidence: [] }]));
+const thaiDigits = value => value.replace(/[๐-๙]/gu, digit => String(digit.charCodeAt(0) - 0x0e50));
+const numericValue = value => Number(thaiDigits(value).replaceAll(",", ""));
+
+/**
+ * Fast, auditable extraction for the small set of unambiguous rental phrases
+ * that must not depend on provider latency. Anything outside this grammar is
+ * left missing and can still be handled by the structured OpenAI extractor.
+ */
+export function extractDeterministicRequirements({ conversation }) {
+  const source = conversationSchema.parse(conversation), fields = emptyFields();
+  const set = (field, value, message, start, end) => {
+    if (fields[field].status === "known") return;
+    fields[field] = { status: "known", value, evidence: [{ messageId: message.id, messageRevision: message.revision, start, end, quote: message.text.slice(start, end) }] };
+  };
+  for (const message of [...source.messages].reverse()) {
+    safeText(message.text.replace(/[\n\r\t]/g, " "));
+    for (const [field, pattern] of [
+      ["budgetMax", /(?:(?:งบ(?:ประมาณ)?|ราคา)\s*)?(?:ไม่เกิน|สูงสุด)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)(?:\s*บาท)?/iu],
+      ["budgetMin", /(?:(?:งบ(?:ประมาณ)?|ราคา)\s*)?(?:ขั้นต่ำ|อย่างน้อย)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)(?:\s*บาท)?/iu],
+    ]) {
+      const match = pattern.exec(message.text), value = match && numericValue(match[1]);
+      if (match && Number.isFinite(value) && value > 0) set(field, value, message, match.index, match.index + match[0].length);
+    }
+    const room = /([0-3๐-๓])\s*ห้องนอน/iu.exec(message.text);
+    if (room) {
+      const bedrooms = numericValue(room[1]);
+      set("bedrooms", bedrooms, message, room.index, room.index + room[0].length);
+      set("roomType", bedrooms === 0 ? "studio" : `${bedrooms}_bedroom`, message, room.index, room.index + room[0].length);
+    } else {
+      const studio = /สตูดิโอ/iu.exec(message.text);
+      if (studio) {
+        set("bedrooms", 0, message, studio.index, studio.index + studio[0].length);
+        set("roomType", "studio", message, studio.index, studio.index + studio[0].length);
+      }
+    }
+    const district = /(?:แถว|ย่าน|ทำเล(?:ใกล้)?|ใกล้)\s*([\p{L}]+(?:\s+[0-9๐-๙]+)?)/iu.exec(message.text);
+    if (district) {
+      const start = district.index + district[0].indexOf(district[1]);
+      set("district", district[1].trim(), message, start, start + district[1].length);
+    }
+    const move = /(?:ย้ายเข้า|เข้าอยู่)\s*(\d{4}-\d{2}-\d{2})/iu.exec(message.text);
+    if (move && validDate(move[1])) {
+      const start = move.index + move[0].indexOf(move[1]);
+      set("moveInDate", move[1], message, start, start + move[1].length);
+    }
+    for (const [value, pattern] of [["allowed", /เลี้ยงสัตว์ได้/iu], ["not_allowed", /(?:ห้ามเลี้ยงสัตว์|ไม่เลี้ยงสัตว์)/iu], ["case_by_case", /พิจารณาสัตว์เลี้ยงเป็นรายกรณี/iu]]) {
+      const pet = pattern.exec(message.text);
+      if (pet) set("requiredPetPolicy", value, message, pet.index, pet.index + pet[0].length);
+    }
+  }
+  const requirements = {};
+  for (const [field, entry] of Object.entries(fields)) if (entry.status === "known") {
+    if (field === "district") requirements.geography = { districts: [entry.value] };
+    else requirements[field] = entry.value;
+  }
+  return immutable({ conversationId: source.id, conversationRevision: source.revision, fields, requirements: requirementsSchema.parse(requirements) });
+}
+
 const minimumCue = "minimum|min|at least|no less than|(?:งบ)?ขั้นต่ำ|(?:งบ)?ขั้นต่ํา|อย่างน้อย";
 const maximumCue = "maximum|max|at most|up to|no more than|(?:งบ)?ไม่เกิน|(?:งบ)?สูงสุด";
 const boundSuffix = "(?:\\s+budget)?(?:\\s+is)?\\s*[:=]?\\s*";

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { extractRequirements, requirementConfidence } from "../src/replies/extractor.mjs";
-import { composeSelections } from "../src/replies/composer.mjs";
+import { extractRequirements, extractDeterministicRequirements, requirementConfidence } from "../src/replies/extractor.mjs";
+import { composeSelections, composeDeterministicSelections } from "../src/replies/composer.mjs";
 import { renderReply, defaultReplyFormat } from "../src/replies/renderer.mjs";
 import { validateReply } from "../src/replies/validator.mjs";
 import { createMessengerGenerator } from "../src/messenger-generator.mjs";
@@ -23,6 +23,23 @@ test("automatic qualification requires location, budget and room size while keep
   assert.equal(requirementConfidence(fields), 1);
   assert.equal(requirementConfidence({ roomType: fields.roomType }), 1 / 3);
   assert.equal(requirementConfidence({ moveInDate: fields.moveInDate, requiredPetPolicy: fields.requiredPetPolicy }), 0);
+});
+
+test("deterministic Thai extraction supports safe automatic clarification without inventing room facts", () => {
+  const source = { id: "thai", revision: 1, messages: [{ id: "thai-message", revision: 1, text: "หาห้องแถวพระราม 9 ราคาไม่เกิน 30000" }] };
+  const result = extractDeterministicRequirements({ conversation: source });
+  assert.deepEqual(result.requirements, { budgetMax: 30000, geography: { districts: ["พระราม 9"] } });
+  assert.equal(requirementConfidence(result.fields), 2 / 3);
+  assert.equal(result.fields.budgetMax.evidence[0].quote, "ราคาไม่เกิน 30000");
+  assert.equal(result.fields.district.evidence[0].quote, "พระราม 9");
+  assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), { units: [], templateId: "clarify" });
+});
+
+test("deterministic selection only exposes matched snapshot facts after all qualification signals", () => {
+  const source = { id: "thai", revision: 1, messages: [{ id: "thai-message", revision: 1, text: "หาห้องแถวพระราม 9 ราคาไม่เกิน 30000 แบบ 1 ห้องนอน" }] };
+  const result = extractDeterministicRequirements({ conversation: source });
+  assert.equal(requirementConfidence(result.fields), 1);
+  assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), selections);
 });
 
 test("structured extraction maps exact immutable evidence and missing values into matcher requirements", async () => {

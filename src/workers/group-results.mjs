@@ -97,8 +97,16 @@ async function persistObservation(tx,operation,source,result,item) {
   if(item.kind==='comment') {
     const {rows:[owned]}=await tx.query(`SELECT 1 FROM delivery_attempts a
       JOIN delivery_intents i ON i.organization_id=a.organization_id AND i.id=a.delivery_intent_id
-      WHERE a.organization_id=$1 AND i.group_source_id=$2 AND a.state='sent' AND a.provider_message_id=$3 LIMIT 1`,
-    [organizationId,source.id,item.commentId]);
+      JOIN reply_versions r ON r.organization_id=i.organization_id AND r.id=i.reply_version_id
+      JOIN work_items w ON w.organization_id=r.organization_id AND w.id=r.work_item_id
+      JOIN messages m ON m.organization_id=w.organization_id AND m.id=w.message_id
+      JOIN group_observations target ON target.organization_id=m.organization_id AND target.id=m.raw_evidence->>'observationId'
+      WHERE a.organization_id=$1 AND i.group_source_id=$2
+        AND ((a.state='sent' AND a.provider_message_id=$3)
+          OR (a.state IN ('attempting','unknown','sent') AND a.provider_message_id IS NULL
+            AND r.content->>'text'=$4 AND target.post_id=$5
+            AND $6::timestamptz BETWEEN a.started_at-interval '5 minutes' AND coalesce(a.finished_at,now())+interval '30 minutes'))
+      LIMIT 1`,[organizationId,source.id,item.commentId,item.text,item.postId,item.observedAt]);
     // Keep the observation for the Facebook-like thread, but never create a lead or auto-reply to our own comment.
     if(owned)return;
   }

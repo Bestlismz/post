@@ -82,6 +82,23 @@ integration('a delivered Rendar comment is retained in the thread without creati
   assert.deepEqual(detail.facebook.thread.map(item=>[item.kind,item.commentId,item.text]),[['post',null,'Looking for a rental'],['comment','901','Our reply']]);
 });
 
+integration('an unresolved exact outbound comment cannot re-enter Inbox before Facebook returns its ID',async({pool,source,scan,result,accept,observation})=>{
+  await accept(result(await scan(),{observations:[observation('456','Looking for a rental')]}));
+  const {rows:[work]}=await pool.query('SELECT id,conversation_id,processing_revision FROM work_items LIMIT 1');
+  await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
+    VALUES('reply-pending','org_default',$1,$2,$3,1,'{"text":"Pending exact reply"}','{}')`,[work.id,work.conversation_id,work.processing_revision]);
+  await pool.query(`INSERT INTO reply_authorizations(id,organization_id,work_item_id,reply_version_id,actor_kind,evidence)
+    VALUES('auth-pending','org_default',$1,'reply-pending','policy','{}')`,[work.id]);
+  await pool.query(`INSERT INTO delivery_intents(id,organization_id,authorization_id,reply_version_id,conversation_id,source_id,group_source_id,content)
+    VALUES('intent-pending','org_default','auth-pending','reply-pending',$1,NULL,$2,'{"text":"Pending exact reply"}')`,[work.conversation_id,source.id]);
+  await pool.query(`INSERT INTO delivery_attempts(id,organization_id,delivery_intent_id,state,started_at,finished_at,outcome_code)
+    VALUES('attempt-pending','org_default','intent-pending','unknown',$1,$1,'POSSIBLE_SEND')`,[instant]);
+  await accept(result(await scan(),{observations:[observation('456','Pending exact reply','902')]}));
+  assert.equal((await pool.query('SELECT count(*)::int n FROM group_observations')).rows[0].n,2);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,1);
+  assert.equal((await pool.query('SELECT count(*)::int n FROM work_items')).rows[0].n,1);
+});
+
 integration('newest authentic scan persists a safe Facebook group name and access level',async({pool,scan,result,accept})=>{
   await accept(result(await scan(),{groupName:'<b>autopost</b>\u0000',accessLevel:'admin'}));
   assert.deepEqual((await pool.query('SELECT display_name,access_level FROM group_sources')).rows[0],{display_name:'autopost',access_level:'admin'});

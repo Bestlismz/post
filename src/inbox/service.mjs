@@ -6,8 +6,8 @@ import { authorizeInboxActor } from './repository.mjs';
 import { validateInboxText } from './validation.mjs';
 import { httpError } from '../auth/authorize.mjs';
 import { inboxConflict, freshnessConflictCodes } from './errors.mjs';
-import { extractRequirements, requirementConfidence } from '../replies/extractor.mjs';
-import { composeSelections } from '../replies/composer.mjs';
+import { extractRequirements, extractDeterministicRequirements, requirementConfidence } from '../replies/extractor.mjs';
+import { composeSelections, composeDeterministicSelections } from '../replies/composer.mjs';
 import { defaultReplyFormat, renderReply } from '../replies/renderer.mjs';
 import { validateReply } from '../replies/validator.mjs';
 import { matchInventory } from '../inventory/matcher.mjs';
@@ -198,9 +198,13 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
     if (initial.reusable) return initial.reusable;
     const before = evidence(initial.context), format = before.format;
     const providerClient = clientProvider ? await clientProvider(organizationId) : client;
-    let extraction, generationFailed = false;
-    try { extraction = await extractRequirements({ conversation: { id: initial.context.conversation.id,revision: expectedRevision,messages: initial.context.messages.map(({id,text,revision}) => ({id,text,revision})) },businessProfile:initial.context.org.business_profile,client:providerClient,model }); }
-    catch { generationFailed = true; extraction = { requirements: {},fields: {} }; }
+    const conversation = { id: initial.context.conversation.id,revision: expectedRevision,messages: initial.context.messages.map(({id,text,revision}) => ({id,text,revision})) };
+    let extraction = extractDeterministicRequirements({ conversation }), generationFailed = false;
+    const deterministicExtraction = requirementConfidence(extraction.fields) > 0;
+    if (!deterministicExtraction) {
+      try { extraction = await extractRequirements({ conversation,businessProfile:initial.context.org.business_profile,client:providerClient,model }); }
+      catch { generationFailed = true; }
+    }
     const snapshot = await withTransaction(pool,async tx => {
       const context = await loadContext(tx,workItemId,expectedRevision,organizationId);
       assertEvidence(before,context);
@@ -218,13 +222,20 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
     let selections, content;
     try {
       if (generationFailed) throw new Error('Extraction failed');
-      selections = await composeSelections({ snapshot,format,extraction,client:providerClient,model });
+      selections = deterministicExtraction && requirementConfidence(extraction.fields) < 1
+        ? composeDeterministicSelections({snapshot,extraction})
+        : await composeSelections({ snapshot,format,extraction,client:providerClient,model });
       content = renderReply(selections,snapshot,format); validateReply(content,{snapshot,selections,format});
     } catch {
-      generationFailed = true; selections = { units: [],templateId: 'handoff' };
-      content = { ...renderReply(selections,snapshot,format),grounded:false,automaticEligible:false,editKind:'human_free_edit' };
+      if (generationFailed) {
+        selections = { units: [],templateId: 'handoff' };
+        content = { ...renderReply(selections,snapshot,format),grounded:false,automaticEligible:false,editKind:'human_free_edit' };
+      } else {
+        selections = composeDeterministicSelections({snapshot,extraction});
+        content = renderReply(selections,snapshot,format); validateReply(content,{snapshot,selections,format});
+      }
     }
-    const confidence = generationFailed ? 0 : requirementConfidence(extraction.fields);
+    const confidence = generationFailed ? 0 : selections.templateId === 'clarify' ? 1 : requirementConfidence(extraction.fields);
     return withTransaction(pool,async tx => {
       const context = await loadContext(tx,workItemId,expectedRevision,organizationId);
       const {existing,reusable}=await latestReply(tx,context);

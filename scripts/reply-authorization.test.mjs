@@ -143,6 +143,18 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       assert.equal(fallback.content.automaticEligible,false);
       assert.equal((await pool.query("SELECT status FROM work_items WHERE id='failed'")).rows[0].status,'needs_review');
     });
+    await t.test('automatic mode safely authorizes a deterministic clarification when Thai lead details are incomplete', async () => {
+      await pool.query(`UPDATE organizations SET automation_policy='{"mode":"automatic","minimumConfidence":0.82}'`);
+      await seed('thai-clarify');
+      await pool.query("UPDATE messages SET text='หาห้องแถวพระราม 9 ราคาไม่เกิน 30000' WHERE id='m-thai-clarify'");
+      const noComposer = createInboxService({ pool, client: { responses: { create: async () => { throw new Error('provider unavailable'); } } } });
+      const clarification = await noComposer.prepareReply('thai-clarify',1,actor);
+      assert.equal(clarification.content.automaticEligible,true);
+      assert.equal(clarification.context.selections.templateId,'clarify');
+      assert.deepEqual(clarification.context.extraction.requirements,{budgetMax:30000,geography:{districts:['พระราม 9']}});
+      assert.equal((await pool.query('SELECT actor_kind FROM reply_authorizations WHERE reply_version_id=$1',[clarification.id])).rows[0].actor_kind,'policy');
+      assert.equal((await pool.query("SELECT status FROM work_items WHERE id='thai-clarify'")).rows[0].status,'ready');
+    });
     await t.test('worker recovers leases and idempotently finishes without remote send', async () => {
       await seed('worker');
       await pool.query(`INSERT INTO jobs(id,organization_id,kind,payload,retry_safe,status,lease_expires_at) VALUES('analyze','org_default','analyze_work_item','{"workItemId":"worker","conversationId":"worker","processingRevision":1}',true,'running',now()-interval '1 second')`);

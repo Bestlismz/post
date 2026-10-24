@@ -1,5 +1,17 @@
 import { readSnapshot, readFormat, readSelections, selectionSchema, structuredResponse } from "./contracts.mjs";
 
+export function composeDeterministicSelections({ snapshot, extraction }) {
+  const facts = readSnapshot(snapshot);
+  const known = key => extraction?.fields?.[key]?.status === "known";
+  const qualified = known("district") && (known("budgetMin") || known("budgetMax")) && (known("bedrooms") || known("roomType"));
+  if (!qualified || !facts.factSnapshot.length) return readSelections({ units: [], templateId: "clarify" }, facts);
+  const units = facts.factSnapshot.slice(0, 3).map(fact => ({
+    unitId: fact.unitId,
+    factIds: ["identity", "price", "availableFrom", ...(fact.bedrooms === null ? [] : ["bedrooms"]), "petPolicy", ...(fact.transit.length ? ["transit"] : [])],
+  }));
+  return readSelections({ units, templateId: "options" }, facts);
+}
+
 export async function composeSelections({ snapshot, format, extraction, client, model }) {
   const facts = readSnapshot(snapshot);
   const contract = readFormat(format);
