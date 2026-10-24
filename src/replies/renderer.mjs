@@ -25,22 +25,39 @@ export function renderReply(input, snapshot, inputFormat) {
   const date = value => format.dateFormat === "iso" ? value : `${value.slice(8, 10)}/${value.slice(5, 7)}/${value.slice(0, 4)}`;
   const lines = [], provenance = [];
   const append = (text, source) => { const start = lines.join("\n").length + (lines.length ? 1 : 0); lines.push(text); if (source) provenance.push({ ...source, start, end: start + text.length, text }); };
+  const appendSegments = segments => {
+    const lineStart = lines.join("\n").length + (lines.length ? 1 : 0);
+    let text = "";
+    for (const segment of segments) {
+      const start = lineStart + text.length;
+      text += segment.text;
+      if (segment.source) provenance.push({ ...segment.source, start, end: start + segment.text.length, text: segment.text });
+    }
+    lines.push(text);
+  };
   if (format.greetingId !== "none") append(w.hello[format.tone] + (format.emojiPolicy === "friendly" ? " 🙂" : ""));
   append(w[selections.templateId]);
-  for (const selected of selections.units) {
+  for (const [index, selected] of selections.units.entries()) {
     const fact = facts.factSnapshot.find(item => item.unitId === selected.unitId);
     const clauses = {
-      identity: () => `${fact.projectName} · ${fact.unitCode}`,
-      price: () => en ? `Rent: ${number(fact.monthlyRentThb)} THB/month` : `ค่าเช่า ${number(fact.monthlyRentThb)} บาท/เดือน`,
-      availableFrom: () => en ? `Available from: ${date(fact.availableFrom)}` : `ว่างตั้งแต่ ${date(fact.availableFrom)}`,
-      bedrooms: () => en ? `${number(fact.bedrooms)} bedroom${fact.bedrooms === 1 ? "" : "s"}` : `${number(fact.bedrooms)} ห้องนอน`,
+      identity: () => en ? `${index + 1}. ${fact.projectName} · ${fact.unitCode}` : `${index + 1}. ${fact.projectName} ห้อง ${fact.unitCode}`,
+      price: () => en ? `${number(fact.monthlyRentThb)} THB/month` : `ค่าเช่า ${number(fact.monthlyRentThb)} บาท/เดือน`,
+      availableFrom: () => en ? `available ${date(fact.availableFrom)}` : `ว่าง ${date(fact.availableFrom)}`,
+      bedrooms: () => fact.bedrooms === 0 ? (en ? "studio" : "ห้องสตูดิโอ") : en ? `${number(fact.bedrooms)} bedroom${fact.bedrooms === 1 ? "" : "s"}` : `${number(fact.bedrooms)} ห้องนอน`,
       petPolicy: () => w.pets[fact.petPolicy],
-      transit: () => fact.transit.map(item => en ? `${item.station}: ${number(item.walkingDistanceM)} m walking distance` : `${item.station}: ระยะเดิน ${number(item.walkingDistanceM)} เมตร`).join("; "),
+      transit: () => fact.transit.map(item => en ? `${item.station}, ${number(item.walkingDistanceM)} m walk` : `ใกล้ ${item.station} เดินประมาณ ${number(item.walkingDistanceM)} เมตร`).join("; "),
     };
-    for (const factId of selected.factIds) append(clauses[factId](), { unitId: fact.unitId, unitRevision: fact.unitRevision, projectId: fact.projectId, projectRevision: fact.projectRevision, factId });
+    const segments = [];
+    for (const factId of selected.factIds) {
+      if (segments.length) segments.push({text:" · "});
+      segments.push({text:clauses[factId](),source:{ unitId: fact.unitId, unitRevision: fact.unitRevision, projectId: fact.projectId, projectRevision: fact.projectRevision, factId }});
+    }
+    appendSegments(segments);
   }
   append(w[format.requiredDisclosureId]);
-  if (format.ctaId !== "none") append(w[format.ctaId]);
+  if (format.ctaId !== "none") append(selections.templateId === "options" && format.ctaId === "requirements"
+    ? (en ? "Tell us your preferred room size and move-in date, and we can narrow these down." : "หากมีจำนวนห้องนอนและวันที่ต้องการย้ายเข้า แจ้งเพิ่มเติมได้เลยนะคะ ทีมงานจะช่วยคัดให้แคบลง")
+    : w[format.ctaId]);
   if (format.closingId !== "none") append(w.thanks);
   const text = lines.join("\n");
   validateFormatText(text, format);

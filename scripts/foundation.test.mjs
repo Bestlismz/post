@@ -39,7 +39,9 @@ test("configuration validates required boundaries without exposing secrets", () 
     appOrigin: env.APP_ORIGIN,
     sessionSecret: env.SESSION_SECRET,
     nodeEnv: "production",
+    groupSchedulerTestCadenceMs: null,
   });
+  assert.equal(loadConfig({ ...env, GROUP_SCHEDULER_TEST_CADENCE_MS: "10000" }).groupSchedulerTestCadenceMs, 10000);
   for (const change of [
     { DATABASE_URL: "malformed" },
     { DATABASE_URL: "https://example.com" },
@@ -48,6 +50,8 @@ test("configuration validates required boundaries without exposing secrets", () 
     { APP_ORIGIN: "https://user:password@radar.example" },
     { SESSION_SECRET: "too-short" },
     { NODE_ENV: "invalid" },
+    { GROUP_SCHEDULER_TEST_CADENCE_MS: "999" },
+    { GROUP_SCHEDULER_TEST_CADENCE_MS: "60001" },
   ]) {
     assert.throws(() => loadConfig({ ...env, ...change }), /configuration/i);
   }

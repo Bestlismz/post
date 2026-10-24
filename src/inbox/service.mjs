@@ -222,7 +222,7 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
     let selections, content;
     try {
       if (generationFailed) throw new Error('Extraction failed');
-      selections = deterministicExtraction && requirementConfidence(extraction.fields) < 1
+      selections = deterministicExtraction
         ? composeDeterministicSelections({snapshot,extraction})
         : await composeSelections({ snapshot,format,extraction,client:providerClient,model });
       content = renderReply(selections,snapshot,format); validateReply(content,{snapshot,selections,format});
@@ -235,7 +235,9 @@ export function createInboxService({ pool, client, clientProvider, model, clock 
         content = renderReply(selections,snapshot,format); validateReply(content,{snapshot,selections,format});
       }
     }
-    const confidence = generationFailed ? 0 : selections.templateId === 'clarify' ? 1 : requirementConfidence(extraction.fields);
+    // Deterministic selections are fully grounded in the immutable PostgreSQL
+    // snapshot even when the customer has not specified every preference.
+    const confidence = generationFailed ? 0 : deterministicExtraction ? 1 : requirementConfidence(extraction.fields);
     return withTransaction(pool,async tx => {
       const context = await loadContext(tx,workItemId,expectedRevision,organizationId);
       const {existing,reusable}=await latestReply(tx,context);

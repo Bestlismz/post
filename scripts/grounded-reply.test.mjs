@@ -25,14 +25,14 @@ test("automatic qualification requires location, budget and room size while keep
   assert.equal(requirementConfidence({ moveInDate: fields.moveInDate, requiredPetPolicy: fields.requiredPetPolicy }), 0);
 });
 
-test("deterministic Thai extraction supports safe automatic clarification without inventing room facts", () => {
+test("deterministic Thai extraction safely selects PostgreSQL matches from location and budget", () => {
   const source = { id: "thai", revision: 1, messages: [{ id: "thai-message", revision: 1, text: "หาห้องแถวพระราม 9 ราคาไม่เกิน 30000" }] };
   const result = extractDeterministicRequirements({ conversation: source });
   assert.deepEqual(result.requirements, { budgetMax: 30000, geography: { districts: ["พระราม 9"] } });
   assert.equal(requirementConfidence(result.fields), 2 / 3);
   assert.equal(result.fields.budgetMax.evidence[0].quote, "ราคาไม่เกิน 30000");
   assert.equal(result.fields.district.evidence[0].quote, "พระราม 9");
-  assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), { units: [], templateId: "clarify" });
+  assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), selections);
 });
 
 test("deterministic selection only exposes matched snapshot facts after all qualification signals", () => {
@@ -82,6 +82,16 @@ test("factual clauses render solely from typed snapshot facts with exact provena
   assert.equal(reply.snapshotId, "s1");
   assert.equal(Object.isFrozen(reply.provenance), true);
   assert.equal(validateReply(reply, context).automaticEligible, true);
+});
+
+test("Thai inventory options render as compact natural sentences while preserving fact provenance", () => {
+  const reply = renderReply(selections, snapshot, defaultReplyFormat("th"));
+  assert.match(reply.text, /1\. Life Asoke ห้อง A-12 · ค่าเช่า 18,000 บาท\/เดือน · ว่าง 2026-11-01 · 1 ห้องนอน/u);
+  assert.match(reply.text, /หากมีจำนวนห้องนอนและวันที่ต้องการย้ายเข้า/u);
+  assert.equal(reply.provenance.length, 6);
+  assert.equal(validateReply(reply, {snapshot,selections,format:defaultReplyFormat("th")}).automaticEligible, true);
+  const studioSnapshot={...snapshot,factSnapshot:[{...fact,bedrooms:0,roomType:"studio"}]};
+  assert.match(renderReply(selections,studioSnapshot,defaultReplyFormat("th")).text,/ห้องสตูดิโอ/u);
 });
 
 test("tampered prices, dates, names, contacts, unit IDs and provenance fail closed", () => {

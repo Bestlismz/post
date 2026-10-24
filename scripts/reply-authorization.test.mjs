@@ -143,14 +143,22 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       assert.equal(fallback.content.automaticEligible,false);
       assert.equal((await pool.query("SELECT status FROM work_items WHERE id='failed'")).rows[0].status,'needs_review');
     });
-    await t.test('automatic mode safely authorizes a deterministic clarification when Thai lead details are incomplete', async () => {
+    await t.test('automatic mode selects matching inventory when Thai lead supplies location and budget', async () => {
       await pool.query(`UPDATE organizations SET automation_policy='{"mode":"automatic","minimumConfidence":0.82}'`);
+      const {createCatalog}=await import('../src/inventory/catalog.mjs');
+      const catalog=createCatalog(pool),command=input=>({organizationId:'org_default',actorId:actor.id,idempotencyKey:randomUUID(),input});
+      const project=await catalog.createProject(command({name:'Rhythm Ratchada',district:'พระราม 9',province:'กรุงเทพมหานคร',transit:[{station:'MRT พระราม 9',walkingDistanceM:350}]}));
+      let unit=await catalog.createUnit(command({projectId:project.id,unitCode:'RR-1105',roomType:'studio',bedrooms:0,monthlyRentThb:14500,availableFrom:'2026-11-01',description:'ใกล้ MRT พระราม 9',petPolicy:'not_allowed'}));
+      unit=await catalog.changeAvailability({...command({id:unit.id,status:'available'}),expectedRevision:unit.revision});
+      await catalog.publishUnit({...command({id:unit.id}),expectedRevision:unit.revision});
       await seed('thai-clarify');
       await pool.query("UPDATE messages SET text='หาห้องแถวพระราม 9 ราคาไม่เกิน 30000' WHERE id='m-thai-clarify'");
       const noComposer = createInboxService({ pool, client: { responses: { create: async () => { throw new Error('provider unavailable'); } } } });
       const clarification = await noComposer.prepareReply('thai-clarify',1,actor);
       assert.equal(clarification.content.automaticEligible,true);
-      assert.equal(clarification.context.selections.templateId,'clarify');
+      assert.equal(clarification.context.selections.templateId,'options');
+      assert.ok(clarification.context.selections.units.length>0);
+      assert.match(clarification.content.text,/บาท\/เดือน/u);
       assert.deepEqual(clarification.context.extraction.requirements,{budgetMax:30000,geography:{districts:['พระราม 9']}});
       assert.equal((await pool.query('SELECT actor_kind FROM reply_authorizations WHERE reply_version_id=$1',[clarification.id])).rows[0].actor_kind,'policy');
       assert.equal((await pool.query("SELECT status FROM work_items WHERE id='thai-clarify'")).rows[0].status,'ready');
@@ -228,7 +236,7 @@ test('reply preparation, immutable authorization, takeover and leased retry use 
       const {createCatalog}=await import('../src/inventory/catalog.mjs');
       const catalog=createCatalog(pool);
       const command=input=>({organizationId:'org_default',actorId:actor.id,idempotencyKey:randomUUID(),input});
-      const project=await catalog.createProject(command({name:'Trusted condo'}));
+      const project=await catalog.createProject(command({name:'Trusted condo',district:'พระราม 9',province:'กรุงเทพมหานคร',transit:[{station:'MRT พระราม 9',walkingDistanceM:350}]}));
       let unit=await catalog.createUnit(command({projectId:project.id,unitCode:'A1',roomType:'condo',monthlyRentThb:18000,availableFrom:'2026-11-01',description:'Nice room',petPolicy:'unknown'}));
       unit=await catalog.changeAvailability({...command({id:unit.id,status:'available'}),expectedRevision:unit.revision});
       unit=await catalog.publishUnit({...command({id:unit.id}),expectedRevision:unit.revision});

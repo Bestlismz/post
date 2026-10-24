@@ -62,7 +62,7 @@ export async function authorizeRecoveryUpgrade({pool,registry,request}) {
   return {targetPath:'/websockify',identity:{organizationId:actor.organization_id,sourceId,sessionId}};
 }
 
-function publicGroup(row) {
+function publicGroup(row,{testCadenceMs=null}={}) {
   const receipt=value=>value?{
     operationId:value.operationId??value.operation_id,
     coverage:value.coverage,
@@ -88,6 +88,7 @@ function publicGroup(row) {
     schedule:row.schedule_revision?{enabled:row.schedule_enabled,cadenceMinutes:row.schedule_cadence_minutes,timeZone:row.schedule_time_zone,days:row.schedule_days.map(Number),start:row.schedule_start_local,end:row.schedule_end_local,dailyLimit:row.schedule_daily_limit,maintenanceWindows:row.schedule_maintenance_windows,revision:row.schedule_revision}:null,
     latestSchedule:row.schedule_receipt_id?{state:row.schedule_receipt_state,reasons:row.schedule_reason_codes,jobState:row.schedule_job_status??null,slot:row.schedule_slot?.toISOString?.()??row.schedule_slot,createdAt:row.schedule_receipt_created_at?.toISOString?.()??row.schedule_receipt_created_at}:null,
     nextScheduleCheckWithinMinutes:nextScheduleCheckWithinMinutes(row),
+    testScheduleCadenceSeconds:testCadenceMs ? testCadenceMs/1000 : null,
     session:{owner:'group-worker',state:row.session_health==='healthy'?'available':row.session_health},
   };
 }
@@ -154,7 +155,7 @@ export function createSourceRouter({pool,config,recovery,registry,proxyHttp,sour
               WHERE r.organization_id=g.organization_id AND r.source_id=g.id ORDER BY ro.operation_order DESC LIMIT 5) h) history ON true
           WHERE g.organization_id=$1 AND NOT g.archived ORDER BY g.created_at,g.id`,[request.actor.organizationId]),
       ]);
-      response.json({actorRole:request.actor.role,pages:pages.map(row=>({id:row.id,name:row.name,health:row.health,expiresAt:row.expires_at?.toISOString?.()??row.expires_at,updatedAt:row.updated_at?.toISOString?.()??row.updated_at})),groups:groups.map(publicGroup)});
+      response.json({actorRole:request.actor.role,pages:pages.map(row=>({id:row.id,name:row.name,health:row.health,expiresAt:row.expires_at?.toISOString?.()??row.expires_at,updatedAt:row.updated_at?.toISOString?.()??row.updated_at})),groups:groups.map(row=>publicGroup(row,{testCadenceMs:config.groupSchedulerTestCadenceMs}))});
     } catch(error){next(error);}
   });
   router.post('/api/sources/groups',...write,async(request,response,next)=>{

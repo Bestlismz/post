@@ -8,6 +8,7 @@ const configSchema = z.object({
   })),
   SESSION_SECRET: z.string().min(32),
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+  GROUP_SCHEDULER_TEST_CADENCE_MS: z.string().regex(/^\d+$/).refine((value) => Number(value) >= 1000 && Number(value) <= 60000).optional(),
 });
 
 export function loadConfig(env = process.env) {
@@ -21,5 +22,6 @@ export function loadConfig(env = process.env) {
     appOrigin: result.data.APP_ORIGIN,
     sessionSecret: result.data.SESSION_SECRET,
     nodeEnv: result.data.NODE_ENV,
+    groupSchedulerTestCadenceMs: result.data.GROUP_SCHEDULER_TEST_CADENCE_MS ? Number(result.data.GROUP_SCHEDULER_TEST_CADENCE_MS) : null,
   };
 }

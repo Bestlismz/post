@@ -39,7 +39,7 @@ try {
   const stagingAllowedGroups=(process.env.STAGING_FACEBOOK_SOURCE_ALLOWLIST??'').split(',').map(value=>value.trim()).filter(Boolean);
   const groupDelivery=createGroupDeliveryWorker({pool,client:groupClient,keys:groupSigning.keys,signingKey:groupSigning.key,keyId:groupSigning.keyId,stagingSendEnabled:process.env.STAGING_FACEBOOK_SEND==='true',stagingAllowedGroups});
   const groupReconciliation={runOnce:()=>groupDelivery.runReconcileOnce()};
-  const running=runApplicationRuntimes({workers:[automation,delivery,groupScan,groupDelivery,groupReconciliation],controller,env:process.env,createScheduler:config=>createGroupScheduler({pool,supportedSelectorVersions:config.supportedSelectorVersions,batchSize:config.schedulerBatchSize,tickTimeoutMs:config.schedulerTickTimeoutMs}),
+  const running=runApplicationRuntimes({workers:[automation,delivery,groupScan,groupDelivery,groupReconciliation],controller,env:process.env,createScheduler:config=>createGroupScheduler({pool,supportedSelectorVersions:config.supportedSelectorVersions,batchSize:config.schedulerBatchSize,tickTimeoutMs:config.schedulerTickTimeoutMs,cadenceOverrideMs:config.schedulerTestCadenceMs}),
     onWorkerError:code=>process.stderr.write(code+'\n'),onSchedulerEvent:event=>{
       const line=event.code==='SCHEDULER_TICK_COMPLETED'?{code:event.code,scheduled:event.scheduled,skipped:event.skipped,considered:event.considered}:event;
       (event.code==='SCHEDULER_TICK_FAILED'?process.stderr:process.stdout).write(JSON.stringify(line)+'\n');

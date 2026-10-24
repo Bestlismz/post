@@ -7,12 +7,18 @@ function boundedInteger(value,fallback,min,max) {
   return parsed;
 }
 
+function optionalBoundedInteger(value,min,max) {
+  if(value===undefined||value==='')return null;
+  return boundedInteger(value,0,min,max);
+}
+
 export function applicationRuntimeConfig(env=process.env) {
   const supportedSelectorVersions=(env.GROUP_SUPPORTED_SELECTOR_VERSIONS??'facebook-dom-v3').split(',').map(value=>value.trim()).filter(Boolean);
   if(!supportedSelectorVersions.length||supportedSelectorVersions.length>50||supportedSelectorVersions.some(value=>value.length>200))throw Error('Invalid application runtime configuration');
   return {
     workerPollMs:boundedInteger(env.WORKER_POLL_MS,1000,1,60000),
     schedulerPollMs:boundedInteger(env.GROUP_SCHEDULER_POLL_MS,15000,1,60000),
+    schedulerTestCadenceMs:optionalBoundedInteger(env.GROUP_SCHEDULER_TEST_CADENCE_MS,1000,60000),
     schedulerBatchSize:boundedInteger(env.GROUP_SCHEDULER_BATCH_SIZE,50,1,500),
     schedulerTickTimeoutMs:boundedInteger(env.GROUP_SCHEDULER_TICK_TIMEOUT_MS,30000,10,60000),
     supportedSelectorVersions

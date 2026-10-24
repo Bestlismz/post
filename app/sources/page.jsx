@@ -98,7 +98,7 @@ export default function SourcesPage() {
     event.preventDefault(); const value = groupUrl.trim();
     if (!exactGroupUrl.test(value)) { setFormError("ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น"); return; }
     setBusy("add"); setFormError("");
-    try { const result = await mutate("/api/sources/groups", { body: { url: value } }); const { created: wasCreated, ...source } = result; await load(); setAddOpen(false); setGroupUrl(""); setExpanded(source.id); setNotice(wasCreated ? "เพิ่มกลุ่มพร้อมตารางสแกนทุก 15 นาทีแล้ว" : "กลุ่มนี้ถูกเพิ่มไว้แล้ว แสดงรายการเดิมให้แล้ว"); requestAnimationFrame(() => document.querySelector(`[data-testid="source-${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })); }
+    try { const result = await mutate("/api/sources/groups", { body: { url: value } }); const { created: wasCreated, ...source } = result; await load(); setAddOpen(false); setGroupUrl(""); setExpanded(source.id); setNotice(wasCreated ? "เพิ่มกลุ่มและเปิดตารางสแกนอัตโนมัติแล้ว" : "กลุ่มนี้ถูกเพิ่มไว้แล้ว แสดงรายการเดิมให้แล้ว"); requestAnimationFrame(() => document.querySelector(`[data-testid="source-${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })); }
     catch (error) { setFormError(error.status === 422 ? "ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น" : error.message); }
     finally { setBusy(""); }
   }

@@ -44,6 +44,20 @@ test('schedule decisions use IANA local time across DST and reject maintenance w
   assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T08:00:00Z'),{completedToday:0}).reasons,['OUTSIDE_SCHEDULE_WINDOW']);
   assert.deepEqual(evaluateSchedule({...schedule,maintenanceWindows:[{startsAt:'2026-03-08T06:00:00Z',endsAt:'2026-03-08T07:00:00Z'}]},new Date('2026-03-08T06:30:00Z'),{completedToday:0}).reasons,['MAINTENANCE_WINDOW']);
   assert.deepEqual(evaluateSchedule(schedule,new Date('2026-03-08T06:30:00Z'),{completedToday:8}).reasons,['DAILY_LIMIT_REACHED']);
+  assert.equal(evaluateSchedule(schedule,new Date('2026-03-08T06:30:19Z'),{completedToday:0},{cadenceOverrideMs:10000}).slot,'2026-03-08T06:30:10.000Z');
+  assert.throws(()=>evaluateSchedule(schedule,new Date(),{},{cadenceOverrideMs:999}),/cadence override/i);
+});
+
+integration('ten-second test cadence creates one job per slot without overlap',async({pool})=>{
+  await pool.query(`INSERT INTO group_source_schedules(organization_id,source_id,enabled,cadence_minutes,time_zone,days,start_local,end_local,daily_limit)
+    VALUES('org_default','source-1',true,15,'UTC','{0,1,2,3,4,5,6}','00:00','24:00',1440)`);
+  const {createGroupScheduler}=await import('../src/workers/scheduler.mjs');
+  const scheduler=createGroupScheduler({pool,supportedSelectorVersions:['facebook-dom-v2'],cadenceOverrideMs:10000});
+  const [a,b]=await Promise.all([scheduler.tick(),scheduler.tick()]);
+  assert.equal(a.scheduled+b.scheduled,1);
+  const {rows:[receipt]}=await pool.query('SELECT schedule_slot,schedule_snapshot FROM group_schedule_receipts');
+  assert.equal(receipt.schedule_snapshot.testCadenceMs,10000);
+  assert.equal(+new Date(receipt.schedule_slot)%10000,0);
 });
 
 test('scheduler deadline releases a database client acquired after the tick already timed out',async()=>{

@@ -27,9 +27,11 @@ function validateSchedule(schedule) {
   return schedule;
 }
 
-export function evaluateSchedule(scheduleValue,instantValue,state={}) {
+export function evaluateSchedule(scheduleValue,instantValue,state={},options={}) {
   const schedule=validateSchedule(scheduleValue),instant=new Date(instantValue);
   if(!Number.isFinite(+instant))throw new Error('Invalid schedule instant');
+  const cadenceOverrideMs=options.cadenceOverrideMs??null;
+  if(cadenceOverrideMs!==null&&(!Number.isSafeInteger(cadenceOverrideMs)||cadenceOverrideMs<1000||cadenceOverrideMs>60000))throw new Error('Invalid schedule cadence override');
   const local=localParts(instant,schedule.timeZone),reasons=[];
   if(schedule.enabled!==true)reasons.push('SCHEDULE_DISABLED');
   if(state.globalPaused)reasons.push('GLOBAL_PAUSED');
@@ -46,7 +48,7 @@ export function evaluateSchedule(scheduleValue,instantValue,state={}) {
   if(!within)reasons.push('OUTSIDE_SCHEDULE_WINDOW');
   if(schedule.maintenanceWindows.some(window=>+instant>=Date.parse(window.startsAt)&&+instant<Date.parse(window.endsAt)))reasons.push('MAINTENANCE_WINDOW');
   if((state.completedToday??0)>=schedule.dailyLimit)reasons.push('DAILY_LIMIT_REACHED');
-  const slotMs=schedule.cadenceMinutes*60000,slot=new Date(Math.floor(+instant/slotMs)*slotMs).toISOString();
+  const slotMs=cadenceOverrideMs??schedule.cadenceMinutes*60000,slot=new Date(Math.floor(+instant/slotMs)*slotMs).toISOString();
   return {eligible:reasons.length===0,reasons,localDay:local.date,slot};
 }
 
@@ -112,8 +114,9 @@ async function boundedTransaction(pool,deadline,signal,fn) {
   } finally {tx.release(destroyConnection);}
 }
 
-export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSize=50,tickTimeoutMs=30000}) {
+export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSize=50,tickTimeoutMs=30000,cadenceOverrideMs=null}) {
   if(!Number.isSafeInteger(batchSize)||batchSize<1||batchSize>500||!Number.isSafeInteger(tickTimeoutMs)||tickTimeoutMs<10||tickTimeoutMs>60000)throw Error('Invalid scheduler bounds');
+  if(cadenceOverrideMs!==null&&(!Number.isSafeInteger(cadenceOverrideMs)||cadenceOverrideMs<1000||cadenceOverrideMs>60000))throw Error('Invalid scheduler bounds');
   let cursor=null;
   return {async tick({signal}={}) {
     const deadline=performance.now()+tickTimeoutMs;
@@ -137,16 +140,16 @@ export function createGroupScheduler({pool,supportedSelectorVersions=[],batchSiz
         if(!row)return null;
         const schedule=fromRow(row),state={globalPaused:org.group_automation_paused,sourcePaused:row.kill_switch,archived:row.archived,sessionHealth:row.session_health,sessionCircuit:row.session_circuit,selectorHealth:row.selector_health,selectorCircuit:row.selector_circuit,selectorSupported:supportedSelectorVersions.includes(row.selector_version),completedToday:0};
         let preliminary,invalidSchedule=false;
-        try {preliminary=evaluateSchedule(schedule,now,state);} catch {
+        try {preliminary=evaluateSchedule(schedule,now,state,{cadenceOverrideMs});} catch {
           invalidSchedule=true;
           const cadence=Number.isSafeInteger(schedule.cadenceMinutes)&&schedule.cadenceMinutes>=1&&schedule.cadenceMinutes<=1440?schedule.cadenceMinutes:15;
-          const slotMs=cadence*60000;
+          const slotMs=cadenceOverrideMs??cadence*60000;
           preliminary={eligible:false,reasons:['INVALID_SCHEDULE'],localDay:now.toISOString().slice(0,10),slot:new Date(Math.floor(+now/slotMs)*slotMs).toISOString()};
         }
         if((await tx.query('SELECT 1 FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND schedule_slot=$3',[row.organization_id,row.source_id,preliminary.slot])).rowCount)return {deduplicated:true};
         const {rows:[count]}=await tx.query("SELECT count(*)::int n FROM group_schedule_receipts WHERE organization_id=$1 AND source_id=$2 AND local_day=$3 AND state='scheduled'",[row.organization_id,row.source_id,preliminary.localDay]);
-        const decision=invalidSchedule?preliminary:evaluateSchedule(schedule,now,{...state,completedToday:count.n});
-        const receiptId=randomUUID(),snapshot={...schedule,selectorVersion:row.selector_version};
+        const decision=invalidSchedule?preliminary:evaluateSchedule(schedule,now,{...state,completedToday:count.n},{cadenceOverrideMs});
+        const receiptId=randomUUID(),snapshot={...schedule,selectorVersion:row.selector_version,...(cadenceOverrideMs===null?{}:{testCadenceMs:cadenceOverrideMs})};
         if(!decision.eligible) {
           await tx.query(`INSERT INTO group_schedule_receipts(id,organization_id,source_id,schedule_slot,local_day,state,reason_codes,schedule_snapshot)
             VALUES($1,$2,$3,$4,$5,'skipped',$6,$7)`,[receiptId,row.organization_id,row.source_id,decision.slot,decision.localDay,decision.reasons,JSON.stringify(snapshot)]);

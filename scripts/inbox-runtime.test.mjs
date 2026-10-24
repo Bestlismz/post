@@ -50,7 +50,9 @@ test('scheduler runtime isolates failures prevents overlap and stops cleanly',as
 });
 
 test('application runtime validates every loop setting before starting any worker',async()=>{
-  const {runApplicationRuntimes}=await import('../src/workers/runner.mjs');let iterations=0;
+  const {runApplicationRuntimes,applicationRuntimeConfig}=await import('../src/workers/runner.mjs');let iterations=0;
+  assert.equal(applicationRuntimeConfig({GROUP_SCHEDULER_TEST_CADENCE_MS:'10000'}).schedulerTestCadenceMs,10000);
+  assert.throws(()=>applicationRuntimeConfig({GROUP_SCHEDULER_TEST_CADENCE_MS:'999'}),/runtime configuration/i);
   const worker={async runOnce(){iterations++;return null;}},controller=new AbortController();
   assert.throws(()=>runApplicationRuntimes({automation:worker,delivery:worker,createScheduler:()=>({async tick(){iterations++;}}),controller,
     env:{GROUP_SCHEDULER_POLL_MS:'invalid',GROUP_SCHEDULER_BATCH_SIZE:'50',GROUP_SCHEDULER_TICK_TIMEOUT_MS:'1000'}}),/runtime configuration/i);
@@ -91,5 +93,6 @@ test('Compose production worker uses its restricted URL and only environment sec
   assert.equal(worker.environment.OPENAI_API_KEY,'fake-no-live-calls');assert.equal(worker.environment.META_TOKEN_KEYS,'{}');
   assert.equal(worker.environment.GROUP_COMMAND_KEY_ID,'group-current');assert.equal(worker.environment.GROUP_COMMAND_KEYS,'{"group-current":"encoded"}');
   assert.equal(worker.environment.GROUP_SCHEDULER_BATCH_SIZE,'50');assert.equal(worker.environment.GROUP_SCHEDULER_TICK_TIMEOUT_MS,'30000');
+  assert.equal(worker.environment.GROUP_SCHEDULER_TEST_CADENCE_MS,'10000');
   assert.equal(worker.ports,undefined);assert.equal(worker.volumes,undefined);
 });
