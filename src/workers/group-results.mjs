@@ -95,7 +95,7 @@ async function persistObservation(tx,operation,source,result,item) {
   // Late evidence stays immutable history. Only a current material change creates new Inbox work.
   if(!projected.rowCount||previous?.content_hash===item.contentHash) return;
   if(item.kind==='comment') {
-    const {rows:[owned]}=await tx.query(`SELECT 1 FROM delivery_attempts a
+    const {rows:[owned]}=await tx.query(`SELECT a.id AS attempt_id,a.state,i.id AS intent_id,i.authorization_id,w.id AS work_item_id FROM delivery_attempts a
       JOIN delivery_intents i ON i.organization_id=a.organization_id AND i.id=a.delivery_intent_id
       JOIN reply_versions r ON r.organization_id=i.organization_id AND r.id=i.reply_version_id
       JOIN work_items w ON w.organization_id=r.organization_id AND w.id=r.work_item_id
@@ -106,9 +106,21 @@ async function persistObservation(tx,operation,source,result,item) {
           OR (a.state IN ('attempting','unknown','sent') AND a.provider_message_id IS NULL
             AND r.content->>'text'=$4 AND target.post_id=$5
             AND $6::timestamptz BETWEEN a.started_at-interval '5 minutes' AND coalesce(a.finished_at,now())+interval '30 minutes'))
+      ORDER BY CASE WHEN a.state='sent' AND a.provider_message_id=$3 THEN 0 ELSE 1 END,a.started_at DESC
       LIMIT 1`,[organizationId,source.id,item.commentId,item.text,item.postId,item.observedAt]);
     // Keep the observation for the Facebook-like thread, but never create a lead or auto-reply to our own comment.
-    if(owned)return;
+    if(owned) {
+      if(['attempting','unknown'].includes(owned.state)) {
+        await tx.query(`UPDATE delivery_attempts SET state='sent',outcome_code='SCAN_EVIDENCE_RECONCILED',provider_message_id=$2,
+          finished_at=coalesce(finished_at,$3::timestamptz) WHERE organization_id=$1 AND id=$4`,[organizationId,item.commentId,item.observedAt,owned.attempt_id]);
+        await tx.query(`UPDATE jobs SET status='completed',last_error='SCAN_EVIDENCE_RECONCILED',lease_owner=NULL,lease_expires_at=NULL,updated_at=now()
+          WHERE organization_id=$1 AND kind IN ('deliver_group_reply','reconcile_group_reply') AND payload->>'deliveryIntentId'=$2 AND status IN ('pending','running')`,[organizationId,owned.intent_id]);
+        await tx.query("UPDATE work_items SET status='completed',updated_at=now() WHERE organization_id=$1 AND id=$2 AND status='ready'",[organizationId,owned.work_item_id]);
+        await appendAudit(tx,{organizationId,action:'delivery.reconciled',entityType:'delivery_intent',entityId:owned.intent_id,
+          details:{attemptId:owned.attempt_id,providerMessageId:item.commentId,channel:'facebook_group',evidence:'group_scan'}});
+      }
+      return;
+    }
   }
   const pageId=`facebook_group:${source.group_id}`,rootTarget=`facebook_group_target:${item.postId}`;
   await tx.query(`INSERT INTO conversations(id,organization_id,channel,page_id,psid) VALUES($1,$2,'facebook_group',$3,$4)

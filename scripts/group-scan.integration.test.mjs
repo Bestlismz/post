@@ -85,6 +85,7 @@ integration('a delivered Rendar comment is retained in the thread without creati
 integration('an unresolved exact outbound comment cannot re-enter Inbox before Facebook returns its ID',async({pool,source,scan,result,accept,observation})=>{
   await accept(result(await scan(),{observations:[observation('456','Looking for a rental')]}));
   const {rows:[work]}=await pool.query('SELECT id,conversation_id,processing_revision FROM work_items LIMIT 1');
+  await pool.query("UPDATE work_items SET status='ready' WHERE id=$1",[work.id]);
   await pool.query(`INSERT INTO reply_versions(id,organization_id,work_item_id,conversation_id,conversation_revision,version,content,context)
     VALUES('reply-pending','org_default',$1,$2,$3,1,'{"text":"Pending exact reply"}','{}')`,[work.id,work.conversation_id,work.processing_revision]);
   await pool.query(`INSERT INTO reply_authorizations(id,organization_id,work_item_id,reply_version_id,actor_kind,evidence)
@@ -97,6 +98,8 @@ integration('an unresolved exact outbound comment cannot re-enter Inbox before F
   assert.equal((await pool.query('SELECT count(*)::int n FROM group_observations')).rows[0].n,2);
   assert.equal((await pool.query('SELECT count(*)::int n FROM messages')).rows[0].n,1);
   assert.equal((await pool.query('SELECT count(*)::int n FROM work_items')).rows[0].n,1);
+  assert.deepEqual((await pool.query("SELECT state,outcome_code,provider_message_id FROM delivery_attempts WHERE id='attempt-pending'")).rows[0],{state:'sent',outcome_code:'SCAN_EVIDENCE_RECONCILED',provider_message_id:'902'});
+  assert.equal((await pool.query('SELECT status FROM work_items WHERE id=$1',[work.id])).rows[0].status,'completed');
 });
 
 integration('newest authentic scan persists a safe Facebook group name and access level',async({pool,scan,result,accept})=>{

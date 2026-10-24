@@ -45,6 +45,14 @@ export function extractDeterministicRequirements({ conversation }) {
   };
   for (const message of [...source.messages].reverse()) {
     safeText(message.text.replace(/[\n\r\t]/g, " "));
+    const range = /(?:งบ(?:ประมาณ)?|ราคา)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)\s*(?:-|–|ถึง)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)(?:\s*บาท)?/iu.exec(message.text);
+    if (range) {
+      const minimum = numericValue(range[1]), maximum = numericValue(range[2]);
+      if (Number.isFinite(minimum) && Number.isFinite(maximum) && minimum > 0 && minimum <= maximum) {
+        set("budgetMin", minimum, message, range.index, range.index + range[0].length);
+        set("budgetMax", maximum, message, range.index, range.index + range[0].length);
+      }
+    }
     for (const [field, pattern] of [
       ["budgetMax", /(?:(?:งบ(?:ประมาณ)?|ราคา)\s*)?(?:ไม่เกิน|สูงสุด)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)(?:\s*บาท)?/iu],
       ["budgetMin", /(?:(?:งบ(?:ประมาณ)?|ราคา)\s*)?(?:ขั้นต่ำ|อย่างน้อย)\s*([0-9๐-๙][0-9๐-๙,]*(?:\.[0-9๐-๙]+)?)(?:\s*บาท)?/iu],

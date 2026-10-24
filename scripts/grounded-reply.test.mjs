@@ -35,6 +35,14 @@ test("deterministic Thai extraction safely selects PostgreSQL matches from locat
   assert.deepEqual(composeDeterministicSelections({ snapshot, extraction: result }), selections);
 });
 
+test("deterministic Thai extraction preserves both ends of a compact budget range", () => {
+  const source = { id: "thai-range", revision: 1, messages: [{ id: "thai-range-message", revision: 1, text: "หาห้องแถวพระราม 9 งบ 9000-15000" }] };
+  const result = extractDeterministicRequirements({ conversation: source });
+  assert.deepEqual(result.requirements, { budgetMin: 9000, budgetMax: 15000, geography: { districts: ["พระราม 9"] } });
+  assert.equal(result.fields.budgetMin.evidence[0].quote, "งบ 9000-15000");
+  assert.equal(result.fields.budgetMax.evidence[0].quote, "งบ 9000-15000");
+});
+
 test("deterministic selection only exposes matched snapshot facts after all qualification signals", () => {
   const source = { id: "thai", revision: 1, messages: [{ id: "thai-message", revision: 1, text: "หาห้องแถวพระราม 9 ราคาไม่เกิน 30000 แบบ 1 ห้องนอน" }] };
   const result = extractDeterministicRequirements({ conversation: source });

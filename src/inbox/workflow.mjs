@@ -34,7 +34,7 @@ export function projectWorkItemWorkflow(facts) {
   } else if (delivery?.state === "unknown" || delivery?.state === "attempting" && delivery?.outcomeCode) {
     phase = "reconciling";
     reason = "FACEBOOK_RESULT_UNKNOWN";
-    actions = facts.channel === "facebook_group" ? ["verify_absent_and_retry"] : [];
+    actions = facts.channel === "facebook_group" && delivery?.outcomeCode === "RECONCILIATION_NOT_FOUND" ? ["verify_absent_and_retry"] : [];
   } else if (delivery?.state === "attempting") {
     phase = "sending";
     actions = [];

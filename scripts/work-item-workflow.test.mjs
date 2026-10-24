@@ -23,7 +23,7 @@ test("work-item workflow projector has one phase and a safe action set", () => {
     ["review_required", { status: "needs_review", latestReply: { id: "r1" } }, ["approve", "handoff"]],
     ["queued", { status: "ready", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "queued" } }, ["handoff"]],
     ["sending", { status: "ready", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "attempting" } }, []],
-    ["reconciling", { status: "ready", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "unknown" } }, ["verify_absent_and_retry"]],
+    ["reconciling", { status: "ready", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "unknown" } }, []],
     ["send_failed", { status: "failed", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "failed" } }, ["retry_failed_delivery", "handoff"]],
     ["sent", { status: "completed", latestReply: { id: "r1" }, latestDelivery: { id: "d1", state: "sent" } }, ["edit_sent_comment"]],
     ["handed_off", { status: "handoff", humanTakeover: true }, ["resume"]],
@@ -49,16 +49,23 @@ test("verified send wins over mutable handoff and failed edit facts", () => {
   assert.deepEqual(workflow.actions, ["edit_sent_comment"]);
 });
 
-test("unknown provider result never exposes prepare or ordinary approve", () => {
+test("unknown provider result waits for automatic reconciliation before offering an explicit retry", () => {
   const workflow = projectWorkItemWorkflow(facts({
     status: "ready",
     latestReply: { id: "r1" },
     latestDelivery: { id: "d1", state: "unknown" },
   }));
   assert.equal(workflow.phase, "reconciling");
-  assert.deepEqual(workflow.actions, ["verify_absent_and_retry"]);
+  assert.deepEqual(workflow.actions, []);
   assert.equal(workflow.actions.includes("prepare"), false);
   assert.equal(workflow.actions.includes("approve"), false);
+
+  const absent = projectWorkItemWorkflow(facts({
+    status: "ready",
+    latestReply: { id: "r1" },
+    latestDelivery: { id: "d1", state: "unknown", outcomeCode: "RECONCILIATION_NOT_FOUND" },
+  }));
+  assert.deepEqual(absent.actions, ["verify_absent_and_retry"]);
 });
 
 test("observe mode and Messenger uncertainty never expose commands their APIs reject", () => {
