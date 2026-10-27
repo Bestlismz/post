@@ -33,3 +33,23 @@ test("scan receipt explains coverage, accepted item count and a safe reason", ()
     detail: "ครอบคลุมบางส่วน · พบ 3 รายการ · Facebook session หลุดระหว่างสแกน",
   });
 });
+
+test("paused sources with unhealthy sessions always offer recovery", () => {
+  for (const health of [
+    { session: "auth_required", selector: "healthy", sessionCircuit: true, selectorCircuit: false },
+    { session: "healthy", selector: "changed", sessionCircuit: false, selectorCircuit: true },
+    { session: "unknown", selector: "unknown", sessionCircuit: false, selectorCircuit: false },
+  ]) {
+    const source = { ...ready, paused: true, health };
+    assert.equal(sourceReadiness(source).state, "paused");
+    assert.deepEqual(primarySourceAction(source), { id: "recover", label: "กู้คืนการเชื่อมต่อ", disabled: false });
+  }
+});
+
+test("new unverified groups can run their first scan without entering recovery", () => {
+  const source = { ...ready, health: { session: "unknown", selector: "unknown", sessionCircuit: false, selectorCircuit: false } };
+  assert.equal(sourceReadiness(source).state, "unverified");
+  assert.deepEqual(primarySourceAction(source), { id: "scan", label: "สแกนครั้งแรก", disabled: false });
+  assert.equal(primarySourceAction({ ...source, health: { ...source.health, sessionCircuit: true } }).id, "recover");
+  assert.equal(primarySourceAction({ ...source, latestOperation: { state: "failed" } }).id, "recover");
+});

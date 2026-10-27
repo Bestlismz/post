@@ -102,7 +102,44 @@ test("Sources adds only canonical Groups, changes mode, and makes scan/recovery 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBeTruthy();
 });
 
-test("circuit-open source recovers the browser before sending an explicit recovery scan", async ({ page }) => {
+for (const created of [true, false]) {
+test(`adding a group through the website starts a scan only when newly created (${created})`, async ({ page }) => {
+  await mockOperations(page);
+  const scans = [];
+  await page.route("**/api/sources/groups", (route) => route.fulfill({ status: created ? 201 : 200, json: { ...group, created } }));
+  await page.route("**/api/sources/groups/group-source-1/scans", async (route) => {
+    scans.push({ body: route.request().postDataJSON(), revision: route.request().headers()["if-match"] });
+    await route.fulfill({ status: 202, json: { operationId: "first-scan", state: "queued" } });
+  });
+  await page.goto("/sources");
+  await page.getByRole("button", { name: "เพิ่มกลุ่ม", exact: true }).click();
+  await page.getByLabel("ลิงก์ Facebook Group").fill("https://www.facebook.com/groups/999");
+  await page.getByRole("button", { name: "ยืนยันเพิ่มกลุ่ม" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(scans).toEqual(created ? [{ body: {}, revision: '"1"' }] : []);
+});
+}
+
+test("new group starts its first scan before session health is known", async ({ page }) => {
+  await mockOperations(page);
+  await page.route("**/api/sources", (route) => route.fulfill({ json: {
+    actorRole: "admin", pages: [], groups: [{ ...group, latestOperation: null, latestReceipt: null, receiptHistory: [], health: { session: "unknown", selector: "unknown", sessionCircuit: false, selectorCircuit: false } }],
+  } }));
+  const scans = [];
+  await page.route("**/api/sources/groups/group-source-1/scans", async (route) => {
+    scans.push(route.request().postDataJSON());
+    await route.fulfill({ status: 202, json: { operationId: "first-scan", state: "queued" } });
+  });
+  await page.goto("/sources");
+  const source = page.getByTestId("source-group-source-1");
+  await expect(source).toContainText("ยังไม่ได้ตรวจสอบกลุ่ม");
+  await source.getByRole("button", { name: "สแกนครั้งแรก", exact: true }).click();
+  await expect.poll(() => scans).toEqual([{}]);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+for (const paused of [false, true]) {
+test(`circuit-open source (paused=${paused}) recovers the browser before sending an explicit recovery scan`, async ({ page }) => {
   const scanRequests = [];
   await page.route("**/health", (route) => route.fulfill({ json: { ok: true } }));
   await page.route("**/api/me", (route) => route.fulfill({ json: { user: { displayName: "Admin", role: "admin" } } }));
@@ -113,12 +150,18 @@ test("circuit-open source recovers the browser before sending an explicit recove
     groups: [{
       ...group,
       id: "group-source-recovery",
+      paused,
       displayName: "test autopost",
       canonicalUrl: "https://www.facebook.com/groups/2625323481252008",
       mode: "approval",
       health: { session: "healthy", selector: "failed", sessionCircuit: false, selectorCircuit: true },
     }],
   } }));
+  const resumeRequests = [];
+  await page.route("**/api/sources/groups/group-source-recovery", async (route) => {
+    resumeRequests.push(route.request().postDataJSON());
+    await route.fulfill({ json: { ...group, id: "group-source-recovery", paused: false, revision: 2 } });
+  });
   await page.route("**/api/sources/groups/group-source-recovery/scans", async (route) => {
     scanRequests.push(route.request().postDataJSON());
     await route.fulfill({ status: 202, json: { operationId: "recovery-operation", state: "queued" } });
@@ -130,9 +173,14 @@ test("circuit-open source recovers the browser before sending an explicit recove
   await page.goto("/sources");
   const source = page.getByTestId("source-group-source-recovery");
   await source.getByRole("button", { name: "กู้คืนการเชื่อมต่อ" }).click();
+  await expect(page.getByRole("dialog", { name: "กู้คืน Facebook session" })).toBeVisible();
+  expect(scanRequests).toEqual([]);
+  expect(resumeRequests).toEqual([]);
   await page.getByRole("button", { name: "ยืนยันและสแกนทดสอบ" }).click();
   await expect.poll(() => scanRequests).toEqual([{ recovery: true }]);
+  expect(resumeRequests).toEqual(paused ? [{ killSwitch: false }] : []);
 });
+}
 
 test("retry-required scan state stays scoped to its group through unrelated loads and recovery", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "fake-clock lifecycle runs once in desktop Chromium");

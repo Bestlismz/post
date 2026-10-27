@@ -3,5 +3,5 @@ export function BrandMark({ className = "" }) {
 }
 
 export function BrandName() {
-  return <span className="rr-brand__name" aria-label="rendar">rendar</span>;
+  return <span className="rr-brand__name" aria-label="Naina">Naina</span>;
 }

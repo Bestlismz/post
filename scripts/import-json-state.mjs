@@ -54,7 +54,7 @@ export async function importLegacy(file, { pool, dryRun = false } = {}) {
     for (const { tablename } of tables) {
       const identifier = `"${tablename.replaceAll('"', '""')}"`;
       await client.query(`LOCK TABLE ${identifier} IN SHARE ROW EXCLUSIVE MODE`);
-      const condition = tablename === "organizations" ? ` WHERE id <> 'org_default' OR name <> 'Rental Radar' OR profile_revision <> 1 OR retention_revision <> 1
+      const condition = tablename === "organizations" ? ` WHERE id <> 'org_default' OR name <> 'Naina' OR profile_revision <> 1 OR retention_revision <> 1
         OR business_profile <> '{"description":"","relevanceThreshold":60}'::jsonb
         OR retention <> '{"rawPayloadDays":30,"screenshotDays":7}'::jsonb` : "";
       const { rows: [row] } = await client.query(`SELECT EXISTS (SELECT 1 FROM ${identifier}${condition}) AS populated`);

@@ -13,7 +13,7 @@ export function GroupReview({ workspace, initialTargetKey, request, busy, setNot
   const index = options.findIndex((option) => option.id === conversation?.id);
   const groupIds = [...new Set(options.map((option) => option.groupId))];
   const locked = !!busy || reviewing;
-  const identity = "rendar";
+  const identity = "Naina";
   function selectTarget(nextKey) {
     if (!locked) setKey(nextKey);
   }

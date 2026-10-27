@@ -30,7 +30,7 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
         try {
           let result;
           if(req.url.endsWith('/start')) {
-            if(!allowed.has(input.groupId)||!Number.isSafeInteger(input.ttlSeconds)||input.ttlSeconds<30||input.ttlSeconds>600)throw Object.assign(new Error(),{status:403});
+            if(!Number.isSafeInteger(input.ttlSeconds)||input.ttlSeconds<30||input.ttlSeconds>600)throw Object.assign(new Error(),{status:403});
             result=recoveryGate.start({sourceId:input.sourceId,groupId:input.groupId,ttlMs:input.ttlSeconds*1000});
           } else result=recoveryGate.stop({sourceId:input.sourceId});
           res.writeHead(200,{'content-type':'application/json'}).end(JSON.stringify(result));
@@ -42,7 +42,7 @@ export function createGroupWorkerServer({keys,keyId,key,allowedGroups,scan,reply
       let command;
       try { verifyTransport(raw,req.headers,{keys}); command=verifyCommand(raw.toString('utf8'),{keys}); }
       catch { res.writeHead(401).end('Untrusted command'); return; }
-      if(!allowed.has(command.groupId)||!{ScanCommand:scan,GroupReplyCommand:reply,GroupEditCommand:edit,ReconcileCommand:reconcile}[command.kind]) { res.writeHead(403).end('Command refused'); return; }
+      if((command.kind!=='ScanCommand'&&!allowed.has(command.groupId))||!{ScanCommand:scan,GroupReplyCommand:reply,GroupEditCommand:edit,ReconcileCommand:reconcile}[command.kind]) { res.writeHead(403).end('Command refused'); return; }
       if(recoveryGate&&!recoveryGate.permitsAutomation()) {res.writeHead(423).end('Recovery active');return;}
       if(['GroupReplyCommand','GroupEditCommand'].includes(command.kind)&&(!stagingSendEnabled||!sendAllowed.has(command.groupId))) {res.writeHead(403).end('Staging send disabled');return;}
       let timedOut=false;

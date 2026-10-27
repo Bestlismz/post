@@ -325,7 +325,7 @@ app.get("/api/messenger/status", (_request, response) => {
 });
 app.post("/api/messenger/enable", asyncRoute(async (_request, response) => {
   if (!runtime().messengerConfigured) throw httpError(409, "Complete all Meta Page credentials before enabling auto-reply.");
-  response.json(await store.mutate((state) => { state.messengerConfig.pageId = metaConfig.pageId; state.messengerConfig.pageName ??= mode === "fixture" ? "Rental Radar Test Page" : "Facebook Page"; state.messengerConfig.enabled = true; return state.messengerConfig; }));
+  response.json(await store.mutate((state) => { state.messengerConfig.pageId = metaConfig.pageId; state.messengerConfig.pageName ??= mode === "fixture" ? "Naina Test Page" : "Facebook Page"; state.messengerConfig.enabled = true; return state.messengerConfig; }));
 }));
 app.post("/api/messenger/disable", asyncRoute(async (_request, response) => response.json(await store.mutate((state) => { state.messengerConfig.enabled = false; return state.messengerConfig; }))));
 app.get("/api/messenger/threads", (_request, response) => {

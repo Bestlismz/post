@@ -41,7 +41,7 @@ async function within(promise,ms=500) {
   finally{clearTimeout(timer);}
 }
 
-test('private server authenticates bounded raw commands, allowlists targets, signs results, and redacts failures', async t => {
+test('private server authenticates bounded commands, accepts newly added scan targets, signs results, and redacts failures', async t => {
   const { createGroupWorkerServer } = await load('group-worker/server');
   const { createGroupWorkerClient } = await load('channels/groups/client');
   const { transportHeaders } = await load('channels/groups/transport');
@@ -59,8 +59,8 @@ test('private server authenticates bounded raw commands, allowlists targets, sig
   const huge='x'.repeat(262145);
   assert.equal((await fetch(`${baseUrl}/commands`,{method:'POST',body:huge,headers:transportHeaders(huge,{key,keyId:'current'})})).status,413);
   const wrong=command(); wrong.groupId='101'; wrong.canonicalTarget='https://www.facebook.com/groups/101'; delete wrong.signature;
-  await assert.rejects(client.scan(signCommand(wrong,{key,keyId:'current'})),/Worker request failed/);
-  assert.equal(calls,1);
+  assert.equal((await client.scan(signCommand(wrong,{key,keyId:'current'}))).groupId,'101');
+  assert.equal(calls,2);
   fail=true; await assert.rejects(client.scan(command()),error=>!error.message.includes('secret')&&!error.message.includes('profile'));
 });
 
@@ -88,6 +88,8 @@ test('private server and client carry only signed exact group reply, edit, and r
     reconcile:async command=>({state:'not_found',targetId:command.targetId,textHash:command.textHash,senderId:command.senderId,attemptStartedAt:command.attemptStartedAt,attemptFinishedAt:command.attemptFinishedAt,evidenceHash:'c'.repeat(64),remoteId:null})});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const client=createGroupWorkerClient({baseUrl:`http://127.0.0.1:${server.address().port}`,keys,keyId:'current',key});
+  const {signature:ignored,...unlistedReply}=reply;
+  await assert.rejects(client.reply(signCommand({...unlistedReply,groupId:'999',canonicalTarget:'https://www.facebook.com/groups/999'},{key,keyId:'current'})),/Worker request failed/);
   assert.equal((await client.reply(reply)).remoteId,'remote-1');
   assert.equal((await client.edit(edit)).remoteId,'remote-1');
   assert.equal((await client.reconcile(reconcile)).state,'not_found');

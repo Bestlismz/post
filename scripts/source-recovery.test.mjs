@@ -105,8 +105,8 @@ test('signed recovery control is source-bound and health exposes no profile or c
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const baseUrl=`http://127.0.0.1:${server.address().port}`;
   const client=createGroupRecoveryClient({baseUrl,keys,keyId:'staging',key});
-  await assert.rejects(client.start({sourceId:'source-1',groupId:'999',ttlSeconds:60}),/Recovery request failed/);
-  const started=await client.start({sourceId:'source-1',groupId:'100',ttlSeconds:60});
+  await assert.rejects(client.start({sourceId:'source-1',groupId:'not-numeric',ttlSeconds:60}),/Recovery request failed/);
+  const started=await client.start({sourceId:'source-1',groupId:'999',ttlSeconds:60});
   assert.equal(started.state,'recovery');assert.equal(started.sourceId,'source-1');
   const health=await (await fetch(`${baseUrl}/health`)).json();
   assert.deepEqual(Object.keys(health).sort(),['ok','recovery','session']);assert.deepEqual(health.session,{state:'healthy'});

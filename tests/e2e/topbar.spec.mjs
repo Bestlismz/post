@@ -20,6 +20,25 @@ async function mockShell(page, role = "admin") {
   return requests;
 }
 
+for (const [state, label] of [
+  ["connected", "เชื่อมต่อ Facebook Groups แล้ว"],
+  ["reauth_required", "ต้องเข้าสู่ระบบ Facebook ใหม่"],
+  ["disconnected", "ยังไม่เชื่อมต่อ Facebook"],
+]) {
+  test(`account button reflects ${state} when no Page identity is available`, async ({ page }) => {
+    await mockShell(page);
+    await page.route("**/api/facebook/session-summary", (route) => route.fulfill({ json: {
+      state, identity: null, connections: { pages: 0, groups: 3 }, canRecover: true,
+    } }));
+    await page.goto("/inbox");
+    const account = page.getByRole("button", { name: "เปิดเมนูบัญชี" });
+    await expect(account).toContainText(label);
+    await account.click();
+    await expect(page.getByRole("menu", { name: "เมนูบัญชี" })).toContainText(label);
+    await expect(page.getByRole("menuitem", { name: "จัดการการเชื่อมต่อ / กู้คืน" })).toBeVisible();
+  });
+}
+
 test("topbar review presets and global search drive the one Inbox URL state", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "desktop menu keyboard flow");
   await mockShell(page);

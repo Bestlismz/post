@@ -150,7 +150,7 @@ test("failed commands roll back business state, audit, jobs and idempotency befo
       return { status: 200, body: { name: "Changed" } };
     }));
     await assert.rejects(run(true), /injected command failure/);
-    assert.equal((await pool.query("SELECT name FROM organizations WHERE id = 'org_default'")).rows[0].name, "Rental Radar");
+    assert.equal((await pool.query("SELECT name FROM organizations WHERE id = 'org_default'")).rows[0].name, "Naina");
     for (const table of ["audit_entries", "jobs", "idempotency_keys"]) {
       assert.equal((await pool.query(`SELECT count(*)::int AS count FROM ${table}`)).rows[0].count, 0);
     }
@@ -258,7 +258,7 @@ test("invalid command keys and responses cannot commit business changes or repla
       await assert.rejects(run(base, response), /response/i);
     }
     assert.equal((await pool.query("SELECT count(*)::int AS count FROM idempotency_keys")).rows[0].count, 0);
-    assert.equal((await pool.query("SELECT name FROM organizations WHERE id = 'org_default'")).rows[0].name, "Rental Radar");
+    assert.equal((await pool.query("SELECT name FROM organizations WHERE id = 'org_default'")).rows[0].name, "Naina");
   });
 });
 

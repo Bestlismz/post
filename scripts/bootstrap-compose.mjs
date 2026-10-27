@@ -12,9 +12,9 @@ try {
   const { rowCount } = await pool.query("SELECT 1 FROM memberships WHERE organization_id='org_default' AND role='admin' LIMIT 1");
   if (!rowCount) {
     await bootstrapAdmin(pool, {
-      email: process.env.ADMIN_EMAIL ?? "admin@rendar.local",
+      email: process.env.ADMIN_EMAIL ?? "admin@naina.local",
       password: process.env.ADMIN_PASSWORD ?? "admin123456",
-      displayName: process.env.ADMIN_DISPLAY_NAME ?? "Rendar Admin",
+      displayName: process.env.ADMIN_DISPLAY_NAME ?? "Naina Admin",
     });
     process.stdout.write("Default administrator created.\n");
   } else process.stdout.write("Administrator already exists.\n");
@@ -22,9 +22,9 @@ try {
     const saved = await seedSampleInventory({ pool });
     process.stdout.write(`Sample inventory ready: ${saved.length} published rooms.\n`);
   }
-  process.stdout.write("Rendar bootstrap completed.\n");
+  process.stdout.write("Naina bootstrap completed.\n");
 } catch (error) {
-  process.stderr.write(`Rendar bootstrap failed: ${error instanceof Error ? error.message : "unknown error"}\n`);
+  process.stderr.write(`Naina bootstrap failed: ${error instanceof Error ? error.message : "unknown error"}\n`);
   process.exitCode = 1;
 } finally {
   await pool.end();

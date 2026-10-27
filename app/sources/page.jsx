@@ -98,7 +98,20 @@ export default function SourcesPage() {
     event.preventDefault(); const value = groupUrl.trim();
     if (!exactGroupUrl.test(value)) { setFormError("ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น"); return; }
     setBusy("add"); setFormError("");
-    try { const result = await mutate("/api/sources/groups", { body: { url: value } }); const { created: wasCreated, ...source } = result; await load(); setAddOpen(false); setGroupUrl(""); setExpanded(source.id); setNotice(wasCreated ? "เพิ่มกลุ่มและเปิดตารางสแกนอัตโนมัติแล้ว" : "กลุ่มนี้ถูกเพิ่มไว้แล้ว แสดงรายการเดิมให้แล้ว"); requestAnimationFrame(() => document.querySelector(`[data-testid="source-${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" })); }
+    try {
+      const { created: wasCreated, ...source } = await mutate("/api/sources/groups", { body: { url: value } });
+      let message = "กลุ่มนี้ถูกเพิ่มไว้แล้ว แสดงรายการเดิมให้แล้ว";
+      if (wasCreated) {
+        try {
+          await mutate(`/api/sources/groups/${source.id}/scans`, { revision: source.revision });
+          message = "เพิ่มกลุ่มแล้ว กำลังสแกนครั้งแรกเพื่อตรวจชื่อกลุ่มและสิทธิ์";
+        } catch (error) {
+          message = `เพิ่มกลุ่มแล้ว แต่เริ่มสแกนครั้งแรกไม่ได้: ${error.message}`;
+        }
+      }
+      await load(); setAddOpen(false); setGroupUrl(""); setExpanded(source.id); setNotice(message);
+      requestAnimationFrame(() => document.querySelector(`[data-testid="source-${CSS.escape(source.id)}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    }
     catch (error) { setFormError(error.status === 422 ? "ลิงก์ต้องเป็น Facebook Group แบบตัวเลขเท่านั้น" : error.message); }
     finally { setBusy(""); }
   }
@@ -207,7 +220,7 @@ export default function SourcesPage() {
       </section>
     </div>
     {addOpen ? <div className="ops-dialog-backdrop"><form className="ops-dialog" role="dialog" aria-modal="true" aria-labelledby="add-group-title" onSubmit={addGroup}><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => { setAddOpen(false); setFormError(""); }}><X size={18}/></button><span className="ops-dialog__eyebrow">New source</span><h2 id="add-group-title">เพิ่ม Facebook Group</h2><p>วางลิงก์กลุ่มที่ทีมของคุณได้รับอนุญาตให้ติดตาม ระบบจะบันทึกเป็นลิงก์ถาวรให้</p><label>ลิงก์ Facebook Group<input aria-label="ลิงก์ Facebook Group" autoFocus value={groupUrl} onChange={(event) => setGroupUrl(event.target.value)} placeholder="https://www.facebook.com/groups/1742522453522327"/></label>{formError ? <div className="ops-field-error" role="alert">{formError}</div> : null}<footer><button className="ops-button ops-button--secondary" type="button" onClick={() => setAddOpen(false)}>ยกเลิก</button><button className="ops-button ops-button--primary" disabled={busy === "add"}>ยืนยันเพิ่มกลุ่ม</button></footer></form></div> : null}
-    {pagePicker ? <div className="ops-dialog-backdrop"><section className="ops-dialog page-picker" role="dialog" aria-modal="true" aria-labelledby="page-picker-title"><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => setPagePicker(null)}><X size={18}/></button><span className="ops-dialog__eyebrow">Messenger access</span><h2 id="page-picker-title">เลือก Facebook Page</h2><p>เลือกเพจที่ต้องการรับข้อความและตอบผ่าน rendar</p><div className="page-picker__list">{pagePicker.pages.length ? pagePicker.pages.map((page) => <button type="button" key={page.id} disabled={busy === "page-select"} onClick={() => void selectPage(page.id)}><span className="page-source-row__mark"><MessagesSquare size={18}/></span><span><strong>{page.name}</strong><small>Page ID {page.id}</small></span><CheckCircle2 size={18}/></button>) : <div className="ops-empty"><AlertTriangle size={22}/><div><strong>ไม่พบเพจที่มีสิทธิ์ Messenger</strong><p>ตรวจสอบบทบาทในเพจและสิทธิ์ที่อนุญาตให้แอป</p></div></div>}</div></section></div> : null}
+    {pagePicker ? <div className="ops-dialog-backdrop"><section className="ops-dialog page-picker" role="dialog" aria-modal="true" aria-labelledby="page-picker-title"><button className="ops-dialog__close" type="button" aria-label="ปิด" onClick={() => setPagePicker(null)}><X size={18}/></button><span className="ops-dialog__eyebrow">Messenger access</span><h2 id="page-picker-title">เลือก Facebook Page</h2><p>เลือกเพจที่ต้องการรับข้อความและตอบผ่าน Naina</p><div className="page-picker__list">{pagePicker.pages.length ? pagePicker.pages.map((page) => <button type="button" key={page.id} disabled={busy === "page-select"} onClick={() => void selectPage(page.id)}><span className="page-source-row__mark"><MessagesSquare size={18}/></span><span><strong>{page.name}</strong><small>Page ID {page.id}</small></span><CheckCircle2 size={18}/></button>) : <div className="ops-empty"><AlertTriangle size={22}/><div><strong>ไม่พบเพจที่มีสิทธิ์ Messenger</strong><p>ตรวจสอบบทบาทในเพจและสิทธิ์ที่อนุญาตให้แอป</p></div></div>}</div></section></div> : null}
     {recovery ? <BrowserRecovery recovery={recovery} busy={busy === `${recovery.sourceId}:resume`} onClose={closeRecovery} onResume={() => resumeAfterRecovery(data.groups.find((source) => source.id === recovery.sourceId))}/> : null}
   </div>;
 }

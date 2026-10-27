@@ -11,7 +11,7 @@ import {createFacebookGroupDriver} from './facebook-driver.mjs';
 function csv(value) {return [...new Set((value??'').split(',').map(item=>item.trim()).filter(Boolean))];}
 const {keyId,keys:allKeys,key}=groupCommandKeyConfig(process.env);
 const allowedGroups=csv(process.env.GROUP_SOURCE_ALLOWLIST),stagingAllowedGroups=csv(process.env.STAGING_FACEBOOK_SOURCE_ALLOWLIST);
-if(!keyId||!Buffer.isBuffer(key)||key.length!==32||!allowedGroups.length||allowedGroups.some(value=>!new RegExp(`^\\d{1,${MAX_GROUP_ID_LENGTH}}$`).test(value))||stagingAllowedGroups.some(value=>!allowedGroups.includes(value)))throw new Error('Invalid group worker configuration');
+if(!keyId||!Buffer.isBuffer(key)||key.length!==32||allowedGroups.some(value=>!new RegExp(`^\\d{1,${MAX_GROUP_ID_LENGTH}}$`).test(value))||stagingAllowedGroups.some(value=>!allowedGroups.includes(value)))throw new Error('Invalid group worker configuration');
 
 const recoveryGate=createRecoveryGate();
 const session=createGroupSession({profilePath:process.env.BROWSER_PROFILE_PATH??'/data/chromium',launchContext:async()=>{

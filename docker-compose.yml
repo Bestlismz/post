@@ -58,9 +58,9 @@ services:
     command: ["node", "scripts/bootstrap-compose.mjs"]
     environment:
       RENDAR_DATABASE_ROLE: owner
-      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@rendar.local}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@naina.local}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123456}
-      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-Rendar Admin}
+      ADMIN_DISPLAY_NAME: ${ADMIN_DISPLAY_NAME:-Naina Admin}
       BOOTSTRAP_SAMPLE_DATA: ${BOOTSTRAP_SAMPLE_DATA:-true}
     volumes:
       - database-secrets:/run/rendar-db:ro

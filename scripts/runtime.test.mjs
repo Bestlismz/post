@@ -29,7 +29,7 @@ test("Compose separates web, Messenger worker, and isolated Group browser storag
   assert.match(compose, /name: \$\{POSTGRES_VOLUME:-rental-radar-postgres-data\}/);
   assert.match(compose, /name: \$\{BROWSER_PROFILE_VOLUME:-rental-radar-browser-profile\}/);
   assert.match(compose, /condition: service_completed_successfully/);
-  assert.match(compose, /ADMIN_EMAIL: \$\{ADMIN_EMAIL:-admin@rendar\.local\}/);
+  assert.match(compose, /ADMIN_EMAIL: \$\{ADMIN_EMAIL:-admin@naina\.local\}/);
   const webService=services.slice(services.indexOf("\n  web:"),services.indexOf("\n  worker:"));
   assert.doesNotMatch(webService,/browser-profile:/);
 });

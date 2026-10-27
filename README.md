@@ -1,4 +1,4 @@
-# rendar
+# Naina
 
 This POC monitors multiple authorized Facebook Groups for condo-rental leads and runs an official Facebook Page Messenger auto-reply workflow. It includes a Next.js command center, Express workflow API, OpenAI analysis with a deterministic fallback, headed Chromium for Group review, and Meta webhook/Send API boundaries for Page Inbox.
 
@@ -30,7 +30,7 @@ Use `docker compose up --build` after pulling source changes when you want to fo
 
 Open [http://localhost:3000](http://localhost:3000) and sign in with:
 
-- Email: `admin@rendar.local`
+- Email: `admin@naina.local`
 - Password: `admin123456`
 
 Set `ADMIN_EMAIL`, `ADMIN_PASSWORD` (12+ characters), and `ADMIN_DISPLAY_NAME` before the first start to replace those local defaults. Existing administrator accounts are never replaced. `BOOTSTRAP_SAMPLE_DATA=false` disables the sample inventory. `WEB_PORT` and `APP_ORIGIN` can change the local address. The generated database, session, encryption, and command keys stay in private named volumes and are reused across restarts; no generated secret is printed or committed.
